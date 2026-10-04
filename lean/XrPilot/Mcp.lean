@@ -178,7 +178,12 @@ private def pointCommand (b : Backend) (args : Json) : IO (Except Json (String �
   let aim := aimThroughPixel (viewFrom state (← b.lastShot.get)) (num args "x" 0.0) (num args "y" 0.0)
   return .ok (s!"hand {hand} {fmt aim.origin.x} {fmt aim.origin.y} {fmt aim.origin.z} {aim.rotation.args}", aim)
 
-def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
+/-- A tool call's arguments for its span: one line, at most 160 characters. -/
+def spanDetail (args : Json) : String :=
+  let shown := if args.isNull then "" else (args.compress.replace "\n" " ").replace "\r" " "
+  if shown.length > 160 then (shown.take 157).toString ++ "..." else shown
+
+private def runTool (b : Backend) (name : String) (args : Json) : IO Json := do
   let refused (r : Json) : Json := toolResult #[text r.compress] true
   match name with
   | "screenshot" =>
@@ -260,6 +265,19 @@ def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
     b.sleepMs (num args "ms" 0.0).toUInt64.toNat
     return toolResult #[text "waited"]
   | other => throw (IO.userError s!"unknown tool: {other}")
+
+/-- Runs a tool inside a span, so the pilot's trace shows the call, its commands, its time and its outcome. -/
+def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
+  let id := toString (← IO.monoNanosNow)
+  let _ ← b.send s!"span begin {id} {name} {spanDetail args}"
+  try
+    let result ← runTool b name args
+    let failed := bool result "isError" false
+    let _ ← b.send s!"span end {id} {if failed then "error" else "ok"}"
+    return result
+  catch e =>
+    let _ ← b.send s!"span end {id} error"
+    throw e
 
 private def response (id : Json) (result : Json) : Json :=
   Json.mkObj [("jsonrpc", "2.0"), ("id", id), ("result", result)]

@@ -29,6 +29,7 @@ def pointing (r : Mat3) : Vec3 := { x := -r.get 0 2, y := -r.get 1 2, z := -r.ge
 
 structure Fake where
   sent : IO.Ref (Array String)
+  marks : IO.Ref (Array String)
   backend : Backend
 
 def stateReply : Json :=
@@ -38,8 +39,12 @@ def stateReply : Json :=
 
 def fake : IO Fake := do
   let sent ← IO.mkRef #[]
-  return { sent,
+  let marks ← IO.mkRef #[]
+  return { sent, marks,
            backend := { send := fun c => do
+                          if c.startsWith "span " then
+                            marks.modify (·.push c)
+                            return Json.mkObj [("ok", true)]
                           sent.modify (·.push c)
                           if c == "state" then return stateReply
                           if c.startsWith "teleport" then return Json.mkObj [("ok", false), ("error", "unknown command")]
@@ -165,10 +170,21 @@ def main : IO UInt32 := do
     let (r, sent) ← lookWith bad
     c (isError r && sent.size == 1) s!"look refuses {bad} and sends no head, sent {sent}"
 
+  -- Each tool call is one span: a begin naming the tool, then an end with its outcome.
+  f.marks.set #[]
+  let _ ← call "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"press\",\"arguments\":{\"button\":\"b\"}}}"
+  let marks ← f.marks.get
+  c (marks.size == 2 && (marks[0]!).startsWith "span begin " && ((marks[0]!).splitOn " ")[3]! == "press" &&
+      (marks[1]!).startsWith "span end " && (marks[1]!).endsWith " ok")
+    s!"a tool call opens and closes one span, marked {marks}"
+  c ((spanDetail (Json.str (String.ofList (List.replicate 400 (Char.ofNat 120))))).length ≤ 160) "a long argument list is cut to one short line"
+
   f.backend.lastShot.set (0.0, 0.0)
   f.sent.set #[]
   let early ← call "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"click\",\"arguments\":{\"x\":1,\"y\":1}}}"
   c (isError early && (← f.sent.get).isEmpty) "pixel tools refuse before any screenshot, sending nothing"
+  let endMark := (← f.marks.get).back!
+  c (endMark.endsWith " error") s!"control: a refused tool's span ends in error, got {endMark}"
 
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"

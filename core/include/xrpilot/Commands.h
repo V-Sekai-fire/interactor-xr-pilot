@@ -11,6 +11,7 @@
 //   stick <left|right> <x> <y>
 //   fov <vertical degrees>
 //   release                                        everything back to rest
+//   span begin <id> <tool> [args] | span end <id> <ok|error>   trace marks for the command view
 //   screenshot <path>                              left eye as PNG, handled by the caller on the GPU thread
 
 #pragma once

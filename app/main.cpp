@@ -14,6 +14,7 @@
 #include "xrpilot/Commands.h"
 #include "xrpilot/GpuDecoder.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/SpanLog.h"
 #include "xrpilot/Png.h"
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/Tray.h"
@@ -51,6 +52,7 @@ struct Shared
     std::atomic<uint64_t> decodeErrors{0};
     std::atomic<bool> captured{false};
     std::string lastCommand = "none";
+    SpanLog spans;
     std::string snapshotPath; // --snapshot: the 90th decoded frame
 };
 
@@ -346,6 +348,86 @@ private:
     Sparkline line_;
 };
 
+// The agent's tool calls as a trace: one row per span with its status, name and duration, newest at
+// the bottom with the pilot commands it sent beneath it.
+class TracePanel final : public Panel
+{
+public:
+    explicit TracePanel(Shared& shared)
+        : Panel("Trace")
+        , shared_(shared)
+    {
+    }
+
+    void draw(DrawContext& ctx) override
+    {
+        const std::vector<Span> spans = shared_.spans.recent();
+        const int64_t now = nowNs() / 1'000'000;
+        const float s = ctx.scale;
+        const float pad = 10.0f * s;
+        const float row = 22.0f * s;
+        const float sub = 17.0f * s;
+        const float nameX = pad + 16.0f * s;
+        const float barX = ctx.width * 0.48f;
+        const float barW = std::max(10.0f, ctx.width - barX - 64.0f * s);
+        float y = ctx.height - pad;
+        int age = 0;
+        for (std::vector<Span>::const_reverse_iterator it = spans.rbegin(); it != spans.rend() && y > 0.0f; ++it, ++age)
+        {
+            if (age == 0)
+            {
+                const size_t shown = std::min<size_t>(it->children.size(), 4);
+                for (size_t c = it->children.size() - shown; c < it->children.size(); ++c)
+                {
+                    y -= sub;
+                    const SpanChild& child = it->children[c];
+                    std::string text = child.text;
+                    if (text.size() > 40)
+                        text = text.substr(0, 39) + "...";
+                    tinted(ctx, child.ok ? Color{150, 156, 166, 255} : Red, [&](DrawContext& t) {
+                        Label(text, 11.0f).draw(t, nameX + 10.0f * s, y, 0.0f);
+                    });
+                }
+            }
+            y -= row;
+            const float fade = std::max(0.4f, 1.0f - 0.05f * float(age));
+            const Color status = shade(it->running() ? Cyan : it->ok ? Green : Red, fade);
+            const float mid = y + row * 0.5f;
+            const float dot[4] = {pad + 4.0f * s, mid, pad + 4.0f * s + 0.1f, mid};
+            drawPolyline(ctx, dot, 2, status, 8.0f * s);
+            std::string name = it->name + (it->count > 1 ? "  x" + std::to_string(it->count) : "");
+            tinted(ctx, shade(Color{223, 225, 229, 255}, fade),
+                   [&](DrawContext& t) { Label(name, 13.0f).draw(t, nameX, y, 0.0f); });
+            const int64_t ms = it->durationMs(now);
+            const float span = std::min(1.0f, std::log10(1.0f + float(ms)) / std::log10(1.0f + 5000.0f));
+            const float track[4] = {barX, mid, barX + barW, mid};
+            drawPolyline(ctx, track, 2, shade(Color{55, 60, 68, 255}, fade), 6.0f * s);
+            const float bar[4] = {barX, mid, barX + std::max(2.0f, barW * span), mid};
+            drawPolyline(ctx, bar, 2, status, 6.0f * s);
+            tinted(ctx, shade(Color{150, 156, 166, 255}, fade), [&](DrawContext& t) {
+                Label(std::to_string(ms) + " ms", 11.0f).draw(t, barX + barW + 8.0f * s, y, 0.0f);
+            });
+        }
+    }
+
+private:
+    static constexpr Color Cyan{98, 214, 255, 255};
+    static constexpr Color Green{126, 231, 135, 255};
+    static constexpr Color Red{240, 98, 98, 255};
+
+    static Color shade(Color c, float f) { return Color{uint8_t(c.r * f), uint8_t(c.g * f), uint8_t(c.b * f), c.a}; }
+    static void tinted(DrawContext& ctx, Color c, const std::function<void(DrawContext&)>& draw)
+    {
+        Theme theme = *ctx.theme;
+        theme.text = c;
+        DrawContext t = ctx;
+        t.theme = &theme;
+        draw(t);
+    }
+
+    Shared& shared_;
+};
+
 // The stream's counters as a status bar of sparklines side by side, sampled every 250 ms: the last 10 s.
 class StatsPanel final : public Panel
 {
@@ -535,6 +617,7 @@ int main(int argc, char** argv)
     // Panels on the left, the view on the right.
     SplitTree layout("eye");
     layout.dock("controls", "eye", Side::Left, 0.27);
+    layout.dock("trace", "eye", Side::Right, 0.26);
     // A one-line status bar: the header plus a sparkline row, never shorter than both at 2x scale.
     layout.dock("stats", "eye", Side::Bottom, 0.07);
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
@@ -560,6 +643,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
     window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, tray.get()));
     window->setPanel("stats", std::make_unique<StatsPanel>(client, shared));
+    window->setPanel("trace", std::make_unique<TracePanel>(shared));
 
     if (!client.start(&error))
     {
@@ -578,6 +662,12 @@ int main(int argc, char** argv)
                 line.erase(0, 3);
             if (line.empty())
                 continue;
+            SpanLine mark;
+            const bool isMark = parseSpanLine(line, mark);
+            if (isMark && mark.begin)
+                shared.spans.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
+            else if (isMark)
+                shared.spans.end(mark.id, mark.ok, nowNs() / 1'000'000);
             const ClientStatus status = client.status();
             CommandResult result;
             client.updateAgent([&](AgentState& s) { result = runCommand(line, s, status, shared.decoded.load()); });
@@ -599,6 +689,8 @@ int main(int argc, char** argv)
                 std::lock_guard<std::mutex> lock(shared.mutex);
                 shared.lastCommand = line;
             }
+            if (!isMark)
+                shared.spans.child(line, reply.rfind("{\"ok\":false", 0) != 0, nowNs() / 1'000'000);
             std::cout << reply << std::endl;
             windowPtr->requestRedrawFromAnyThread();
         }

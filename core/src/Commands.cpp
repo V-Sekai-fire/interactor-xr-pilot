@@ -2,6 +2,7 @@
 
 #include "xrpilot/Commands.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/SpanLog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -213,6 +214,13 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         state.eyeAspect = aspect;
         state.verticalFovDegrees = fov;
         state.head = head;
+        result.reply = ok;
+    }
+    else if (verb == "span")
+    {
+        SpanLine span;
+        if (!parseSpanLine(line, span))
+            return {errorJson("span needs begin <id> <tool> or end <id> <ok|error>"), {}};
         result.reply = ok;
     }
     else if (verb == "screenshot")
