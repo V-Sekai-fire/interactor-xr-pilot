@@ -4,6 +4,8 @@
 //   trace_roundtrip decode <traces.sqlite> <asset_id|latest> <out>   frame -> <out>.rgbf32 (scene-linear RGB)
 //   trace_roundtrip encode <in.rgbf32> <out>                          RGB -> PyroWave at the frame's own byte
 //                                                                      budget -> decoded again, compared
+//   trace_roundtrip sweep <ref> <bytes>...                             the decoded planes encoded at each budget:
+//                                                                      size, error and encode time
 // decode also keeps the decoded planes (<out>.yuv) and the stream (<out>.pyrowave) that encode compares with.
 
 #include "xrpilot/GpuDecoder.h"
@@ -12,6 +14,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -251,6 +254,61 @@ int encodeCommand(pyrowave_device device, const std::string& in, const std::stri
     return 0;
 }
 
+// The decoded planes re-encoded at each byte budget, straight from YCbCr so no colour conversion adds error.
+int sweepCommand(pyrowave_device device, const std::string& ref, const std::vector<size_t>& budgets)
+{
+    const std::vector<uint8_t> original = readFile(ref + ".pyrowave");
+    const std::vector<uint8_t> refYuv = readFile(ref + ".yuv");
+    int w = 0;
+    int h = 0;
+    if (!xrpilot::GpuDecoder::frameSize(original.data(), original.size(), w, h))
+        return std::fprintf(stderr, "FAIL no reference frame %s\n", ref.c_str()), 1;
+    const size_t ySize = size_t(w) * size_t(h);
+    const size_t cSize = ySize / 4;
+    Planes planes = sized(w, h);
+    std::copy(refYuv.begin(), refYuv.begin() + std::ptrdiff_t(ySize), planes.y.begin());
+    std::copy(refYuv.begin() + std::ptrdiff_t(ySize), refYuv.begin() + std::ptrdiff_t(ySize + cSize), planes.cb.begin());
+    std::copy(refYuv.begin() + std::ptrdiff_t(ySize + cSize), refYuv.end(), planes.cr.begin());
+    pyrowave_encoder encoder = nullptr;
+    const pyrowave_encoder_create_info info = {device, w, h, PYROWAVE_CHROMA_SUBSAMPLING_420};
+    if (pyrowave_encoder_create(&info, &encoder) != PYROWAVE_SUCCESS)
+        return std::fprintf(stderr, "FAIL encoder\n"), 1;
+    const pyrowave_cpu_buffer buffer = cpuBuffer(planes);
+    std::printf("budget_bytes,bytes,y_db,cb_db,cr_db,encode_ms_cpu_path\n");
+    for (const size_t budget : budgets)
+    {
+        const pyrowave_rate_control rate = {budget};
+        std::vector<uint8_t> stream(budget * 2 + 4096);
+        std::vector<pyrowave_packet> layout(1);
+        size_t packets = 0;
+        size_t outPackets = 0;
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        bool ok = pyrowave_encoder_encode_cpu_synchronous(encoder, &buffer, &rate) == PYROWAVE_SUCCESS &&
+                  pyrowave_encoder_compute_num_packets(encoder, stream.size(), &packets) == PYROWAVE_SUCCESS;
+        layout.resize(std::max<size_t>(packets, 1));
+        ok = ok && pyrowave_encoder_packetize(encoder, layout.data(), stream.size(), &outPackets, stream.data(),
+                                              stream.size()) == PYROWAVE_SUCCESS;
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        Planes again;
+        if (!ok || outPackets != 1)
+        {
+            std::printf("%zu,FAIL,,,,\n", budget);
+            continue;
+        }
+        stream.assign(stream.begin() + std::ptrdiff_t(layout[0].offset),
+                      stream.begin() + std::ptrdiff_t(layout[0].offset + layout[0].size));
+        if (!decode(device, stream, again))
+        {
+            std::printf("%zu,%zu,FAIL decode,,,\n", budget, stream.size());
+            continue;
+        }
+        std::printf("%zu,%zu,%.2f,%.2f,%.2f,%.1f\n", budget, stream.size(), psnr(planes.y, again.y),
+                    psnr(planes.cb, again.cb), psnr(planes.cr, again.cr), ms);
+    }
+    pyrowave_encoder_destroy(encoder);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -269,6 +327,13 @@ int main(int argc, char** argv)
         rc = decodeCommand(device, argv[2], argv[3], argv[4]);
     else if (mode == "encode" && argc == 4)
         rc = encodeCommand(device, argv[2], argv[3]);
+    else if (mode == "sweep" && argc >= 4)
+    {
+        std::vector<size_t> budgets;
+        for (int i = 3; i < argc; ++i)
+            budgets.push_back(size_t(std::stoull(argv[i])));
+        rc = sweepCommand(device, argv[2], budgets);
+    }
     pyrowave_device_destroy(device);
     return rc;
 }
