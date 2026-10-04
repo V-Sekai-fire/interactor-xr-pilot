@@ -5,6 +5,7 @@
 //   state
 //   head <x> <y> <z> <r00> ... <r22>               metres, then the rotation matrix row by row
 //   hand <left|right> <x> <y> <z> <r00> ... <r22>  places and shows the hand
+//   reach <left|right> <x> <y> <z>                  the body's arm reaches for a world point
 //   present <left|right> <0|1>
 //   button <a|b|x|y|menu|left_thumbstick|right_thumbstick|headset> <0|1>
 //   trigger|grip <left|right> <0..1>

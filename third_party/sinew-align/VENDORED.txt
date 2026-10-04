@@ -1,0 +1,2 @@
+Vendored from V-Sekai-fire/contract-sinew-align vendor/sinew-align at 86bc4fc (MIT): the Kabsch-style rotation
+fitter transcribed from sinew-mocap's Align.lean. Unmodified.

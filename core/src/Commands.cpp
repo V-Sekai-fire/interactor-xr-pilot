@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #include "xrpilot/Commands.h"
+#include "xrpilot/Body.h"
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/SpanLog.h"
 
@@ -151,6 +152,23 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         state.hands[i].present = true;
         state.hands[i].manual = true;
         result.reply = ok;
+    }
+    else if (verb == "reach")
+    {
+        std::string name;
+        in >> name;
+        const int i = handIndex(name);
+        float target[3];
+        if (i < 0 || !readFloats(in, target, 3))
+            return {errorJson("reach needs left|right x y z"), {}};
+        const ArmSolve arm = solveArm(state, i, target);
+        state.hands[i].pose = arm.hand;
+        state.hands[i].present = true;
+        state.hands[i].manual = true;
+        result.reply = std::string("{\"ok\":true,\"reachable\":") + (arm.reachable ? "true" : "false") +
+                       ",\"distance\":" + number(arm.distance) + ",\"hand\":" + poseJson(arm.hand) +
+                       ",\"elbow\":[" + number(arm.elbow[0]) + "," + number(arm.elbow[1]) + "," +
+                       number(arm.elbow[2]) + "]}";
     }
     else if (verb == "present")
     {

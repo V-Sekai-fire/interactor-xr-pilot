@@ -116,6 +116,23 @@ def tools : Array Json := #[
   Json.mkObj [("name", "wait"),
     ("description", "Waits so the app can react before the next screenshot."),
     ("inputSchema", schema [("ms", prop "integer" "Milliseconds")] ["ms"])],
+  Json.mkObj [("name", "reach"),
+    ("description", "The body's arm reaches for what a screenshot pixel shows, depth metres from the eye: the hand goes where the arm (ANNY proportions, two-bone elbow) can reach on the line to it, pointing along the reach with the palm level. Replies whether it is within reach."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row"),
+                            ("depth", prop "number" "Metres from the eye along the pixel's ray; 0.5 by default"), ("hand", handProp)] ["x", "y"])],
+  Json.mkObj [("name", "grab"),
+    ("description", "Picks up what a screenshot pixel shows, depth metres away: the hand reaches to 12 cm short of it, closes in, grips, and lifts. hold keeps the grip; otherwise it lets go after the lift."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row"),
+                            ("depth", prop "number" "Metres from the eye; 0.5 by default"), ("hand", handProp),
+                            ("lift", prop "number" "Metres to lift after gripping; 0.15 by default"),
+                            ("hold", prop "boolean" "Keep holding; true by default")] ["x", "y"])],
+  Json.mkObj [("name", "locomote"),
+    ("description", "Moves the player the ways the workspace's locomotion research names for controllers: smooth (the left stick held toward forward, back, left or right for a distance), snap_turn (the right stick flicked left or right, count times), or teleport (the left stick pushed forward to aim the arc, then released to land)."),
+    ("inputSchema", schema [("mode", Json.mkObj [("type", "string"), ("enum", Json.arr #["smooth", "snap_turn", "teleport"])]),
+                            ("direction", Json.mkObj [("type", "string"), ("enum", Json.arr #["forward", "back", "left", "right"]),
+                                                      ("description", "smooth: where to move; snap_turn: left or right")]),
+                            ("meters", prop "number" "smooth: how far, at 1.5 m/s; 1 by default"),
+                            ("count", prop "integer" "snap_turn: how many turns; teleport: how many hops; 1 by default")] ["mode"])],
   Json.mkObj [("name", "plan"),
     ("description", "Runs a taskweft-style task network in one call. methods: {name: {params, alternatives: [{name, check, subtasks}]}}; a subtask is a method call [name, arg...] or a tool call [tool, {arguments}], with \"{param}\" substituted. check is a list of taskweft eval guards ({eval: {type: math/eq|ne|gt|ge|lt|le, a, b}}, with {pointer_get: \"/connected\"} reading get_state). Actions run for real; when one fails the method tries its next alternative from the world as it is. Replies with each action's outcome and the reason it stopped. Every method and tool shows as a span in the pilot's trace."),
     ("inputSchema", schema [("methods", Json.mkObj [("type", "object"), ("description", "Method name to {params, alternatives}")]),
@@ -272,6 +289,60 @@ private def runTool (b : Backend) (name : String) (args : Json) (call : String �
   | "wait" =>
     b.sleepMs (num args "ms" 0.0).toUInt64.toNat
     return toolResult #[text "waited"]
+  | "reach" | "grab" =>
+    if (← b.lastShot.get).1 <= 0.0 then
+      return refused (Json.mkObj [("ok", false), ("error", "take a screenshot first: pixel coordinates refer to it")])
+    let state ← b.send "state"
+    if !ok? state then return refused state
+    let hand := str args "hand" "right"
+    let aim := aimThroughPixel (viewFrom state (← b.lastShot.get)) (num args "x" 0.0) (num args "y" 0.0)
+    let depth := max 0.1 (num args "depth" 0.5)
+    let toward (d up : Float) : String :=
+      s!"reach {hand} {fmt (aim.origin.x + aim.direction.x * d)} {fmt (aim.origin.y + aim.direction.y * d + up)} {fmt (aim.origin.z + aim.direction.z * d)}"
+    if name == "reach" then
+      let r ← b.send (toward depth 0.0)
+      return toolResult #[text r.compress] (!ok? r)
+    let lift := num args "lift" 0.15
+    let pre ← b.send (toward (max 0.1 (depth - 0.12)) 0.0)
+    if !ok? pre then return refused pre
+    b.sleepMs 250
+    let reached ← b.send (toward depth 0.0)
+    if !ok? reached then return refused reached
+    b.sleepMs 200
+    if let some r ← sendAll b [s!"grip {hand} 1"] then return refused r
+    b.sleepMs 300
+    let lifted ← b.send (toward depth lift)
+    if !bool args "hold" true then
+      b.sleepMs 200
+      if let some r ← sendAll b [s!"grip {hand} 0"] then return refused r
+    return toolResult #[text (Json.mkObj [("ok", true), ("reachable", reached.getObjValD "reachable"),
+                                          ("hand", hand), ("lifted", lifted.getObjValD "hand")]).compress]
+  | "locomote" =>
+    let count := (num args "count" 1.0).toUInt64.toNat
+    match str args "mode" "" with
+    | "smooth" =>
+      let (x, y) := match str args "direction" "forward" with
+        | "back" => (0.0, -1.0) | "left" => (-1.0, 0.0) | "right" => (1.0, 0.0) | _ => (0.0, 1.0)
+      if let some r ← sendAll b [s!"stick left {fmt x} {fmt y}"] then return refused r
+      b.sleepMs ((num args "meters" 1.0) / 1.5 * 1000.0).toUInt64.toNat
+      if let some r ← sendAll b ["stick left 0 0"] then return refused r
+      return toolResult #[text s!"moved {fmt (num args "meters" 1.0)} m {str args "direction" "forward"}"]
+    | "snap_turn" =>
+      let x := if str args "direction" "right" == "left" then "-1" else "1"
+      for _ in [0:count] do
+        if let some r ← sendAll b [s!"stick right {x} 0"] then return refused r
+        b.sleepMs 150
+        if let some r ← sendAll b ["stick right 0 0"] then return refused r
+        b.sleepMs 250
+      return toolResult #[text s!"snap turned {str args "direction" "right"} x{count}"]
+    | "teleport" =>
+      for _ in [0:count] do
+        if let some r ← sendAll b ["stick left 0 1"] then return refused r
+        b.sleepMs 800
+        if let some r ← sendAll b ["stick left 0 0"] then return refused r
+        b.sleepMs 600
+      return toolResult #[text s!"teleported x{count}"]
+    | other => return refused (Json.mkObj [("ok", false), ("error", s!"mode must be smooth, snap_turn or teleport, got {other}")])
   | "plan" =>
     let actor : Actor := {
       tool := call
