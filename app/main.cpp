@@ -284,6 +284,12 @@ private:
             return;
         if (GpuDecoder::frameSize(lastStreamed_.data(), lastStreamed_.size(), frame.encodedWidth, frame.encodedHeight))
             frame.encoded = lastStreamed_;
+        const AgentState agent = client_.agent();
+        for (const Pose* pose : {&agent.head, &agent.hands[0].pose, &agent.hands[1].pose})
+        {
+            frame.pose.insert(frame.pose.end(), pose->position, pose->position + 3);
+            frame.pose.insert(frame.pose.end(), pose->rotation.m, pose->rotation.m + 9);
+        }
         shared_.traces.frame(std::move(frame));
     }
 

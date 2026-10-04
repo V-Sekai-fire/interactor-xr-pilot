@@ -319,8 +319,11 @@ const std::map<std::string, std::function<void()>> cases = {
          dark.encoded.assign(64, uint8_t(1));
          dark.encodedWidth = 64;
          dark.encodedHeight = 16;
+         dark.pose.assign(TracePoseFloats, 0.0f);
          TraceFrame light = dark;
          std::fill(light.rgba.begin(), light.rgba.end(), uint8_t(255));
+         light.pose = dark.pose;
+         light.pose[2] = -0.5f;
          store.begin("1", "plan", "{\"todo_list\":[]}", 5000);
          store.begin("2", "reach", "", 5010);
          check(store.wantsFrame(), "a span that begins wants its input frame");
@@ -339,8 +342,13 @@ const std::map<std::string, std::function<void()>> cases = {
          check(count("SELECT count(*) FROM span_detail") == 1, "an empty detail is no row");
          check(count("SELECT count(*) FROM span_command WHERE span_id = 2") == 1, "the command is in the running span");
          check(count("SELECT count(*) FROM maskscore_root") == 2, "the spans with an input frame are MaskScore roots");
-         check(count("SELECT count(*) FROM maskscore_candidate") == 1, "the ended span has its edit candidate");
-         check(count("SELECT count(*) FROM asset") == 2, "one image per frame, shared by its spans");
+         check(count("SELECT count(*) FROM maskscore_input") == 4, "each root has a view and a pose input");
+         check(count("SELECT count(*) FROM maskscore_candidate") == 2, "the ended span has a view and a pose candidate");
+         check(count("SELECT count(*) FROM asset") == 4, "one view and one pose per frame, shared by its spans");
+         check(count("SELECT count(*) FROM asset_extent") == 2, "only the views have an extent");
+         check(count("SELECT count(*) FROM maskscore_score m JOIN metric USING (metric_id) "
+                     "WHERE name = 'head_travel_m' AND abs(metric_value - 0.5) < 1e-6") == 1,
+               "the head's half-metre step is measured on the pose axis");
          check(count("SELECT count(*) FROM maskscore_score m JOIN metric USING (metric_id) "
                      "WHERE name = 'gray_l1_8x8' AND metric_value > 0.99") == 1,
                "dark to light measures the change");
@@ -354,7 +362,7 @@ const std::map<std::string, std::function<void()>> cases = {
          store.begin("4", "look", "", 5040);
          store.frame(bare);
          store.flush();
-         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 2,
+         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 4,
                "control: a frame without stream bytes is counted, not kept");
          check(nullColumns(db).empty(), "no column holds a NULL");
      }},

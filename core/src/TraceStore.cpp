@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace xrpilot
 {
@@ -17,6 +19,9 @@ namespace
 // The interned vocabularies, one relation each.
 const char* const Vocabularies[] = {"tool",           "task_type",      "dimension", "input_column",
                                     "asset_kind",     "candidate_axis", "candidate_kind", "metric"};
+
+// Bumped when a relation changes; an older store is moved aside, not altered.
+constexpr int SchemaVersion = 2;
 
 const char* const Schema = R"sql(
 CREATE TABLE IF NOT EXISTS session (
@@ -48,15 +53,22 @@ CREATE TABLE IF NOT EXISTS span_command (
 CREATE TABLE IF NOT EXISTS asset (
     asset_id INTEGER PRIMARY KEY,
     asset_kind_id INTEGER NOT NULL REFERENCES asset_kind,
-    width INTEGER NOT NULL,
-    height INTEGER NOT NULL,
     bytes BLOB NOT NULL);
+-- Only images have an extent.
+CREATE TABLE IF NOT EXISTS asset_extent (
+    asset_id INTEGER PRIMARY KEY REFERENCES asset,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS maskscore_root (
     span_id INTEGER PRIMARY KEY REFERENCES span,
     task_type_id INTEGER NOT NULL REFERENCES task_type,
-    dimension_id INTEGER NOT NULL REFERENCES dimension,
+    dimension_id INTEGER NOT NULL REFERENCES dimension);
+-- One input per modality.
+CREATE TABLE IF NOT EXISTS maskscore_input (
+    span_id INTEGER NOT NULL REFERENCES maskscore_root,
     input_column_id INTEGER NOT NULL REFERENCES input_column,
-    input_asset_id INTEGER NOT NULL REFERENCES asset);
+    input_asset_id INTEGER NOT NULL REFERENCES asset,
+    PRIMARY KEY (span_id, input_column_id));
 CREATE TABLE IF NOT EXISTS maskscore_candidate (
     span_id INTEGER NOT NULL REFERENCES maskscore_root,
     candidate_axis_id INTEGER NOT NULL REFERENCES candidate_axis,
@@ -72,8 +84,8 @@ CREATE TABLE IF NOT EXISTS maskscore_score (
     metric_value REAL NOT NULL,
     PRIMARY KEY (span_id, candidate_axis_id, rank, metric_id),
     FOREIGN KEY (span_id, candidate_axis_id, rank) REFERENCES maskscore_candidate);
--- EditScore's triple, for a scorer to read: the instruction is the span's tool and its arguments. A
--- pyrowave image is a frame as streamed (both eyes, left first) that the scorer decodes.
+-- EditScore's triple is MaskScore's view axis: the view before, the view after and the instruction, the
+-- span's tool and its arguments. A pyrowave image is a frame as streamed (both eyes, left first).
 CREATE VIEW IF NOT EXISTS editscore_pair AS
 SELECT r.span_id, s.session_id, sk.name AS source_kind, src.bytes AS source, ek.name AS edited_kind,
        ed.bytes AS edited, t.name || COALESCE(' ' || d.detail, '') AS instruction
@@ -81,9 +93,12 @@ FROM maskscore_root r
 JOIN span s USING (span_id)
 JOIN tool t USING (tool_id)
 LEFT JOIN span_detail d USING (span_id)
-JOIN asset src ON src.asset_id = r.input_asset_id
+JOIN maskscore_input i ON i.span_id = r.span_id
+JOIN input_column ic ON ic.input_column_id = i.input_column_id AND ic.name = 'source_view'
+JOIN asset src ON src.asset_id = i.input_asset_id
 JOIN asset_kind sk ON sk.asset_kind_id = src.asset_kind_id
 JOIN maskscore_candidate c ON c.span_id = r.span_id AND c.rank = 1
+JOIN candidate_axis ca ON ca.candidate_axis_id = c.candidate_axis_id AND ca.name = 'view'
 JOIN asset ed ON ed.asset_id = c.candidate_asset_id
 JOIN asset_kind ek ON ek.asset_kind_id = ed.asset_kind_id;
 )sql";
@@ -175,6 +190,32 @@ bool TraceStore::open(const std::string& path, int64_t wallClockMs, int64_t nowM
         return false;
     }
     sqlite3_busy_timeout(db_, 2000);
+    int64_t have = 0;
+    int64_t used = 0;
+    {
+        Statement version(db_, "PRAGMA user_version");
+        Statement tables(db_, "SELECT count(*) FROM sqlite_master WHERE type = 'table'");
+        have = version.step() ? version.column(0) : 0;
+        used = tables.step() ? tables.column(0) : 0;
+    }
+    {
+        if (used > 0 && have != SchemaVersion)
+        {
+            // An older store keeps its rows under its own name; this one starts over.
+            sqlite3_close(db_);
+            db_ = nullptr;
+            const std::string aside = path + ".v" + std::to_string(have);
+            if (std::rename(path.c_str(), aside.c_str()) != 0)
+            {
+                if (error != nullptr)
+                    *error = "cannot move schema v" + std::to_string(have) + " store aside to " + aside;
+                return false;
+            }
+            std::remove((path + "-wal").c_str());
+            std::remove((path + "-shm").c_str());
+            return open(path, wallClockMs, nowMs, error);
+        }
+    }
     bool ok = exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;", error);
     for (const char* table : Vocabularies)
     {
@@ -183,6 +224,7 @@ bool TraceStore::open(const std::string& path, int64_t wallClockMs, int64_t nowM
         ok = ok && exec(sql.c_str(), error);
     }
     ok = ok && exec(Schema, error);
+    ok = ok && exec(("PRAGMA user_version = " + std::to_string(SchemaVersion)).c_str(), error);
     if (ok)
     {
         Statement insert(db_, "INSERT INTO session (started_unix_ms) VALUES (?)");
@@ -340,36 +382,66 @@ void TraceStore::write(const Job& job)
 {
     const TraceFrame& f = job.frame;
     const std::vector<uint8_t> small = thumb(f);
+    const bool posed = f.pose.size() == TracePoseFloats;
     exec("BEGIN");
-    Statement(db_, "INSERT INTO asset (asset_kind_id, width, height, bytes) VALUES (?, ?, ?, ?)")
+    Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
         .bind(1, intern("asset_kind", "pyrowave"))
+        .blob(2, f.encoded)
+        .run();
+    const int64_t view = sqlite3_last_insert_rowid(db_);
+    Statement(db_, "INSERT INTO asset_extent VALUES (?, ?, ?)")
+        .bind(1, view)
         .bind(2, int64_t(f.encodedWidth))
         .bind(3, int64_t(f.encodedHeight))
-        .blob(4, f.encoded)
         .run();
-    const int64_t asset = sqlite3_last_insert_rowid(db_);
-    const int64_t edit = intern("candidate_axis", "edit");
+    int64_t pose = 0;
+    if (posed)
+    {
+        std::vector<uint8_t> bytes(f.pose.size() * sizeof(float));
+        std::memcpy(bytes.data(), f.pose.data(), bytes.size());
+        Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
+            .bind(1, intern("asset_kind", "pose_f32x36"))
+            .blob(2, bytes)
+            .run();
+        pose = sqlite3_last_insert_rowid(db_);
+    }
+    const int64_t viewAxis = intern("candidate_axis", "view");
+    const int64_t poseAxis = intern("candidate_axis", "pose");
     for (const Pending& p : job.spans)
     {
         if (p.input)
         {
-            Statement(db_, "INSERT OR IGNORE INTO maskscore_root VALUES (?, ?, ?, ?, ?)")
+            Statement(db_, "INSERT OR IGNORE INTO maskscore_root VALUES (?, ?, ?)")
                 .bind(1, p.spanId)
                 .bind(2, intern("task_type", "agent_step"))
                 .bind(3, intern("dimension", "instruction_following"))
-                .bind(4, intern("input_column", "source"))
-                .bind(5, asset)
                 .run();
+            Statement(db_, "INSERT OR IGNORE INTO maskscore_input VALUES (?, ?, ?)")
+                .bind(1, p.spanId)
+                .bind(2, intern("input_column", "source_view"))
+                .bind(3, view)
+                .run();
+            if (posed)
+                Statement(db_, "INSERT OR IGNORE INTO maskscore_input VALUES (?, ?, ?)")
+                    .bind(1, p.spanId)
+                    .bind(2, intern("input_column", "source_pose"))
+                    .bind(3, pose)
+                    .run();
             std::lock_guard<std::mutex> lock(mutex_);
             inputThumb_[p.spanId] = small;
+            if (posed)
+                inputPose_[p.spanId] = f.pose;
             continue;
         }
-        // A span whose input frame was never taken has no root, and so no candidate.
-        Statement candidate(db_, "INSERT OR IGNORE INTO maskscore_candidate SELECT ?, ?, 1, ?, ? "
-                                 "WHERE EXISTS (SELECT 1 FROM maskscore_root WHERE span_id = ?)");
-        candidate.bind(1, p.spanId).bind(2, edit).bind(3, asset).bind(4, intern("candidate_kind", "after_span"));
-        candidate.bind(5, p.spanId).run();
+        // A span whose inputs were never taken has no root, and so no candidate.
+        const char* const insertCandidate = "INSERT OR IGNORE INTO maskscore_candidate SELECT ?, ?, 1, ?, ? "
+                                            "WHERE EXISTS (SELECT 1 FROM maskscore_root WHERE span_id = ?)";
+        const int64_t after = intern("candidate_kind", "after_span");
+        Statement(db_, insertCandidate).bind(1, p.spanId).bind(2, viewAxis).bind(3, view).bind(4, after).bind(5, p.spanId).run();
+        if (posed)
+            Statement(db_, insertCandidate).bind(1, p.spanId).bind(2, poseAxis).bind(3, pose).bind(4, after).bind(5, p.spanId).run();
         std::vector<uint8_t> before;
+        std::vector<float> posedBefore;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const std::map<int64_t, std::vector<uint8_t>>::iterator found = inputThumb_.find(p.spanId);
@@ -378,16 +450,49 @@ void TraceStore::write(const Job& job)
                 before.swap(found->second);
                 inputThumb_.erase(found);
             }
+            const std::map<int64_t, std::vector<float>>::iterator foundPose = inputPose_.find(p.spanId);
+            if (foundPose != inputPose_.end())
+            {
+                posedBefore.swap(foundPose->second);
+                inputPose_.erase(foundPose);
+            }
         }
-        if (before.empty() || before.size() != small.size())
-            continue;
-        double sum = 0.0;
-        for (size_t i = 0; i < small.size(); ++i)
-            sum += std::abs(int(small[i]) - int(before[i]));
-        Statement score(db_, "INSERT OR REPLACE INTO maskscore_score SELECT ?, ?, 1, ?, ? "
-                             "WHERE EXISTS (SELECT 1 FROM maskscore_candidate WHERE span_id = ? AND rank = 1)");
-        score.bind(1, p.spanId).bind(2, edit).bind(3, intern("metric", "gray_l1_8x8"));
-        score.bind(4, sum / double(small.size()) / 255.0).bind(5, p.spanId).run();
+        const char* const insertScore = "INSERT OR REPLACE INTO maskscore_score SELECT ?, ?, 1, ?, ? WHERE EXISTS "
+                                        "(SELECT 1 FROM maskscore_candidate WHERE span_id = ? AND candidate_axis_id = ? AND rank = 1)";
+        if (!before.empty() && before.size() == small.size())
+        {
+            double sum = 0.0;
+            for (size_t i = 0; i < small.size(); ++i)
+                sum += std::abs(int(small[i]) - int(before[i]));
+            Statement(db_, insertScore)
+                .bind(1, p.spanId)
+                .bind(2, viewAxis)
+                .bind(3, intern("metric", "gray_l1_8x8"))
+                .bind(4, sum / double(small.size()) / 255.0)
+                .bind(5, p.spanId)
+                .bind(6, viewAxis)
+                .run();
+        }
+        if (posed && posedBefore.size() == TracePoseFloats)
+        {
+            // How far the head and each hand travelled over the span, metres.
+            const char* const names[3] = {"head_travel_m", "left_hand_travel_m", "right_hand_travel_m"};
+            for (int part = 0; part < 3; ++part)
+            {
+                const float* a = &posedBefore[size_t(part) * 12];
+                const float* b = &f.pose[size_t(part) * 12];
+                const double d = std::sqrt(double((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) +
+                                                  (b[2] - a[2]) * (b[2] - a[2])));
+                Statement(db_, insertScore)
+                    .bind(1, p.spanId)
+                    .bind(2, poseAxis)
+                    .bind(3, intern("metric", names[part]))
+                    .bind(4, d)
+                    .bind(5, p.spanId)
+                    .bind(6, poseAxis)
+                    .run();
+            }
+        }
     }
     exec("COMMIT");
 }

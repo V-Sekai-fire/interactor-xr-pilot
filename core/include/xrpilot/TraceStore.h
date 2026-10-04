@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// Every span of the trace kept in SQLite in Essential Tuple Normal Form, as a MaskScore row: the frame
-// before the span is its input, the frame after it the edit candidate, and the span's call the
-// instruction EditScore scores the pair against. Facts that may be missing (an end, a parent, a detail,
-// a score) are satellite relations, never nullable columns.
+// Every span of the trace kept in SQLite in Essential Tuple Normal Form, as a MaskScore row. MaskScore is
+// EditScore across modalities: a span's inputs are the view and the pose before it, its candidates the
+// view and the pose after it, one per modality axis, and its call is the instruction. EditScore's image
+// pair is the view axis of that row. Facts that may be missing (an end, a parent, a detail, a score, an
+// image's extent) are satellite relations, never nullable columns.
 
 #pragma once
 
@@ -21,8 +22,8 @@ struct sqlite3;
 namespace xrpilot
 {
 
-// A frame of the view: its left eye as RGBA, which the span's metric reads, and the frame as the runtime
-// streamed it, which is the only image the store keeps; nothing is re-encoded.
+// What the agent saw and where it was at one moment. The view's left eye as RGBA is only read for the
+// span's metric; the view is kept as the runtime streamed it, never re-encoded.
 struct TraceFrame
 {
     std::vector<uint8_t> rgba;
@@ -31,7 +32,12 @@ struct TraceFrame
     std::vector<uint8_t> encoded; // a PyroWave frame, decodable on its own
     int encodedWidth = 0;
     int encodedHeight = 0;
+    // The head, then the left and the right hand: position (3) and row-major rotation (9) each, metres.
+    std::vector<float> pose;
 };
+
+// Floats in a TraceFrame's pose.
+constexpr size_t TracePoseFloats = 36;
 
 class TraceStore
 {
@@ -91,7 +97,8 @@ private:
     std::map<std::string, int64_t> spanByKey_;
     std::vector<int64_t> running_;        // span ids, innermost last
     std::map<int64_t, int> commandSeq_;
-    std::map<int64_t, std::vector<uint8_t>> inputThumb_; // a span's input frame, small, for its metric
+    std::map<int64_t, std::vector<uint8_t>> inputThumb_; // a span's input view, small, for its metric
+    std::map<int64_t, std::vector<float>> inputPose_;     // a span's input pose, for its metric
     std::vector<Pending> wanting_;
     std::deque<Job> jobs_;
     bool busy_ = false;
