@@ -13,7 +13,7 @@ include(FetchContent)
 # The OXRSys wire protocol and the Lean-authored yuv420_to_rgbx kernel, read from oxrsys at a pinned commit.
 FetchContent_Declare(
     oxrsys
-    GIT_REPOSITORY https://github.com/V-Sekai-fire/oxrsys.git
+    GIT_REPOSITORY https://github.com/V-Sekai-fire/interactor-oxrsys.git
     GIT_TAG eb9295ebd2e60a5c9ada006bb9b982873cadab2d
     SOURCE_SUBDIR none
 )
