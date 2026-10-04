@@ -326,9 +326,11 @@ const std::map<std::string, std::function<void()>> cases = {
          dark.encodedWidth = 64;
          dark.encodedHeight = 16;
          dark.pose.assign(TracePoseFloats, 0.0f);
+         dark.sequence = 1;
          TraceFrame light = dark;
          std::fill(light.rgba.begin(), light.rgba.end(), uint8_t(255));
          light.pose = dark.pose;
+         light.sequence = 2;
          light.pose[2] = -0.5f;
          store.begin("1", "plan", "{\"todo_list\":[]}", 5000);
          store.begin("2", "reach", "", 5010);
@@ -363,14 +365,48 @@ const std::map<std::string, std::function<void()>> cases = {
          check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'pyrowave'") == 2,
                "frames are kept as streamed");
          check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
+         // A span that begins and ends on one frame keeps waiting until a newer frame arrives.
+         store.begin("5", "wait", "", 5050);
+         store.end("5", true, 5051);
+         TraceFrame third = light;
+         third.sequence = 3;
+         store.frame(third);
+         check(store.wantsFrame(), "a span that ended on its input's frame still wants a newer one");
+         TraceFrame fourth = light;
+         fourth.sequence = 4;
+         store.frame(fourth);
+         store.flush();
+         check(!store.wantsFrame(), "the next frame becomes its edit");
+         check(count("SELECT count(*) FROM maskscore_input i JOIN maskscore_candidate c ON c.span_id = i.span_id "
+                     "AND c.candidate_axis_id = (SELECT candidate_axis_id FROM candidate_axis WHERE name = 'view') "
+                     "JOIN input_column ic ON ic.input_column_id = i.input_column_id AND ic.name = 'source_view' "
+                     "WHERE i.input_asset_id = c.candidate_asset_id") == 0,
+               "no span's before and after are the same frame");
          TraceFrame bare = dark;
          bare.encoded.clear();
          store.begin("4", "look", "", 5040);
          store.frame(bare);
          store.flush();
-         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 4,
+         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 8,
                "control: a frame without stream bytes is counted, not kept");
          check(nullColumns(db).empty(), "no column holds a NULL");
+     }},
+    {"traces.rectgtn-time",
+     [] {
+         check(isoDuration(0) == "PT0S" && isoDuration(1500) == "PT1.5S" && isoDuration(62005) == "PT1M2.005S" &&
+                   isoDuration(3'600'000) == "PT1H",
+               "durations are ISO 8601 as RECTGTN writes them");
+         check(civilTime(1791133333123) == "2026-10-04T17:02:13.123Z", "civil time is ISO 8601 UTC");
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 1791133333123, 1000, &error), "a store opens");
+         store.begin("1", "look", "", 2500);
+         store.end("1", true, 4000);
+         store.flush();
+         check(countRows(store.db(), "SELECT count(*) FROM session WHERE started_at = '2026-10-04T17:02:13.123Z'") == 1 &&
+                   countRows(store.db(), "SELECT count(*) FROM span WHERE started = 'PT1.5S'") == 1 &&
+                   countRows(store.db(), "SELECT count(*) FROM span_end WHERE ended = 'PT3S'") == 1,
+               "a span's times are offsets from the session's civil origin");
      }},
     {"traces.null-check-control",
      [] {
