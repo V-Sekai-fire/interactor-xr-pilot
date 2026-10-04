@@ -71,11 +71,15 @@ if(PANELSPUN_GPU_TESTS AND TARGET panelspun-demo)
   add_test(NAME demo.control-no-polyline-fails
     COMMAND panelspun-demo --frames 4 --screenshot ${CMAKE_CURRENT_BINARY_DIR}/demo-noline.bmp --check --polyline-check --no-polyline)
   set_tests_properties(demo.control-no-polyline-fails PROPERTIES WILL_FAIL TRUE)
+  add_test(NAME demo.locked-layout-holds COMMAND panelspun-demo --lock-check)
+  add_test(NAME demo.control-unlocked-layout-moves COMMAND panelspun-demo --lock-check --unlocked)
+  set_tests_properties(demo.control-unlocked-layout-moves PROPERTIES WILL_FAIL TRUE)
   set_tests_properties(demo.vulkan-region-composited demo.control-without-vulkan-region-fails
     demo.all-features-device demo.control-default-device-lacks-features
     demo.redraw-from-worker-thread demo.control-no-redraw-without-wake
     demo.update-while-minimized demo.control-no-update-without-wake
     demo.input-reaches-focused-panel demo.control-keys-need-a-focus-click
     demo.tick-wakes-idle-loop demo.control-no-tick-stays-idle
-    demo.polyline-drawn demo.control-no-polyline-fails PROPERTIES RUN_SERIAL TRUE)
+    demo.polyline-drawn demo.control-no-polyline-fails
+    demo.locked-layout-holds demo.control-unlocked-layout-moves PROPERTIES RUN_SERIAL TRUE)
 endif()

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -165,6 +166,8 @@ int main(int argc, char** argv) {
     bool tick = true;
     bool polylineCheck = false;
     bool polyline = true;
+    bool lockCheck = false;
+    bool locked = true;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) screenshot = argv[++i];
@@ -182,11 +185,14 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--no-tick")) tick = false;
         else if (!std::strcmp(argv[i], "--polyline-check")) polylineCheck = true;
         else if (!std::strcmp(argv[i], "--no-polyline")) polyline = false;
+        else if (!std::strcmp(argv[i], "--lock-check")) lockCheck = true;
+        else if (!std::strcmp(argv[i], "--unlocked")) locked = false;
         else {
             std::fprintf(stderr,
                          "usage: panelspun-demo [--frames N] [--screenshot out.bmp] [--check] [--validate] "
                          "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]] "
-                         "[--input-check [--no-focus-click]] [--tick-check HZ [--no-tick]] [--polyline-check [--no-polyline]]\n");
+                         "[--input-check [--no-focus-click]] [--tick-check HZ [--no-tick]] [--polyline-check [--no-polyline]] "
+                         "[--lock-check [--unlocked]]\n");
             return 2;
         }
     }
@@ -207,6 +213,7 @@ int main(int argc, char** argv) {
     config.vulkanValidation = validate;
     config.vulkanAllFeatures = allFeatures;
     config.tickHz = tickCheck > 0 && tick ? tickCheck : 0;
+    config.lockLayout = lockCheck && locked;
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, tree, &error);
     if (!window) {
@@ -248,7 +255,54 @@ int main(int argc, char** argv) {
     window->setPanel("actions", std::move(actions));
 
     int rc = 0;
-    if (inputCheck) {
+    if (lockCheck) {
+        // A worker drags the first split handle 100 px; a locked layout must not move.
+        std::string before;
+        std::thread worker([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            before = window->layout().serialize();
+            int count = 0;
+            SDL_Window** windows = SDL_GetWindows(&count);
+            SDL_Window* w = count > 0 ? windows[0] : nullptr;
+            SDL_free(windows);
+            const SDL_WindowID id = SDL_GetWindowID(w);
+            const float density = std::max(1.0f, SDL_GetWindowPixelDensity(w));
+            const SplitHandle h = window->layout().handles().front();
+            const float x = (h.rect.x + h.rect.w * 0.5f) / density;
+            const float y = (h.rect.y + h.rect.h * 0.5f) / density;
+            SDL_Event down{};
+            down.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            down.button.windowID = id;
+            down.button.button = SDL_BUTTON_LEFT;
+            down.button.down = true;
+            down.button.clicks = 1;
+            down.button.x = x;
+            down.button.y = y;
+            post(down);
+            SDL_Event move{};
+            move.type = SDL_EVENT_MOUSE_MOTION;
+            move.motion.windowID = id;
+            move.motion.state = SDL_BUTTON_LMASK;
+            move.motion.x = h.axis == Axis::Horizontal ? x - 100.0f : x;
+            move.motion.y = h.axis == Axis::Horizontal ? y : y - 100.0f;
+            post(move);
+            SDL_Event up = down;
+            up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+            up.button.down = false;
+            up.button.x = move.motion.x;
+            up.button.y = move.motion.y;
+            post(up);
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        rc = window->run();
+        worker.join();
+        const bool moved = window->layout().serialize() != before;
+        std::printf("lock: the layout %s after a 100 px handle drag%s\n", moved ? "moved" : "held",
+                    locked ? "" : " (unlocked)");
+        if (rc == 0 && moved) rc = 3;
+    } else if (inputCheck) {
         // A worker posts a click, a key, a wheel notch, relative motion and a focus loss, as SDL would.
         std::thread worker([&]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(400));

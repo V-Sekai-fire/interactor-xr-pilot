@@ -51,6 +51,11 @@ struct Window::Impl {
         return Rect{r.x, r.y + hh, r.w, r.h - hh};
     }
     Panel* panelAt(int px, int py, std::string* id, Rect* content);
+    // The split handle under a point, or -1; a locked layout has none to grab.
+    int handleAt(float px, float py) const {
+        if (config.lockLayout) return -1;
+        return tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+    }
     bool forward(const std::string& id, PointerAction action, float px, float py, int button, float dx = 0.0f,
                  float dy = 0.0f);
     bool forwardKey(const SDL_KeyboardEvent& k);
@@ -259,7 +264,7 @@ void Window::Impl::handle(const SDL_Event& e) {
             dirty = forward(capturedPanel, PointerAction::Move, px, py, 0, dx, dy) || dirty;
             break;
         }
-        int node = tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+        int node = handleAt(px, py);
         if (node != hoverNode) {
             hoverNode = node;
             dirty = true;
@@ -285,7 +290,7 @@ void Window::Impl::handle(const SDL_Event& e) {
             dirty = forward(focusedPanel, PointerAction::Down, px, py, e.button.button) || dirty;
             break;
         }
-        int node = tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+        int node = handleAt(px, py);
         if (node != -1 && e.button.button == SDL_BUTTON_LEFT) {
             dragNode = node;
             dirty = true;
