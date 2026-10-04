@@ -9,6 +9,9 @@
 #include "xrpilot/Png.h"
 #include "xrpilot/Rotation.h"
 #include "xrpilot/SpanLog.h"
+#include "xrpilot/TraceStore.h"
+
+#include <sqlite3.h>
 
 #include <oxrsys/protocol/FecCodec.h>
 
@@ -27,6 +30,15 @@ namespace
 {
 
 int failures = 0;
+
+int64_t countRows(sqlite3* db, const char* sql)
+{
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(db, sql, -1, &s, nullptr);
+    const int64_t n = sqlite3_step(s) == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    return n;
+}
 
 void check(bool ok, const char* what)
 {
@@ -294,6 +306,67 @@ const std::map<std::string, std::function<void()>> cases = {
          slow.end("a", true, 10);
          slow.begin("b", "look", "{}", 10 + SpanDuckMs + 1);
          check(slow.recent().size() == 2, "control: the same tool SpanDuckMs after the last ended gets its own span");
+     }},
+    {"traces.etnf-maskscore-rows",
+     [] {
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 1700000000000, 5000, &error), "a store opens in memory");
+         TraceFrame dark;
+         dark.width = 32;
+         dark.height = 16;
+         dark.rgba.assign(32 * 16 * 4, 0);
+         dark.encoded.assign(64, uint8_t(1));
+         dark.encodedWidth = 64;
+         dark.encodedHeight = 16;
+         TraceFrame light = dark;
+         std::fill(light.rgba.begin(), light.rgba.end(), uint8_t(255));
+         store.begin("1", "plan", "{\"todo_list\":[]}", 5000);
+         store.begin("2", "reach", "", 5010);
+         check(store.wantsFrame(), "a span that begins wants its input frame");
+         store.frame(dark);
+         check(!store.wantsFrame(), "one frame serves every waiting span");
+         store.command("reach left 0 1 -0.5", true, 5012);
+         store.end("2", true, 5020);
+         store.frame(light);
+         store.begin("3", "screenshot", "", 5030);
+         store.flush();
+         sqlite3* db = store.db();
+         const std::function<int64_t(const char*)> count = [db](const char* sql) { return countRows(db, sql); };
+         check(count("SELECT count(*) FROM span") == 3, "every begun span is a row");
+         check(count("SELECT count(*) FROM span_end") == 1, "only the ended span has an end");
+         check(count("SELECT count(*) FROM span_parent WHERE parent_span_id = 1") == 2, "spans begun inside the plan name it as parent");
+         check(count("SELECT count(*) FROM span_detail") == 1, "an empty detail is no row");
+         check(count("SELECT count(*) FROM span_command WHERE span_id = 2") == 1, "the command is in the running span");
+         check(count("SELECT count(*) FROM maskscore_root") == 2, "the spans with an input frame are MaskScore roots");
+         check(count("SELECT count(*) FROM maskscore_candidate") == 1, "the ended span has its edit candidate");
+         check(count("SELECT count(*) FROM asset") == 2, "one image per frame, shared by its spans");
+         check(count("SELECT count(*) FROM maskscore_score m JOIN metric USING (metric_id) "
+                     "WHERE name = 'gray_l1_8x8' AND metric_value > 0.99") == 1,
+               "dark to light measures the change");
+         check(count("SELECT count(*) FROM editscore_pair WHERE instruction = 'reach'") == 1,
+               "the EditScore pair carries the instruction");
+         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'pyrowave'") == 2,
+               "frames are kept as streamed");
+         check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
+         TraceFrame bare = dark;
+         bare.encoded.clear();
+         store.begin("4", "look", "", 5040);
+         store.frame(bare);
+         store.flush();
+         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 2,
+               "control: a frame without stream bytes is counted, not kept");
+         check(nullColumns(db).empty(), "no column holds a NULL");
+     }},
+    {"traces.null-check-control",
+     [] {
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 0, 0, &error), "a store opens");
+         sqlite3_exec(store.db(), "CREATE TABLE planted (a INTEGER); INSERT INTO planted VALUES (NULL);", nullptr, nullptr,
+                      nullptr);
+         const std::vector<std::string> nulls = nullColumns(store.db());
+         check(nulls.size() == 1 && nulls[0] == "planted.a", "control: a planted NULL is found");
      }},
     {"spans.nested-fold-and-expand",
      [] {

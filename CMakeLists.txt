@@ -43,9 +43,12 @@ add_library(xrpilot_core STATIC
     core/src/Png.cpp
     core/src/Rotation.cpp
     core/src/SpanLog.cpp
+    core/src/TraceStore.cpp
+    third_party/sqlite/sqlite3.c
     core/src/Sparkline.cpp
 )
-target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE})
+target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite)
+target_compile_definitions(xrpilot_core PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_FOREIGN_KEYS=1)
 
 add_library(xrpilot_net STATIC core/src/Client.cpp)
 target_link_libraries(xrpilot_net PUBLIC xrpilot_core)
@@ -64,7 +67,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
-                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand rotation.euler-orders-match-axis-products
+                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-maskscore-rows traces.null-check-control rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})

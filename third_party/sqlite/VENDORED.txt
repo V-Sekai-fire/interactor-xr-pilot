@@ -1,0 +1,2 @@
+SQLite 3.47.0 amalgamation (sqlite3.c, sqlite3.h), public domain, https://sqlite.org
+Copied unmodified from V-Sekai-fire/fabric-zone thirdparty/sqlite at ed91d24.
