@@ -212,6 +212,9 @@ void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& an
     status_.refreshHz = announce.refreshRateHz;
     if (announce.renderHeight > 0)
         agent_.eyeAspect = float(announce.renderWidth / 2) / float(announce.renderHeight);
+    // A runtime that renders a fixed field of view says so; screenshot pixels map to rays through it.
+    std::copy(std::begin(announce.renderEyeTangents), std::end(announce.renderEyeTangents),
+              std::begin(agent_.renderTangents));
     lastVideoNs_ = monotonicNowNs();
     connectRequested_ = false;
     assembler_.reset();

@@ -36,6 +36,19 @@ void setSeated(AgentState& state, bool seated)
     }
 }
 
+void eyeHalfFov(const AgentState& state, float& horizontal, float& vertical)
+{
+    const float* t = state.renderTangents;
+    if (t[1] > t[0] && t[2] > t[3])
+    {
+        horizontal = std::atan(std::max(-t[0], t[1]));
+        vertical = std::atan(std::max(t[2], -t[3]));
+        return;
+    }
+    vertical = std::clamp(state.verticalFovDegrees, 30.0f, 170.0f) * 0.5f * DegreesToRadians;
+    horizontal = std::atan(std::tan(vertical) * std::max(state.eyeAspect, 0.1f));
+}
+
 void poseQuaternion(const Pose& pose, float out[4])
 {
     toQuaternion(pose.rotation, out);
@@ -78,8 +91,9 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
     addHumanKeys(state, packet);
 
     packet.ipd = state.ipd;
-    const float halfV = std::clamp(state.verticalFovDegrees, 30.0f, 170.0f) * 0.5f * DegreesToRadians;
-    const float halfH = std::atan(std::tan(halfV) * std::max(state.eyeAspect, 0.1f));
+    float halfH = 0.0f;
+    float halfV = 0.0f;
+    eyeHalfFov(state, halfH, halfV);
     packet.eyeFov[0] = -halfH;
     packet.eyeFov[1] = halfH;
     packet.eyeFov[2] = halfV;

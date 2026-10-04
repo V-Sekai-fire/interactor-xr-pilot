@@ -199,7 +199,7 @@ public:
     void recordVulkan(const VulkanRegionFrame& frame) override
     {
         if (ready_)
-            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height, true);
+            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height, false);
     }
 
 private:
@@ -454,7 +454,12 @@ public:
                                              std::to_string(s.refreshHz) + " Hz"
                                        : "");
         autoConnect_->setValue(s.autoConnect);
-        fovLabel_->setText("Vertical FOV " + std::to_string(int(std::lround(a.verticalFovDegrees))) + " deg");
+        float halfH = 0.0f;
+        float halfV = 0.0f;
+        eyeHalfFov(a, halfH, halfV);
+        const bool runtimeFov = a.renderTangents[1] > a.renderTangents[0];
+        fovLabel_->setText("Vertical FOV " + std::to_string(int(std::lround(2.0f * halfV * 57.29578f))) + " deg" +
+                           (runtimeFov ? ", set by the runtime" : ""));
         controllers_->setValue(a.hands[1].present);
         pointing_->setValue(a.pointing);
         seated_->setValue(a.seated);

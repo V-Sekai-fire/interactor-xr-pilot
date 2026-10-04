@@ -14,7 +14,7 @@ include(FetchContent)
 FetchContent_Declare(
     oxrsys
     GIT_REPOSITORY https://github.com/V-Sekai-fire/interactor-oxrsys.git
-    GIT_TAG eb9295ebd2e60a5c9ada006bb9b982873cadab2d
+    GIT_TAG 7e325940e6ba3be7de65b3dbb5d52006350b4994
     SOURCE_SUBDIR none
 )
 # PyroWave's C API (MIT) and the Granite subset it pins, at the commits oxrsys uses.
@@ -65,7 +65,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
                       json.malformed-rejected rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
-                      commands.head-takes-a-rotation-matrix)
+                      commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # Installing OXRSys into the per-user folders, MPL-2.0 like the tray it serves; no SDL, so CI tests it.
