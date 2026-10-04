@@ -2,6 +2,7 @@
 
 #include "xrpilot/Tray.h"
 
+#include "xrpilot/Install.h"
 #include "xrpilot/Json.h"
 
 #include <algorithm>
@@ -286,78 +287,34 @@ std::string stateFolder()
     return native(environment("LOCALAPPDATA") + "/OXRSys");
 }
 
-// Copies a packaged tree into the per-user install, skipping files already equal in size and time;
-// a file an app still has loaded is left as it is.
-void copyTree(const fs::path& from, const fs::path& to)
-{
-    std::error_code error;
-    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(from, error))
-    {
-        if (!entry.is_regular_file())
-            continue;
-        const fs::path target = to / fs::relative(entry.path(), from);
-        if (fs::exists(target) && fs::file_size(target, error) == entry.file_size() &&
-            fs::last_write_time(target, error) == entry.last_write_time())
-            continue;
-        fs::create_directories(target.parent_path(), error);
-        fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, error);
-    }
-}
-
-// A package ships the runtime and driver beside the app, but Windows will not load a packaged DLL
-// into another app's process, so they are copied out to installBase().
-void installPackagedFiles()
+// A package ships the runtime and driver beside the app, which sits in the package's bin folder.
+fs::path packageRoot()
 {
     const char* base = SDL_GetBasePath();
-    if (base == nullptr)
-        return;
-    const fs::path package = fs::path(base).parent_path().parent_path();
-    if (!fs::exists(package / "runtime" / "oxrsys-runtime.json"))
-        return;
-    copyTree(package / "runtime", fs::path(installBase()) / "runtime");
-    copyTree(package / "driver" / "oxrsys", fs::path(installBase()) / "driver" / "oxrsys");
+    return base != nullptr ? fs::path(base).parent_path().parent_path() : fs::path();
 }
 
-// An OXRSys build to install from when the pilot is not packaged: the workspace's oxrsys checkout
-// beside this one, as windows_build.ps1 leaves it.
+// An OXRSys build when the pilot is not packaged: the workspace's oxrsys checkout beside this one,
+// as windows_build.ps1 leaves it.
 fs::path oxrsysBuild()
 {
     const char* base = SDL_GetBasePath();
-    if (base == nullptr)
-        return {};
-    const fs::path build = fs::path(base).parent_path().parent_path().parent_path() / "oxrsys" / "build" / "windows";
-    std::error_code error;
-    return fs::exists(build / "runtime" / "liboxrsys-runtime.dll", error) &&
-                   fs::exists(build / "driver" / "oxrsys" / "driver.vrdrivermanifest", error)
-               ? build
-               : fs::path();
+    return base != nullptr ? fs::path(base).parent_path().parent_path().parent_path() / "oxrsys" / "build" / "windows"
+                           : fs::path();
 }
 
-// Puts the runtime and driver in installBase(), as windows_build.ps1 -Install does; false when there
-// is neither a package nor a build to install from.
-bool installRuntime()
+// Windows will not load a packaged DLL into another app's process, so a package's runtime and driver
+// are copied out to installBase(); unpackaged, they come from the oxrsys build.
+bool installRuntime(std::string* error)
 {
-    installPackagedFiles();
-    if (fs::exists(fs::path(installedRuntimeManifest())))
-        return true;
-    const fs::path build = oxrsysBuild();
-    if (build.empty())
-        return false;
-    const fs::path runtime = fs::path(installBase()) / "runtime";
-    const fs::path driver = fs::path(installBase()) / "driver" / "oxrsys";
-    std::error_code error;
-    fs::create_directories(runtime, error);
-    fs::copy_file(build / "runtime" / "liboxrsys-runtime.dll", runtime / "liboxrsys-runtime.dll",
-                  fs::copy_options::overwrite_existing, error);
-    Json entry;
-    entry.set("name", Json::string("OXRSys Runtime"));
-    entry.set("library_path", Json::string(".\\liboxrsys-runtime.dll"));
-    Json manifest;
-    manifest.set("file_format_version", Json::string("1.0.0"));
-    manifest.set("runtime", entry);
-    std::ofstream(runtime / "oxrsys-runtime.json", std::ios::binary | std::ios::trunc) << xrpilot::writeJson(manifest);
-    copyTree(build / "driver" / "oxrsys", driver);
-    return fs::exists(fs::path(installedRuntimeManifest())) && fs::exists(driver / "driver.vrdrivermanifest");
+    const fs::path source = xrpilot::isOxrsysSource(packageRoot()) ? packageRoot() : oxrsysBuild();
+    return xrpilot::installOxrsys(source, fs::path(installBase()), error);
+}
+
+void installPackagedFiles()
+{
+    if (xrpilot::isOxrsysSource(packageRoot()))
+        xrpilot::installOxrsys(packageRoot(), fs::path(installBase()), nullptr);
 }
 
 Json openVrPaths()
@@ -752,9 +709,10 @@ void Tray::bind()
 
 void Tray::bindNow(const std::string&)
 {
-    if (!installRuntime())
+    std::string error;
+    if (!installRuntime(&error))
     {
-        setMessage("Nothing to install: no OXRSys package or build beside XR Pilot");
+        setMessage("Not installed: " + error);
         return;
     }
     shownRuntimes_.clear();
