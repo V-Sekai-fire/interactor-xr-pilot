@@ -44,6 +44,10 @@ struct DrawContext {
 // Wheel carries its notches in dy. While the mouse is relative, x and y stay put and dx, dy carry the motion.
 enum class PointerAction : std::uint8_t { Down, Up, Move, Leave, Wheel };
 
+enum class PointerSource : std::uint8_t { Mouse, Touch };
+
+// The mouse is pointer 0; each finger of a multi-touch window has its own id from Down to Up, and
+// a touch arrives as button 1.
 struct PointerEvent {
     PointerAction action = PointerAction::Move;
     float x = 0.0f;
@@ -51,6 +55,8 @@ struct PointerEvent {
     int button = 0;
     float dx = 0.0f;
     float dy = 0.0f;
+    std::uint64_t pointerId = 0;
+    PointerSource source = PointerSource::Mouse;
 };
 
 // An SDL scancode, so keys keep their place whatever the layout; mod is SDL's SDL_Keymod.
@@ -61,8 +67,12 @@ struct KeyEvent {
     std::uint16_t mod = 0;
 };
 
-// A stroked open line through count points, in panel-local pixels.
+// Drawing in panel-local pixels; text size is in pixels at scale 1 and alignX is 0 left, 0.5 centre, 1 right.
 void drawPolyline(DrawContext& ctx, const float* xy, int count, Color color, float width);
+void drawRect(DrawContext& ctx, float x, float y, float w, float h, float radius, Color color);
+// A filled disc, or a ring of strokeWidth when strokeWidth is above zero.
+void drawCircle(DrawContext& ctx, float cx, float cy, float r, Color color, float strokeWidth = 0.0f);
+void drawText(DrawContext& ctx, const std::string& text, float size, float x, float y, float alignX, Color color);
 
 class Panel {
 public:

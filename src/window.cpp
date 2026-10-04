@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cmath>
 #include <map>
+#include <vector>
 
 #include "font.h"
 #include "vulkan_presenter.h"
@@ -41,11 +42,16 @@ struct Window::Impl {
     std::string capturePath;
     bool captureOk = false;
     float scale = 1.0f;
+    // Each finger down on a panel, held by that panel until it lifts.
+    std::map<std::uint64_t, std::string> touches;
+#if PANELSPUN_GAMEPAD
+    std::vector<SDL_Gamepad*> pads;
+#endif
 
     explicit Impl(SplitTree t) : tree(std::move(t)) {}
     ~Impl();
 
-    int headerHeight() const { return static_cast<int>(std::lround(24.0f * scale)); }
+    int headerHeight() const { return config.panelHeaders ? static_cast<int>(std::lround(24.0f * scale)) : 0; }
     Rect contentRect(const Rect& r) const {
         int hh = std::min(headerHeight(), r.h);
         return Rect{r.x, r.y + hh, r.w, r.h - hh};
@@ -57,7 +63,8 @@ struct Window::Impl {
         return tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
     }
     bool forward(const std::string& id, PointerAction action, float px, float py, int button, float dx = 0.0f,
-                 float dy = 0.0f);
+                 float dy = 0.0f, std::uint64_t pointerId = 0, PointerSource source = PointerSource::Mouse);
+    void handleFinger(const SDL_TouchFingerEvent& f, Uint32 type);
     bool forwardKey(const SDL_KeyboardEvent& k);
     void handle(const SDL_Event& e);
     enum class Frame { Presented, Skipped, Failed };
@@ -77,6 +84,10 @@ tvg::Shape* rectShape(float x, float y, float w, float h, Color c, float radius 
 
 Window::Impl::~Impl() {
     panels.clear();
+#if PANELSPUN_GAMEPAD
+    for (SDL_Gamepad* pad : pads) SDL_CloseGamepad(pad);
+    if (config.gamepads) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+#endif
     canvas.reset();
     if (tvgReady) tvg::Initializer::term();
     presenter.shutdown();
@@ -93,16 +104,27 @@ Window::~Window() = default;
 std::unique_ptr<Window> Window::create(const WindowConfig& config, SplitTree layout, std::string* error) {
     std::unique_ptr<Impl> impl = std::make_unique<Impl>(std::move(layout));
     impl->config = config;
+    // With multi-touch the fingers come as finger events only, not doubled as a mouse.
+    if (config.multiTouch) SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         if (error) *error = std::string("SDL_InitSubSystem(VIDEO): ") + SDL_GetError();
         return nullptr;
     }
+#if PANELSPUN_GAMEPAD
+    if (config.gamepads && !SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        if (error) *error = std::string("SDL_InitSubSystem(GAMEPAD): ") + SDL_GetError();
+        return nullptr;
+    }
+#else
+    impl->config.gamepads = false;
+#endif
     impl->window = SDL_CreateWindow(config.title.c_str(), config.width, config.height,
                                     SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (!impl->window) {
         if (error) *error = std::string("SDL_CreateWindow: ") + SDL_GetError();
         return nullptr;
     }
+    if (config.aspectRatio > 0.0f) SDL_SetWindowAspectRatio(impl->window, config.aspectRatio, config.aspectRatio);
     // Where window coordinates are pixels (Windows), the requested size is grown by the display scale.
     float density = SDL_GetWindowPixelDensity(impl->window);
     float extra = density > 0.0f ? SDL_GetWindowDisplayScale(impl->window) / density : 1.0f;
@@ -160,6 +182,29 @@ void Window::setRelativeMouse(bool on) {
     if (SDL_SetWindowRelativeMouseMode(impl_->window, on)) impl_->relative = on;
 }
 bool Window::relativeMouse() const { return impl_->relative; }
+
+bool Window::gamepad(GamepadState& state) const {
+    state = GamepadState{};
+#if PANELSPUN_GAMEPAD
+    if (impl_->pads.empty()) return false;
+    SDL_Gamepad* pad = impl_->pads.front();
+    constexpr float kAxis = 32767.0f;
+    state.connected = true;
+    state.leftX = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX) / kAxis, -1.0f, 1.0f);
+    state.leftY = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY) / kAxis, -1.0f, 1.0f);
+    state.rightX = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX) / kAxis, -1.0f, 1.0f);
+    state.rightY = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY) / kAxis, -1.0f, 1.0f);
+    state.leftTrigger = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) / kAxis, 0.0f, 1.0f);
+    state.rightTrigger = std::clamp(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / kAxis, 0.0f, 1.0f);
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 32; ++b)
+        if (SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(b))) state.buttons |= 1u << b;
+    const char* name = SDL_GetGamepadName(pad);
+    state.name = name ? name : "";
+    return true;
+#else
+    return false;
+#endif
+}
 void Window::captureNextFrame(std::string path) {
     impl_->capturePath = std::move(path);
     impl_->captureOk = false;
@@ -182,13 +227,13 @@ Panel* Window::Impl::panelAt(int px, int py, std::string* id, Rect* content) {
 }
 
 bool Window::Impl::forward(const std::string& id, PointerAction action, float px, float py, int button, float dx,
-                           float dy) {
+                           float dy, std::uint64_t pointerId, PointerSource source) {
     std::map<std::string, std::unique_ptr<Panel>, std::less<>>::iterator it = panels.find(id);
     if (it == panels.end()) return false;
     for (const LeafRect& l : leaves) {
         if (l.id != id) continue;
         Rect c = contentRect(l.rect);
-        PointerEvent e{action, px - c.x, py - c.y, button, dx, dy};
+        PointerEvent e{action, px - c.x, py - c.y, button, dx, dy, pointerId, source};
         return it->second->pointer(e);
     }
     return false;
@@ -200,6 +245,33 @@ bool Window::Impl::forwardKey(const SDL_KeyboardEvent& k) {
     if (it == panels.end()) return false;
     KeyEvent e{static_cast<int>(k.scancode), k.down, k.repeat, static_cast<std::uint16_t>(k.mod)};
     return it->second->key(e);
+}
+
+void Window::Impl::handleFinger(const SDL_TouchFingerEvent& f, Uint32 type) {
+    int pw = 0;
+    int ph = 0;
+    SDL_GetWindowSizeInPixels(window, &pw, &ph);
+    float px = f.x * static_cast<float>(pw);
+    float py = f.y * static_cast<float>(ph);
+    // The mouse is pointer 0, so fingers start at 1.
+    std::uint64_t pointer = static_cast<std::uint64_t>(f.fingerID) + 1;
+    std::map<std::uint64_t, std::string>::iterator held = touches.find(pointer);
+    if (type == SDL_EVENT_FINGER_DOWN) {
+        std::string id;
+        if (held != touches.end() || !panelAt(static_cast<int>(px), static_cast<int>(py), &id, nullptr)) return;
+        touches[pointer] = id;
+        dirty = forward(id, PointerAction::Down, px, py, 1, 0.0f, 0.0f, pointer, PointerSource::Touch) || dirty;
+        return;
+    }
+    if (held == touches.end()) return;
+    if (type == SDL_EVENT_FINGER_MOTION) {
+        dirty = forward(held->second, PointerAction::Move, px, py, 0, f.dx * pw, f.dy * ph, pointer, PointerSource::Touch) ||
+                dirty;
+        return;
+    }
+    std::string id = held->second;
+    touches.erase(held);
+    dirty = forward(id, PointerAction::Up, px, py, 1, 0.0f, 0.0f, pointer, PointerSource::Touch) || dirty;
 }
 
 void Window::Impl::handle(const SDL_Event& e) {
@@ -317,6 +389,34 @@ void Window::Impl::handle(const SDL_Event& e) {
         }
         break;
     }
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED:
+        if (config.multiTouch) handleFinger(e.tfinger, e.type);
+        break;
+#if PANELSPUN_GAMEPAD
+    case SDL_EVENT_GAMEPAD_ADDED:
+        if (config.gamepads) {
+            if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) pads.push_back(pad);
+            dirty = true;
+        }
+        break;
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        for (std::vector<SDL_Gamepad*>::iterator it = pads.begin(); it != pads.end(); ++it) {
+            if (SDL_GetGamepadID(*it) != e.gdevice.which) continue;
+            SDL_CloseGamepad(*it);
+            pads.erase(it);
+            dirty = true;
+            break;
+        }
+        break;
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        dirty = true;
+        break;
+#endif
     default:
         break;
     }
@@ -360,24 +460,25 @@ Window::Impl::Frame Window::Impl::render() {
         if (l.rect.w <= 0 || l.rect.h <= 0) continue;
         Rect c = contentRect(l.rect);
         float hh = static_cast<float>(c.y - l.rect.y);
-        canvas->add(rectShape(static_cast<float>(l.rect.x), static_cast<float>(l.rect.y), static_cast<float>(l.rect.w), hh,
-                              theme.header));
         std::map<std::string, std::unique_ptr<Panel>, std::less<>>::iterator it = panels.find(l.id);
         Panel* panel = it == panels.end() ? nullptr : it->second.get();
-
-        tvg::Text* title = tvg::Text::gen();
-        title->font(detail::kDefaultFont);
-        title->size(13.0f * scale * 0.75f);
-        title->text(panel ? panel->title().c_str() : l.id.c_str());
-        title->fill(theme.text.r, theme.text.g, theme.text.b);
-        title->align(0.0f, 0.5f);
-        title->translate(l.rect.x + 8.0f * scale, l.rect.y + hh * 0.5f);
-        tvg::Shape* titleClip = rectShape(static_cast<float>(l.rect.x), static_cast<float>(l.rect.y),
-                                          static_cast<float>(l.rect.w), hh, theme.header);
-        tvg::Scene* titleScene = tvg::Scene::gen();
-        titleScene->add(title);
-        titleScene->clip(titleClip);
-        canvas->add(titleScene);
+        if (hh > 0.0f) {
+            canvas->add(rectShape(static_cast<float>(l.rect.x), static_cast<float>(l.rect.y), static_cast<float>(l.rect.w), hh,
+                                  theme.header));
+            tvg::Text* title = tvg::Text::gen();
+            title->font(detail::kDefaultFont);
+            title->size(13.0f * scale * 0.75f);
+            title->text(panel ? panel->title().c_str() : l.id.c_str());
+            title->fill(theme.text.r, theme.text.g, theme.text.b);
+            title->align(0.0f, 0.5f);
+            title->translate(l.rect.x + 8.0f * scale, l.rect.y + hh * 0.5f);
+            tvg::Shape* titleClip = rectShape(static_cast<float>(l.rect.x), static_cast<float>(l.rect.y),
+                                              static_cast<float>(l.rect.w), hh, theme.header);
+            tvg::Scene* titleScene = tvg::Scene::gen();
+            titleScene->add(title);
+            titleScene->clip(titleClip);
+            canvas->add(titleScene);
+        }
 
         if (c.w <= 0 || c.h <= 0) continue;
         canvas->add(rectShape(static_cast<float>(c.x), static_cast<float>(c.y), static_cast<float>(c.w),
