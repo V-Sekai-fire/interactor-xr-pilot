@@ -68,6 +68,25 @@ private:
     float lastScale_ = 1.0f;
 };
 
+// A labelled on/off box; setValue changes it without calling onChange.
+class Toggle : public Widget {
+public:
+    Toggle(std::string text, bool value, std::function<void(bool)> onChange)
+        : text_(std::move(text)), value_(value), onChange_(std::move(onChange)) {}
+    bool value() const { return value_; }
+    void setValue(bool value) { value_ = value; }
+    float height(float scale) const override;
+    void draw(DrawContext& ctx, float x, float y, float w) override;
+    bool pointer(const PointerEvent& e, float x, float y, float w) override;
+
+private:
+    std::string text_;
+    bool value_;
+    std::function<void(bool)> onChange_;
+    bool pressed_ = false;
+    float lastScale_ = 1.0f;
+};
+
 // A panel that stacks widgets top to bottom with padding.
 class WidgetPanel : public Panel {
 public:

@@ -1,62 +1,66 @@
-# interactor-xr-pilot
-Lets an AI agent see and drive OpenXR apps through OXRSys: eye frames in, head, hands and buttons out, over MCP.
+# interactor-panelspun
+Docking panel UI on SDL3 windows and ThorVG canvases, Apache-2.0 OR MIT
 
-XR Pilot is a computer-use tool for VR. An agent takes a screenshot of what an OpenXR app shows the
-left eye, then turns the head, walks, points a controller at a pixel, clicks with the trigger, or
-presses buttons, the way a desktop computer-use driver moves a mouse. The app runs on the desktop OpenXR runtime, and XR Pilot connects
-to it as a headset would, so neither the runtime nor the app needs changing.
+panelspun is a small C++20 library for desktop tool windows built from docked panels. Panels are
+leaves of a binary split tree; dragging a split resizes its neighbours within each panel's minimum
+size, and the layout round-trips through a line-based text format. Every panel draws into one ThorVG
+CPU canvas, and a panel can instead own a Vulkan region for content such as a decoded video preview.
 
 ## Pieces
 
-- `xr_pilot_mcp` (Lean 4, `lean/`): the MCP server an agent registers. JSON-RPC 2.0 over stdio, and
-  the pixel-to-ray maths (`XrPilot/Ray.lean`). It starts `xr-pilot` and drives it over that
-  process's stdin and stdout.
-- `xr-pilot` (C++20, `app/`, `core/`): the OXRSys client. It finds a runtime by its UDP announce,
-  streams the agent's head and controllers at 90 Hz, and decodes the PyroWave video on the GPU:
-  PyroWave decodes into planes and the Lean-authored `yuv420_to_rgbx` kernel from OXRSys packs RGBX,
-  on the same Vulkan device the window presents with. Frames come back to the CPU only for a
-  screenshot. The window, built with [panelspun](https://github.com/V-Sekai-fire/interactor-panelspun)
-  (SDL3 and ThorVG), shows the left eye and the agent's state.
+- `SplitTree` (`include/panelspun/split_tree.h`): layout into pixel rects, split-handle hit tests and
+  clamped drags, docking a panel left, right, above or below another, removal that collapses the
+  parent (the last panel cannot be removed), and `serialize` / `deserialize`.
+- `Window` (`include/panelspun/window.h`): an SDL3 window with a Vulkan swapchain, an event pump that
+  routes pointer events to panels in panel-local pixels, and a frame loop that redraws on change.
+- `Panel`, `Label`, `Button`, `Slider`, `WidgetPanel` (`include/panelspun/panel.h`, `widgets.h`).
 
-## Tools
+## How the Vulkan region works
 
-| Tool | What it does |
-|---|---|
-| `screenshot` | The left eye as a PNG, with the head pose and field of view |
-| `get_state` | Connection, eye size and field of view, head and hand poses, held inputs, frame counts |
-| `look` | Turns the head: yaw (positive turns left) and pitch (positive looks up), absolute or relative |
-| `move` | Walks the head forward, right and up, in metres |
-| `point_at` | Aims a controller through a screenshot pixel, from the eye, so its ray hits what the pixel shows |
-| `click` | `point_at`, a 150 ms hover, then a trigger press and release |
-| `press` | A button, trigger or grip, held for `hold_ms` (0 holds until `release_all`) |
-| `thumbstick` | Pushes a thumbstick for `duration_ms` |
-| `set_controllers` | Whether the app sees controllers |
-| `release_all` | Lets go of every input; the head stays where it is |
-| `wait` | Waits so the app can react |
+There is one swapchain, owned by the window. ThorVG draws the whole UI straight into a mapped,
+host-visible staging buffer, which is copied into the acquired swapchain image. A panel whose
+`usesVulkanRegion()` returns true is handed a window-owned image the size of its content rect, in
+`TRANSFER_DST_OPTIMAL`, with the window's command buffer and device (`VulkanRegionFrame`); after it
+records, the window copies that image over the panel's rect. `Window::vulkan()` exposes the instance,
+device and queue so a consumer can create its own resources on the same device. A consumer that records
+compute work, such as a GPU video decoder, sets `WindowConfig::vulkanAllFeatures`: the window then
+creates a Vulkan 1.3 device with every supported core feature enabled, and `VulkanContext` carries the
+instance and device create infos so a library that wraps an existing device can see what was enabled.
 
-Pixel arguments refer to the last screenshot, so `point_at` and `click` refuse until one is taken.
+Two alternatives were set aside. A native child window per region is not portable across SDL3's
+backends, and a second swapchain on the same surface is not allowed. The cost of this design is that
+UI cannot yet be drawn over a Vulkan region; overlays on a video preview are drawn by the region's
+own pass for now.
 
 ## Build
 
     cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
     cmake --build build
     ctest --test-dir build --output-on-failure
-    cd lean && lake build && lake build tests && .lake/build/bin/tests
 
-On Windows run CMake from a Visual Studio 2022 x64 developer prompt. `-DXRPILOT_BUILD_APP=OFF`
-builds and tests only the core, without a display or Vulkan.
+On Windows run these from a Visual Studio 2022 x64 developer prompt. On Linux SDL3 needs the X11 and
+Wayland development headers listed in `.github/workflows/ci.yml`. The Vulkan loader is found at run
+time through SDL; the headers come from SDL's Khronos copy unless `PANELSPUN_VULKAN_HEADERS_DIR`
+points elsewhere.
 
-## Run
+`build/panelspun-demo` opens three docked panels. With a display and a Vulkan device,
+`-DPANELSPUN_GPU_TESTS=ON` registers two more ctest cases: the demo reads back its presented frame
+and checks that the Vulkan clear colour fills the video region and no other panel, and a control run
+without the region must fail that check.
 
-Start an OpenXR app on OXRSys, then register the MCP server with your agent:
+## Vendored code
 
-    xr_pilot_mcp --pilot <path to xr-pilot>
+| Path | Upstream | Version | Licence |
+|---|---|---|---|
+| `third_party/SDL` | libsdl-org/SDL | `release-3.4.18` (git subtree, squashed) | Zlib |
+| `third_party/thorvg` | thorvg/thorvg | `v1.1.2` (git subtree, squashed) | MIT |
+| `third_party/inter` | rsms/inter | `v4.1`, `Inter-Regular.ttf` | OFL-1.1 |
 
-Without `--pilot` it runs the `xr-pilot` next to itself. Only one client streams from an OXRSys
-runtime at a time, so close the OXRSys simulator or headset client first.
+SDL3 is built static with video and Vulkan only (no audio, GPU, render, camera, joystick, haptic,
+HIDAPI, power, sensor, dialog, tray or OpenGL). ThorVG is built from its sources by
+`cmake/thorvg.cmake` with the CPU engine and the SVG and TTF loaders, single-threaded.
 
 ## Licence
 
-Apache-2.0 OR MIT. `core/src/FrameAssembler.cpp`, `core/src/GpuDecoder.cpp` and their headers are
-ported from OXRSys and stay under MPL-2.0, file by file. `third_party/panelspun` carries its own
-licences.
+Dual-licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option
+(`SPDX-License-Identifier: Apache-2.0 OR MIT`). Vendored code keeps its own licence.

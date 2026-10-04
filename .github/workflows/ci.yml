@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
-# Builds xr-pilot and the Lean MCP server and runs their tests. The live path needs a GPU and an
-# OXRSys runtime, which runners lack.
 name: ci
 
 on:
@@ -13,46 +11,43 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
-  windows:
-    runs-on: windows-2025
-    timeout-minutes: 60
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Build
+
+      - name: Install SDL3 video headers
+        if: runner.os == 'Linux'
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
-      - name: Core tests
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev libxkbcommon-dev \
+            libdrm-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev \
+            libfribidi-dev libthai-dev libwayland-dev wayland-protocols libdecor-0-dev
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
         run: ctest --test-dir build --output-on-failure
-      - uses: leanprover/lean-action@v1
-        with:
-          lake-package-directory: lean
-          test: false
-      - name: Lean tests
-        working-directory: lean
+
+      - name: Name what this job does not check
         shell: bash
         run: |
-          lake build tests
-          .lake/build/bin/tests
-
-  linux-core:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Core
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXRPILOT_BUILD_APP=OFF
-          cmake --build build
-          ctest --test-dir build --output-on-failure
-      - uses: leanprover/lean-action@v1
-        with:
-          lake-package-directory: lean
-          test: false
-      - name: Lean tests
-        working-directory: lean
-        run: |
-          lake build tests
-          .lake/build/bin/tests
+          echo "UNCHECKED (1): panelspun-demo is built but not run; runners have no display or Vulkan device,"
+          echo "so demo.vulkan-region-composited and its control are registered only with -DPANELSPUN_GPU_TESTS=ON."

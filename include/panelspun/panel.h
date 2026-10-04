@@ -41,14 +41,28 @@ struct DrawContext {
     const Theme* theme = nullptr;
 };
 
-enum class PointerAction : std::uint8_t { Down, Up, Move, Leave };
+// Wheel carries its notches in dy. While the mouse is relative, x and y stay put and dx, dy carry the motion.
+enum class PointerAction : std::uint8_t { Down, Up, Move, Leave, Wheel };
 
 struct PointerEvent {
     PointerAction action = PointerAction::Move;
     float x = 0.0f;
     float y = 0.0f;
     int button = 0;
+    float dx = 0.0f;
+    float dy = 0.0f;
 };
+
+// An SDL scancode, so keys keep their place whatever the layout; mod is SDL's SDL_Keymod.
+struct KeyEvent {
+    int scancode = 0;
+    bool down = false;
+    bool repeat = false;
+    std::uint16_t mod = 0;
+};
+
+// A stroked open line through count points, in panel-local pixels.
+void drawPolyline(DrawContext& ctx, const float* xy, int count, Color color, float width);
 
 class Panel {
 public:
@@ -63,6 +77,14 @@ public:
         (void)e;
         return false;
     }
+
+    // Keys go to the panel last clicked. Returns true when the event changed what the panel draws.
+    virtual bool key(const KeyEvent& e) {
+        (void)e;
+        return false;
+    }
+    // The window lost keyboard focus, so held keys and mouse capture should be let go.
+    virtual void focusLost() {}
 
     // A panel returning true has its content rect filled by recordVulkan instead of draw.
     virtual bool usesVulkanRegion() const { return false; }
