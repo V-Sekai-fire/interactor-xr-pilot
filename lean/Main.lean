@@ -2,23 +2,37 @@
 xr_pilot_mcp: the MCP server an agent registers. It starts xr-pilot, the OXRSys client, and drives
 it over that process's stdin and stdout.
 
-  xr_pilot_mcp [--pilot <path to xr-pilot>]
+  xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>]
 
-Without --pilot it runs the xr-pilot next to itself.
+Without --pilot it runs the xr-pilot next to itself. Without --http it speaks MCP over its stdin and
+stdout; with it, MCP's streamable HTTP transport at http://127.0.0.1:<port>/mcp.
 
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
 import XrPilot
 open Lean XrPilot
 
-def pilotPath (args : List String) : IO String := do
-  match args with
-  | ["--pilot", path] => return path
-  | [] =>
+structure McpOptions where
+  pilot : Option String := none
+  http : Option UInt16 := none
+
+def parseOptions : List String → McpOptions → IO McpOptions
+  | [], o => return o
+  | "--pilot" :: path :: rest, o => parseOptions rest { o with pilot := some path }
+  | "--http" :: port :: rest, o =>
+    match port.toNat? with
+    | some n => if n > 0 && n < 65536 then parseOptions rest { o with http := some n.toUInt16 }
+                else throw (IO.userError s!"--http needs a port, got {port}")
+    | none => throw (IO.userError s!"--http needs a port, got {port}")
+  | _, _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>]")
+
+def pilotPath (options : McpOptions) : IO String := do
+  match options.pilot with
+  | some path => return path
+  | none =>
     let dir := (← IO.appPath).parent.getD "."
     let exe := if System.Platform.isWindows then "xr-pilot.exe" else "xr-pilot"
     return (dir / exe).toString
-  | _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>]")
 
 abbrev PilotConfig : IO.Process.StdioConfig := { stdin := .piped, stdout := .piped, stderr := .inherit }
 
@@ -34,7 +48,8 @@ def ask (pilot : IO.Process.Child PilotConfig) (cmd : String) : IO (Option Strin
   catch _ => return none
 
 def main (args : List String) : IO UInt32 := do
-  let path ← pilotPath args
+  let options ← parseOptions args {}
+  let path ← pilotPath options
   let pilotRef ← IO.mkRef (← spawnPilot path)
   let temp := (← IO.getEnv "TEMP").getD ((← IO.getEnv "TMPDIR").getD "/tmp")
   let backend : Backend := {
@@ -55,6 +70,10 @@ def main (args : List String) : IO UInt32 := do
     sleepMs := fun ms => IO.sleep ms.toUInt32
     screenshotPath := (System.FilePath.mk temp / s!"xr-pilot-{← IO.monoMsNow}.png").toString
     lastShot := ← IO.mkRef (0.0, 0.0) }
+  if let some port := options.http then
+    IO.eprintln s!"xr_pilot_mcp: MCP at http://127.0.0.1:{port}/mcp"
+    serveMcpHttp port (handleLine backend)
+    return 0
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   repeat

@@ -8,6 +8,7 @@
 #include "xrpilot/Json.h"
 #include "xrpilot/Png.h"
 #include "xrpilot/Rotation.h"
+#include "xrpilot/SpanLog.h"
 
 #include <oxrsys/protocol/FecCodec.h>
 
@@ -239,6 +240,60 @@ const std::map<std::string, std::function<void()>> cases = {
                                  "hand middle 0 0 0 1 0 0 0 1 0 0 0 1", "trigger right", "button jump 1", "fov 5",
                                  "head 0 0 0 1 0 0 0 1 0 0 0 1 extra"})
              check(runCommand(bad, s, status, 0).reply.rfind("{\"ok\":false", 0) == 0, bad);
+     }},
+    {"spans.lines-parse",
+     [] {
+         SpanLine s;
+         check(parseSpanLine("span begin 42 click {\"x\":568,\"y\":632}", s) && s.begin && s.id == "42" &&
+                   s.name == "click" && s.detail == "{\"x\":568,\"y\":632}",
+               "a begin carries id, tool and arguments");
+         check(parseSpanLine("span begin 7 get_state", s) && s.name == "get_state" && s.detail.empty(),
+               "a begin without arguments");
+         check(parseSpanLine("span end 42 error", s) && !s.begin && !s.ok, "an end carries its status");
+         for (const char* bad : {"span", "span begin", "span begin 1", "span end 1", "span end 1 maybe", "span open 1 x",
+                                 "state"})
+             check(!parseSpanLine(bad, s), bad);
+         AgentState st;
+         ClientStatus status;
+         check(runCommand("span begin 1 look", st, status, 0).reply == "{\"ok\":true}", "the pilot accepts a span mark");
+         check(runCommand("span end 1 bogus", st, status, 0).reply.rfind("{\"ok\":false", 0) == 0,
+               "a malformed span mark is refused");
+     }},
+    {"spans.begin-end-and-children",
+     [] {
+         SpanLog log;
+         log.begin("1", "click", "{}", 1000);
+         log.child("state", true, 1001);
+         log.child("hand right 0 0 0 1 0 0 0 1 0 0 0 1", true, 1002);
+         log.child("trigger right 1", false, 1100);
+         std::vector<Span> spans = log.recent();
+         check(spans.size() == 1 && spans[0].running() && spans[0].children.size() == 3, "an open span gathers its commands");
+         log.end("1", true, 1250);
+         spans = log.recent();
+         check(!spans[0].running() && spans[0].durationMs(9999) == 250, "the end fixes the duration at 250 ms");
+         check(!spans[0].ok, "a refused child marks its span as failed");
+         log.child("stray", true, 1300);
+         check(log.recent()[0].children.size() == 3, "control: a command with no open span is not attached");
+         log.end("nope", true, 1400);
+         check(log.recent()[0].endMs == 1250, "control: ending an unknown id changes nothing");
+     }},
+    {"spans.repeats-duck",
+     [] {
+         SpanLog log;
+         for (int i = 0; i < 5; ++i)
+         {
+             log.begin(std::to_string(i), "look", "{}", i * 300);
+             log.end(std::to_string(i), true, i * 300 + 50);
+         }
+         log.begin("9", "click", "{}", 2000);
+         std::vector<Span> spans = log.recent();
+         check(spans.size() == 2 && spans[0].count == 5 && spans[1].name == "click",
+               "five looks 250 ms apart duck into one span counting five");
+         SpanLog slow;
+         slow.begin("a", "look", "{}", 0);
+         slow.end("a", true, 10);
+         slow.begin("b", "look", "{}", 10 + SpanDuckMs + 1);
+         check(slow.recent().size() == 2, "control: the same tool SpanDuckMs after the last ended gets its own span");
      }},
     {"commands.json-string-escapes",
      [] {
