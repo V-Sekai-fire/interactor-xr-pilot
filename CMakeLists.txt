@@ -137,6 +137,10 @@ add_subdirectory(third_party/panelspun)
 add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
 target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${oxrsys_SOURCE_DIR}/kernels/simulator/spirv)
 target_link_libraries(xrpilot_gpu PUBLIC xrpilot_pyrowave)
+
+# A kept trace frame through scene-linear RGB (for OpenEXR) and back into PyroWave.
+add_executable(trace_roundtrip tools/trace_roundtrip.cpp)
+target_link_libraries(trace_roundtrip PRIVATE xrpilot_gpu xrpilot_core)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
 # The OXRSys tray, MPL-2.0 like the Home tray it is ported from.

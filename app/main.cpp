@@ -695,11 +695,12 @@ int main(int argc, char** argv)
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
     WindowConfig config;
     config.title = "OXRSys XR Pilot";
-    config.width = 1400;
+    config.width = 1600;
     config.height = 900;
     config.vulkanAllFeatures = true;
     config.tickHz = 90;
     config.lockLayout = true;
+    config.aspectRatio = 16.0f / 9.0f; // OBS captures the window into a 16:9 canvas
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
