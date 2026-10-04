@@ -10,8 +10,10 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "panelspun/widgets.h"
 #include "panelspun/window.h"
@@ -101,6 +103,65 @@ private:
     bool line_;
 };
 
+// Two hold buttons side by side over a touch stick, recording what each finger did to them.
+class TouchProbe : public WidgetPanel {
+public:
+    TouchProbe() : WidgetPanel("Touch") {
+        add(std::make_unique<HoldButton>("A", [this](bool on) { aHeld = on; }, 64.0f));
+        add(std::make_unique<HoldButton>("B", [this](bool on) { bHeld = on; }, 64.0f));
+        add(std::make_unique<TouchStick>([this](float x, float y) {
+            stickX = x;
+            (void)y;
+        }));
+    }
+    std::vector<Placement> placements() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return last_;
+    }
+    std::atomic<bool> aHeld{false};
+    std::atomic<bool> bHeld{false};
+    std::atomic<float> stickX{0.0f};
+
+protected:
+    std::vector<Placement> arrange(float width, float height, float scale) override {
+        (void)height;
+        float pad = 12.0f * scale;
+        float half = (width - 3.0f * pad) * 0.5f;
+        float stick = 160.0f * scale;
+        std::vector<Placement> out = {Placement{pad, pad, half}, Placement{2.0f * pad + half, pad, half},
+                                      Placement{pad, pad + 64.0f * scale + pad, stick}};
+        std::lock_guard<std::mutex> lock(mutex_);
+        last_ = out;
+        return out;
+    }
+
+private:
+    std::mutex mutex_;
+    std::vector<Placement> last_;
+};
+
+struct FingerTarget {
+    SDL_WindowID window = 0;
+    float width = 1.0f;
+    float height = 1.0f;
+    float header = 0.0f;
+};
+
+void post(SDL_Event e);
+
+// A finger event at a point in the window's first panel, below its header, in pixels.
+void postFinger(const FingerTarget& t, Uint32 type, SDL_FingerID finger, float x, float y) {
+    SDL_Event e{};
+    e.type = type;
+    e.tfinger.touchID = 1;
+    e.tfinger.fingerID = finger;
+    e.tfinger.windowID = t.window;
+    e.tfinger.x = x / t.width;
+    e.tfinger.y = (y + t.header) / t.height;
+    e.tfinger.pressure = 1.0f;
+    post(e);
+}
+
 void post(SDL_Event e) {
     SDL_PushEvent(&e);
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -168,6 +229,10 @@ int main(int argc, char** argv) {
     bool polyline = true;
     bool lockCheck = false;
     bool locked = true;
+    bool touchCheck = false;
+    bool multiTouch = true;
+    bool gamepadCheck = false;
+    bool gamepads = true;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) screenshot = argv[++i];
@@ -187,12 +252,16 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--no-polyline")) polyline = false;
         else if (!std::strcmp(argv[i], "--lock-check")) lockCheck = true;
         else if (!std::strcmp(argv[i], "--unlocked")) locked = false;
+        else if (!std::strcmp(argv[i], "--touch-check")) touchCheck = true;
+        else if (!std::strcmp(argv[i], "--single-touch")) multiTouch = false;
+        else if (!std::strcmp(argv[i], "--gamepad-check")) gamepadCheck = true;
+        else if (!std::strcmp(argv[i], "--no-gamepads")) gamepads = false;
         else {
             std::fprintf(stderr,
                          "usage: panelspun-demo [--frames N] [--screenshot out.bmp] [--check] [--validate] "
                          "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]] "
                          "[--input-check [--no-focus-click]] [--tick-check HZ [--no-tick]] [--polyline-check [--no-polyline]] "
-                         "[--lock-check [--unlocked]]\n");
+                         "[--lock-check [--unlocked]] [--touch-check [--single-touch]] [--gamepad-check [--no-gamepads]]\n");
             return 2;
         }
     }
@@ -202,11 +271,15 @@ int main(int argc, char** argv) {
     }
 
     SplitTree tree("video");
-    tree.dock("controls", "video", Side::Right, 0.32);
-    tree.dock("actions", "controls", Side::Bottom, 0.5);
+    if (!touchCheck) {
+        tree.dock("controls", "video", Side::Right, 0.32);
+        tree.dock("actions", "controls", Side::Bottom, 0.5);
+        tree.setMinSize("controls", Size{200, 120});
+        tree.setMinSize("actions", Size{200, 120});
+    }
     tree.setMinSize("video", Size{240, 160});
-    tree.setMinSize("controls", Size{200, 120});
-    tree.setMinSize("actions", Size{200, 120});
+    // The window's gamepad support is what the check is about, so SDL itself always has gamepads.
+    if (gamepadCheck) SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 
     WindowConfig config;
     config.title = "panelspun demo";
@@ -214,6 +287,8 @@ int main(int argc, char** argv) {
     config.vulkanAllFeatures = allFeatures;
     config.tickHz = tickCheck > 0 && tick ? tickCheck : 0;
     config.lockLayout = lockCheck && locked;
+    config.multiTouch = touchCheck && multiTouch;
+    config.gamepads = gamepadCheck && gamepads;
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, tree, &error);
     if (!window) {
@@ -231,7 +306,12 @@ int main(int argc, char** argv) {
     std::atomic<int> draws{0};
     std::atomic<int> updates{0};
     ProbePanel* probe = nullptr;
-    if (inputCheck || tickCheck > 0 || polylineCheck) {
+    TouchProbe* touch = nullptr;
+    if (touchCheck) {
+        std::unique_ptr<TouchProbe> t = std::make_unique<TouchProbe>();
+        touch = t.get();
+        window->setPanel("video", std::move(t));
+    } else if (inputCheck || tickCheck > 0 || polylineCheck) {
         std::unique_ptr<ProbePanel> p = std::make_unique<ProbePanel>(window.get(), polylineCheck && polyline);
         probe = p.get();
         window->setPanel("video", std::move(p));
@@ -244,7 +324,7 @@ int main(int argc, char** argv) {
     controls->add(std::make_unique<Slider>(0.0f, 100.0f, 50.0f, [level](float v) {
         level->setText("Exposure: " + std::to_string(static_cast<int>(v + 0.5f)) + "%");
     }));
-    window->setPanel("controls", std::move(controls));
+    if (!touchCheck) window->setPanel("controls", std::move(controls));
 
     std::unique_ptr<WidgetPanel> actions = std::make_unique<WidgetPanel>("Actions");
     Label* clicks = actions->add(std::make_unique<Label>("Clicks: 0"));
@@ -255,7 +335,98 @@ int main(int argc, char** argv) {
     window->setPanel("actions", std::move(actions));
 
     int rc = 0;
-    if (lockCheck) {
+    if (touchCheck) {
+        // Two fingers hold A and B together; a third drags the stick to its right edge and lets go.
+        bool bothHeld = false;
+        bool releasedAll = false;
+        float stickAtEdge = 0.0f;
+        float stickAfter = 1.0f;
+        std::thread worker([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            int count = 0;
+            SDL_Window** windows = SDL_GetWindows(&count);
+            SDL_Window* w = count > 0 ? windows[0] : nullptr;
+            SDL_free(windows);
+            int pw = 0, ph = 0;
+            SDL_GetWindowSizeInPixels(w, &pw, &ph);
+            const SDL_WindowID id = SDL_GetWindowID(w);
+            const float header = std::round(24.0f * SDL_GetWindowDisplayScale(w));
+            std::vector<Placement> p = touch->placements();
+            for (int wait = 0; wait < 50 && p.size() < 3; ++wait) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                p = touch->placements();
+            }
+            if (p.size() < 3) {
+                SDL_Event quit{};
+                quit.type = SDL_EVENT_QUIT;
+                SDL_PushEvent(&quit);
+                return;
+            }
+            const FingerTarget target{id, static_cast<float>(pw), static_cast<float>(ph), header};
+            const float buttonY = p[0].y + 32.0f;
+            postFinger(target, SDL_EVENT_FINGER_DOWN, 10, p[0].x + p[0].w * 0.5f, buttonY);
+            postFinger(target, SDL_EVENT_FINGER_DOWN, 11, p[1].x + p[1].w * 0.5f, buttonY);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            bothHeld = touch->aHeld && touch->bHeld;
+            const float r = p[2].w * 0.5f;
+            postFinger(target, SDL_EVENT_FINGER_DOWN, 12, p[2].x + r, p[2].y + r);
+            postFinger(target, SDL_EVENT_FINGER_MOTION, 12, p[2].x + 2.0f * r, p[2].y + r);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            stickAtEdge = touch->stickX;
+            postFinger(target, SDL_EVENT_FINGER_UP, 12, p[2].x + 2.0f * r, p[2].y + r);
+            postFinger(target, SDL_EVENT_FINGER_UP, 10, p[0].x + p[0].w * 0.5f, buttonY);
+            postFinger(target, SDL_EVENT_FINGER_UP, 11, p[1].x + p[1].w * 0.5f, buttonY);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            stickAfter = touch->stickX;
+            releasedAll = !touch->aHeld && !touch->bHeld;
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        rc = window->run();
+        worker.join();
+        std::printf("touch: A and B held together %s, stick at edge %.2f, after release %.2f, all released %s%s\n",
+                    bothHeld ? "yes" : "no", stickAtEdge, stickAfter, releasedAll ? "yes" : "no",
+                    multiTouch ? "" : " (single touch)");
+        const bool ok = bothHeld && stickAtEdge > 0.95f && std::abs(stickAfter) < 0.01f && releasedAll;
+        if (rc == 0 && !ok) rc = 3;
+    } else if (gamepadCheck) {
+        // A virtual pad presses South and pushes its left stick right; the window must report both.
+        SDL_JoystickID padId = 0;
+        SDL_Joystick* joystick = nullptr;
+        std::thread worker([&]() {
+            SDL_VirtualJoystickDesc desc;
+            SDL_INIT_INTERFACE(&desc);
+            desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+            desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+            desc.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1u;
+            desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1u;
+            desc.name = "panelspun virtual pad";
+            padId = SDL_AttachVirtualJoystick(&desc);
+            joystick = padId ? SDL_OpenJoystick(padId) : nullptr;
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            if (joystick) {
+                SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true);
+                SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFTX, 32767);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        rc = window->run();
+        worker.join();
+        GamepadState pad;
+        const bool reported = window->gamepad(pad);
+        std::printf("gamepad: %s '%s', south %s, left x %.2f%s\n", reported ? "reported" : "not reported",
+                    pad.name.c_str(), (pad.buttons & (1u << SDL_GAMEPAD_BUTTON_SOUTH)) ? "down" : "up", pad.leftX,
+                    gamepads ? "" : " (gamepads off)");
+        if (joystick) SDL_CloseJoystick(joystick);
+        if (padId) SDL_DetachVirtualJoystick(padId);
+        const bool ok = reported && (pad.buttons & (1u << SDL_GAMEPAD_BUTTON_SOUTH)) && pad.leftX > 0.95f;
+        if (rc == 0 && !ok) rc = 3;
+    } else if (lockCheck) {
         // A worker drags the first split handle 100 px; a locked layout must not move.
         std::string before;
         std::thread worker([&]() {
