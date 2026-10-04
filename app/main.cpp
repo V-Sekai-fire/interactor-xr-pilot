@@ -51,7 +51,6 @@ struct Shared
     std::atomic<uint64_t> decoded{0};
     std::atomic<uint64_t> decodeErrors{0};
     std::atomic<bool> captured{false};
-    std::string lastCommand = "none";
     SpanLog spans;
     std::string snapshotPath; // --snapshot: the 90th decoded frame
 };
@@ -361,13 +360,14 @@ public:
 
     void draw(DrawContext& ctx) override
     {
-        const std::vector<Span> spans = shared_.spans.recent();
+        const std::vector<Span> spans = shared_.spans.visible();
+        rows_.clear();
         const int64_t now = nowNs() / 1'000'000;
         const float s = ctx.scale;
         const float pad = 10.0f * s;
         const float row = 22.0f * s;
         const float sub = 17.0f * s;
-        const float nameX = pad + 16.0f * s;
+        const float nameX0 = pad + 16.0f * s;
         const float barX = ctx.width * 0.48f;
         const float barW = std::max(10.0f, ctx.width - barX - 64.0f * s);
         float y = ctx.height - pad;
@@ -377,6 +377,7 @@ public:
             if (age == 0)
             {
                 const size_t shown = std::min<size_t>(it->children.size(), 4);
+                const float nameX = nameX0 + 14.0f * s * float(std::min(it->depth, 6));
                 for (size_t c = it->children.size() - shown; c < it->children.size(); ++c)
                 {
                     y -= sub;
@@ -390,12 +391,17 @@ public:
                 }
             }
             y -= row;
+            rows_.push_back(Row{y, y + row, it->id});
+            const float indent = 14.0f * s * float(std::min(it->depth, 6));
+            const float nameX = nameX0 + indent;
             const float fade = std::max(0.4f, 1.0f - 0.05f * float(age));
             const Color status = shade(it->running() ? Cyan : it->ok ? Green : Red, fade);
             const float mid = y + row * 0.5f;
-            const float dot[4] = {pad + 4.0f * s, mid, pad + 4.0f * s + 0.1f, mid};
+            const float dot[4] = {pad + indent + 4.0f * s, mid, pad + indent + 4.0f * s + 0.1f, mid};
             drawPolyline(ctx, dot, 2, status, 8.0f * s);
             std::string name = it->name + (it->count > 1 ? "  x" + std::to_string(it->count) : "");
+            if (!it->running() && it->nested > 0)
+                name = std::string(it->expanded ? "v " : "> ") + name + "  (" + std::to_string(it->nested) + ")";
             tinted(ctx, shade(Color{223, 225, 229, 255}, fade),
                    [&](DrawContext& t) { Label(name, 13.0f).draw(t, nameX, y, 0.0f); });
             const int64_t ms = it->durationMs(now);
@@ -410,7 +416,31 @@ public:
         }
     }
 
+    // A click on a finished span's row expands or folds what ran inside it.
+    bool pointer(const PointerEvent& e) override
+    {
+        if (e.action != PointerAction::Down || e.button != 1)
+            return false;
+        for (const Row& r : rows_)
+        {
+            if (e.y >= r.top && e.y < r.bottom)
+            {
+                shared_.spans.toggle(r.id);
+                return true;
+            }
+        }
+        return false;
+    }
+
 private:
+    struct Row
+    {
+        float top;
+        float bottom;
+        std::string id;
+    };
+    std::vector<Row> rows_;
+
     static constexpr Color Cyan{98, 214, 255, 255};
     static constexpr Color Green{126, 231, 135, 255};
     static constexpr Color Red{240, 98, 98, 255};
@@ -517,7 +547,6 @@ public:
         }));
         pose_ = add(std::make_unique<Label>(""));
         capture_ = add(std::make_unique<Label>(""));
-        last_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
                                  "WASD walk, E/R roll, Shift moves a hand, wheel steps",
                                  "T/H/click triggers, F/G grips, 1-4 XYAB, M menu, P lowers"})
@@ -561,10 +590,6 @@ public:
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
-        {
-            std::lock_guard<std::mutex> lock(shared_.mutex);
-            last_->setText("Agent's last command: " + shared_.lastCommand);
-        }
         WidgetPanel::draw(ctx);
     }
 
@@ -580,7 +605,6 @@ private:
     Toggle* seated_ = nullptr;
     Label* pose_ = nullptr;
     Label* capture_ = nullptr;
-    Label* last_ = nullptr;
     Tray* tray_ = nullptr;
     int64_t lastTrayNs_ = 0;
 };
@@ -684,10 +708,6 @@ int main(int argc, char** argv)
                     shared.screenshotReply = errorJson("the window did not render within 5 s");
                 }
                 reply = shared.screenshotReply;
-            }
-            {
-                std::lock_guard<std::mutex> lock(shared.mutex);
-                shared.lastCommand = line;
             }
             if (!isMark)
                 shared.spans.child(line, reply.rfind("{\"ok\":false", 0) != 0, nowNs() / 1'000'000);

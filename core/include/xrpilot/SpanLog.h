@@ -32,6 +32,10 @@ struct Span
     bool ok = true;
     int count = 1; // repeats ducked into this span
     std::vector<SpanChild> children;
+    std::string parent; // the span open when this one began; empty at the top
+    int depth = 0;
+    int nested = 0;        // spans begun inside this one, at any depth
+    bool expanded = false; // a finished span shows its nested spans only when expanded
 
     bool running() const { return endMs == 0; }
     int64_t durationMs(int64_t nowMs) const { return (running() ? nowMs : endMs) - startMs; }
@@ -46,15 +50,20 @@ class SpanLog
 {
 public:
     explicit SpanLog(size_t capacity = 50) : capacity_(capacity) {}
-    // Safe from any thread. A begin that repeats the last span's tool within SpanDuckMs of its end
-    // reopens that span and counts it instead of adding a row.
+    // Safe from any thread. A span begun while another runs nests inside it. A begin that repeats its
+    // last sibling's tool within SpanDuckMs of that sibling's end reopens it and counts it instead.
     void begin(const std::string& id, const std::string& name, const std::string& detail, int64_t nowMs);
     // Ends the span with this id; an unknown id changes nothing.
     void end(const std::string& id, bool ok, int64_t nowMs);
     // A pilot command, attached to the open span, or dropped when none is open.
     void child(const std::string& text, bool ok, int64_t nowMs);
-    // Oldest first.
+    // Oldest first, every span.
     std::vector<Span> recent() const;
+    // The rows a trace shows, oldest first: a nested span shows while every span above it is
+    // running or expanded, so a finished span folds what ran inside it.
+    std::vector<Span> visible() const;
+    // Expands a finished span, or folds it again.
+    void toggle(const std::string& id);
 
 private:
     mutable std::mutex mutex_;
