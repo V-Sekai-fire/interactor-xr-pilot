@@ -3,8 +3,7 @@ Lets an AI agent see and drive OpenXR apps through OXRSys: eye frames in, head, 
 
 XR Pilot is a computer-use tool for VR. An agent takes a screenshot of what an OpenXR app shows the
 left eye, then turns the head, walks, points a controller at a pixel, clicks with the trigger, or
-presses buttons, the way a desktop computer-use driver moves a mouse. The app runs on
-[OXRSys](https://github.com/V-Sekai-fire/oxrsys), the desktop OpenXR runtime, and XR Pilot connects
+presses buttons, the way a desktop computer-use driver moves a mouse. The app runs on the desktop OpenXR runtime, and XR Pilot connects
 to it as a headset would, so neither the runtime nor the app needs changing.
 
 ## Pieces
