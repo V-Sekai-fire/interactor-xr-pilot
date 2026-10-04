@@ -198,10 +198,7 @@ struct GpuDecoder::Gpu
         context = ctx;
         device = ctx.device;
         queue = ctx.queue;
-        if (volkInitializeCustom(ctx.getInstanceProcAddr) != VK_SUCCESS)
-        {
-            return false;
-        }
+        volkInitializeCustom(ctx.getInstanceProcAddr);
         volkLoadInstanceOnly(ctx.instance);
         volkLoadDevice(ctx.device);
         vkGetPhysicalDeviceMemoryProperties(ctx.physicalDevice, &memoryProperties);

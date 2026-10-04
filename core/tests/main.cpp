@@ -236,6 +236,11 @@ const std::map<std::string, std::function<void()>> cases = {
                                  "button jump 1", "fov 5", "head 0 0 0 0 0 0 extra"})
              check(runCommand(bad, s, status, 0).reply.rfind("{\"ok\":false", 0) == 0, bad);
      }},
+    {"commands.json-string-escapes",
+     [] {
+         check(jsonString("C:\\temp\\a \"b\".png") == "\"C:\\\\temp\\\\a \\\"b\\\".png\"",
+               "backslashes and quotes are escaped");
+     }},
     {"commands.unknown-rejected",
      [] {
          AgentState s;

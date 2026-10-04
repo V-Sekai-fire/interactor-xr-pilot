@@ -35,5 +35,7 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
 
 std::string stateJson(const AgentState& state, const ClientStatus& status, uint64_t framesDecoded);
 std::string errorJson(const std::string& message);
+// A JSON string literal, quotes included.
+std::string jsonString(const std::string& text);
 
 } // namespace xrpilot

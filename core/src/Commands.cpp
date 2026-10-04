@@ -60,6 +60,11 @@ const char* ok = "{\"ok\":true}";
 
 } // namespace
 
+std::string jsonString(const std::string& text)
+{
+    return "\"" + escape(text) + "\"";
+}
+
 std::string errorJson(const std::string& message)
 {
     return "{\"ok\":false,\"error\":\"" + escape(message) + "\"}";

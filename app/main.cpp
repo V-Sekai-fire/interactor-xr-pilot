@@ -101,7 +101,7 @@ private:
         else if (!writePng(shared_.screenshotPath, rgba.data(), w, h))
             shared_.screenshotReply = errorJson("cannot write " + shared_.screenshotPath);
         else
-            shared_.screenshotReply = "{\"ok\":true,\"path\":\"" + shared_.screenshotPath + "\",\"width\":" +
+            shared_.screenshotReply = "{\"ok\":true,\"path\":" + jsonString(shared_.screenshotPath) + ",\"width\":" +
                                       std::to_string(w) + ",\"height\":" + std::to_string(h) + "}";
         shared_.screenshotPath.clear();
         shared_.done.notify_all();
@@ -199,6 +199,9 @@ int main(int, char**)
         {
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
+            // Some shells start the stream with a UTF-8 byte order mark.
+            if (line.rfind("\xEF\xBB\xBF", 0) == 0)
+                line.erase(0, 3);
             if (line.empty())
                 continue;
             AgentState state = client.agent();

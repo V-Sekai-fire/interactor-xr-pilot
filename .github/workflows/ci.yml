@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Builds xr-pilot and the Lean MCP server and runs their tests. The live path needs a GPU and an
+# OXRSys runtime, which runners lack.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Core tests
+        run: ctest --test-dir build --output-on-failure
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          test: false
+      - name: Lean tests
+        working-directory: lean
+        run: |
+          lake build tests
+          .lake/build/bin/tests
+
+  linux-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXRPILOT_BUILD_APP=OFF
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          test: false
+      - name: Lean tests
+        working-directory: lean
+        run: |
+          lake build tests
+          .lake/build/bin/tests

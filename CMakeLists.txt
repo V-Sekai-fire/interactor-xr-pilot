@@ -57,7 +57,8 @@ target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
                       png.round-trip png.corrupt-crc-rejected
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
-                      commands.malformed-rejected commands.unknown-rejected commands.state-reports-head)
+                      commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
+                      commands.json-string-escapes)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 
@@ -103,6 +104,7 @@ add_subdirectory(third_party/panelspun)
 add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
 target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${oxrsys_SOURCE_DIR}/kernels/simulator/spirv)
 target_link_libraries(xrpilot_gpu PUBLIC xrpilot_pyrowave)
+target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
 add_executable(xr-pilot app/main.cpp)
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu panelspun)
