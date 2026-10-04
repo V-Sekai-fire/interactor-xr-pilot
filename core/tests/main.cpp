@@ -3,6 +3,7 @@
 // Core tests, one case per ctest entry. Each negative case asserts that broken input is rejected.
 
 #include "xrpilot/Agent.h"
+#include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
 #include "xrpilot/FrameAssembler.h"
 #include "xrpilot/Json.h"
@@ -27,6 +28,11 @@ namespace
 {
 
 int failures = 0;
+
+float distance3(const float* p, const float* q)
+{
+    return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
+}
 
 void check(bool ok, const char* what)
 {
@@ -326,6 +332,58 @@ const std::map<std::string, std::function<void()>> cases = {
          siblings.end("a", true, 3);
          siblings.begin("y", "look", "{}", 4);
          check(siblings.recent().size() == 3, "control: a look at the top does not duck into a look nested in a plan");
+     }},
+    {"body.reach-within-the-arm",
+     [] {
+         AgentState s; // eyes at 1.6 m, facing -Z
+         BodyModel body;
+         float shoulder[3];
+         shoulderPosition(s, 1, body, shoulder);
+         check(shoulder[0] > 0.1f && shoulder[1] < 1.45f && shoulder[2] > 0.0f, "the right shoulder is right, below and behind the eyes");
+         const float target[3] = {0.25f, 1.1f, -0.35f};
+         const ArmSolve arm = solveArm(s, 1, target, body);
+         check(arm.reachable, "a point half a metre ahead of the right shoulder is in reach");
+         float worst = 0.0f;
+         for (int k = 0; k < 3; ++k)
+             worst = std::max(worst, std::abs(arm.hand.position[k] - target[k]));
+         check(worst < 1e-3f, "the hand lands on a reachable target");
+         const float k = body.scaleFor(1.6f);
+         check(std::abs(distance3(arm.shoulder, arm.elbow) - k * body.upperArm) < 1e-3f, "the upper arm keeps its length");
+         check(std::abs(distance3(arm.elbow, arm.hand.position) - k * (body.forearm + body.palm)) < 1e-3f, "the forearm keeps its length");
+         check(arm.elbow[1] < arm.shoulder[1], "the elbow bends down");
+         check(isRotation(arm.hand.rotation), "the hand's orientation is a rotation");
+         const float aim[3] = {0.0f, 0.0f, -1.0f};
+         const float up[3] = {0.0f, 1.0f, 0.0f};
+         float aimed[3];
+         float palm[3];
+         apply(arm.hand.rotation, aim, aimed);
+         apply(arm.hand.rotation, up, palm);
+         float reachDir[3];
+         for (int i = 0; i < 3; ++i)
+             reachDir[i] = (target[i] - arm.shoulder[i]) / arm.distance;
+         check(aimed[0] * reachDir[0] + aimed[1] * reachDir[1] + aimed[2] * reachDir[2] > 0.999f,
+               "the controller points along the reach");
+         check(palm[1] > 0.8f, "the palm stays level");
+     }},
+    {"body.reach-past-the-arm-is-clamped",
+     [] {
+         AgentState s;
+         BodyModel body;
+         const float far[3] = {0.2f, 1.3f, -3.0f};
+         const ArmSolve arm = solveArm(s, 1, far, body);
+         check(!arm.reachable, "a point three metres away is out of reach");
+         const float dx = arm.hand.position[0] - arm.shoulder[0];
+         const float dy = arm.hand.position[1] - arm.shoulder[1];
+         const float dz = arm.hand.position[2] - arm.shoulder[2];
+         check(std::sqrt(dx * dx + dy * dy + dz * dz) <= body.reach(1.6f) + 1e-3f, "control: the hand stops at the arm's length");
+         AgentState seated;
+         setSeated(seated, true);
+         check(std::abs(solveArm(seated, 1, far, body).distance - arm.distance) > 0.01f &&
+                   std::abs(body.scaleFor(seated.head.position[1] + SeatedEyeDrop) - body.scaleFor(1.6f)) < 1e-6f,
+               "sitting moves the shoulder but keeps the arm's length");
+         ClientStatus status;
+         const std::string reply = runCommand("reach right 0.25 1.1 -0.35", s, status, 0).reply;
+         check(reply.find("\"reachable\":true") != std::string::npos && s.hands[1].manual, "the reach command places the hand");
      }},
     {"commands.json-string-escapes",
      [] {

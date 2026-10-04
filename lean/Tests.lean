@@ -127,7 +127,8 @@ def main : IO UInt32 := do
   let names := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
     | .ok ts => ts.map (fun (t : Json) => match (t.getObjValD "name").getStr? with | .ok s => s | .error _ => "")
     | .error _ => #[]
-  c (names.size == 12 && names.contains "click" && names.contains "plan") s!"tools/list lists 12 tools, got {names}"
+  c (names.size == 15 && names.contains "reach" && names.contains "grab" && names.contains "locomote")
+    s!"tools/list lists 15 tools, got {names}"
   -- A client sends only the properties a tool declares, so every field plan reads must be in its schema.
   let planSchema := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
     | .ok ts => (ts.find? (fun (t : Json) => (t.getObjValD "name").getStr?.toOption == some "plan")).getD Json.null
@@ -217,6 +218,23 @@ def main : IO UInt32 := do
   let timedText := ((firstContent.getObjValD "text").getStr?).toOption.getD ""
   c (!isError timed && (timedText.splitOn "duration_ms").length > 1 && (timedText.splitOn "start_ms").length > 1)
     s!"each action records when it started and how long it took, got {timedText}"
+
+  -- grab: reach short, reach in, grip, lift; locomote: the stick sequences of each mode.
+  f.sent.set #[]
+  let grabbed ← call "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"grab\",\"arguments\":{\"x\":568,\"y\":632,\"depth\":0.5,\"hold\":false}}}"
+  let g := (← f.sent.get).filter (· != "state")
+  c (!isError grabbed && g.size == 5 && (g[0]!).startsWith "reach right" && (g[1]!).startsWith "reach right" &&
+      g[2]! == "grip right 1" && (g[3]!).startsWith "reach right" && g[4]! == "grip right 0")
+    s!"grab reaches short, reaches in, grips, lifts and lets go, sent {g}"
+  f.sent.set #[]
+  let turned ← call "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"locomote\",\"arguments\":{\"mode\":\"snap_turn\",\"direction\":\"left\",\"count\":2}}}"
+  c (!isError turned && (← f.sent.get) == #["stick right -1 0", "stick right 0 0", "stick right -1 0", "stick right 0 0"])
+    s!"two snap turns left flick the right stick twice, sent {← f.sent.get}"
+  f.sent.set #[]
+  let hop ← call "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"locomote\",\"arguments\":{\"mode\":\"teleport\"}}}"
+  c (!isError hop && (← f.sent.get) == #["stick left 0 1", "stick left 0 0"]) "a teleport pushes the left stick and releases it"
+  let badMode ← call "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"locomote\",\"arguments\":{\"mode\":\"fly\"}}}"
+  c (isError badMode) "control: an unknown locomotion mode is refused"
 
   f.backend.lastShot.set (0.0, 0.0)
   f.sent.set #[]
