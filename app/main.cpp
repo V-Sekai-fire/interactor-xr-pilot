@@ -418,6 +418,9 @@ public:
                 s.pointingAge = 0.0f;
             });
         }));
+        seated_ = add(std::make_unique<Toggle>("Seated", false, [this](bool on) {
+            client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
+        }));
         pose_ = add(std::make_unique<Label>(""));
         capture_ = add(std::make_unique<Label>(""));
         last_ = add(std::make_unique<Label>(""));
@@ -452,6 +455,7 @@ public:
         fovLabel_->setText("Vertical FOV " + std::to_string(int(std::lround(a.verticalFovDegrees))) + " deg");
         controllers_->setValue(a.hands[1].present);
         pointing_->setValue(a.pointing);
+        seated_->setValue(a.seated);
         pose_->setText("Head yaw " + fixed(a.head.yaw, 0) + "  pitch " + fixed(a.head.pitch, 0) + "  at " +
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
@@ -472,6 +476,7 @@ private:
     Label* fovLabel_ = nullptr;
     Toggle* controllers_ = nullptr;
     Toggle* pointing_ = nullptr;
+    Toggle* seated_ = nullptr;
     Label* pose_ = nullptr;
     Label* capture_ = nullptr;
     Label* last_ = nullptr;
