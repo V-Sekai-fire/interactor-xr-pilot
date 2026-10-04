@@ -345,20 +345,29 @@ private:
     Sparkline line_;
 };
 
-// The stream's counters as sparklines, sampled every 250 ms: the last 10 s.
-class StatsPanel final : public WidgetPanel
+// The stream's counters as a status bar of sparklines side by side, sampled every 250 ms: the last 10 s.
+class StatsPanel final : public Panel
 {
 public:
     StatsPanel(Client& client, Shared& shared)
-        : WidgetPanel("Stream")
+        : Panel("Stream")
         , client_(client)
         , shared_(shared)
+        , rows_{SparkRow("pkt", false), SparkRow("fps", false), SparkRow("drop", true), SparkRow("fec", true),
+                SparkRow("err", true)}
     {
-        rows_[0] = add(std::make_unique<SparkRow>("pkt", false));
-        rows_[1] = add(std::make_unique<SparkRow>("fps", false));
-        rows_[2] = add(std::make_unique<SparkRow>("drop", true));
-        rows_[3] = add(std::make_unique<SparkRow>("fec", true));
-        rows_[4] = add(std::make_unique<SparkRow>("err", true));
+    }
+
+    void draw(DrawContext& ctx) override
+    {
+        const float pad = 12.0f * ctx.scale;
+        const float gap = 16.0f * ctx.scale;
+        const float width = (ctx.width - 2.0f * pad - 4.0f * gap) / 5.0f;
+        if (width <= 0.0f)
+            return;
+        const float y = (ctx.height - rows_[0].height(ctx.scale)) * 0.5f;
+        for (int i = 0; i < 5; ++i)
+            rows_[i].draw(ctx, pad + float(i) * (width + gap), y, width);
     }
 
     void update(const VulkanContext&) override
@@ -371,13 +380,13 @@ public:
         const uint64_t totals[5] = {s.videoPackets, shared_.decoded.load(), s.framesDropped, s.fecRecoveries,
                                     shared_.decodeErrors.load()};
         for (int i = 0; i < 5; ++i)
-            rows_[i]->sample(totals[i]);
+            rows_[i].sample(totals[i]);
     }
 
 private:
     Client& client_;
     Shared& shared_;
-    SparkRow* rows_[5] = {};
+    SparkRow rows_[5];
     int64_t lastSampleNs_ = 0;
 };
 
@@ -520,7 +529,8 @@ int main(int argc, char** argv)
     // Panels on the left, the view on the right.
     SplitTree layout("eye");
     layout.dock("controls", "eye", Side::Left, 0.27);
-    layout.dock("stats", "eye", Side::Bottom, 0.27);
+    // A one-line status bar: the header plus a sparkline row.
+    layout.dock("stats", "eye", Side::Bottom, 0.06);
     WindowConfig config;
     config.title = "OXRSys XR Pilot";
     config.width = 1400;
