@@ -55,11 +55,11 @@ public:
     bool usesVulkanRegion() const override { return true; }
     void draw(DrawContext&) override {}
 
-    void recordVulkan(const VulkanRegionFrame& frame) override
+    // Decode and screenshots run here rather than in recordVulkan so they continue while minimized.
+    void update(const VulkanContext& vk) override
     {
         if (!ready_ && !failed_)
         {
-            const VulkanContext& vk = *frame.context;
             GpuContext context{vk.getInstanceProcAddr, vk.instance, vk.physicalDevice, vk.device, vk.queue,
                                vk.queueFamily,         vk.instanceInfo, vk.deviceInfo};
             std::string error;
@@ -83,8 +83,13 @@ public:
                 }
             }
             serveScreenshot();
-            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height);
         }
+    }
+
+    void recordVulkan(const VulkanRegionFrame& frame) override
+    {
+        if (ready_)
+            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height);
     }
 
 private:

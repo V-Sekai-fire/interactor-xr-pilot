@@ -23,7 +23,8 @@ constexpr std::uint8_t kVideoRgb[3] = {26, 115, 140};
 // Stands in for a decoder's output: clears its region with a solid colour on the GPU.
 class VideoPanel : public Panel {
 public:
-    VideoPanel(bool vulkan, std::atomic<int>* frames) : Panel("Video preview"), vulkan_(vulkan), frames_(frames) {}
+    VideoPanel(bool vulkan, std::atomic<int>* frames, std::atomic<int>* updates)
+        : Panel("Video preview"), vulkan_(vulkan), frames_(frames), updates_(updates) {}
     bool usesVulkanRegion() const override { return vulkan_; }
     void draw(DrawContext& ctx) override {
         (void)ctx;
@@ -42,10 +43,15 @@ public:
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         clear_(f.commands, f.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
     }
+    void update(const VulkanContext& context) override {
+        (void)context;
+        ++*updates_;
+    }
 
 private:
     bool vulkan_;
     std::atomic<int>* frames_;
+    std::atomic<int>* updates_;
     PFN_vkCmdClearColorImage clear_ = nullptr;
 };
 
@@ -89,6 +95,7 @@ int main(int argc, char** argv) {
     bool checkFeatures = false;
     int wakes = -1;
     bool sendWakes = true;
+    bool minimized = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) screenshot = argv[++i];
@@ -99,10 +106,11 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--check-features")) checkFeatures = true;
         else if (!std::strcmp(argv[i], "--wake-check") && i + 1 < argc) wakes = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-wake")) sendWakes = false;
+        else if (!std::strcmp(argv[i], "--minimized")) minimized = true;
         else {
             std::fprintf(stderr,
                          "usage: panelspun-demo [--frames N] [--screenshot out.bmp] [--check] [--validate] "
-                         "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake]]\n");
+                         "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]]\n");
             return 2;
         }
     }
@@ -137,7 +145,8 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<int> draws{0};
-    window->setPanel("video", std::make_unique<VideoPanel>(vulkanRegion, &draws));
+    std::atomic<int> updates{0};
+    window->setPanel("video", std::make_unique<VideoPanel>(vulkanRegion, &draws, &updates));
 
     std::unique_ptr<WidgetPanel> controls = std::make_unique<WidgetPanel>("Controls");
     Label* level = controls->add(std::make_unique<Label>("Exposure: 50%"));
@@ -158,9 +167,20 @@ int main(int argc, char** argv) {
     if (wakes > 0) {
         // A worker thread asks for redraws; each must render at least once more than an idle window would.
         int before = 0;
+        int updatesBefore = 0;
+        if (minimized) {
+            int count = 0;
+            SDL_Window** windows = SDL_GetWindows(&count);
+            for (int i = 0; i < count; ++i) {
+                SDL_MinimizeWindow(windows[i]);
+                SDL_SyncWindow(windows[i]);
+            }
+            SDL_free(windows);
+        }
         std::thread worker([&]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
             before = draws.load();
+            updatesBefore = updates.load();
             for (int i = 0; i < wakes; ++i) {
                 if (sendWakes) window->requestRedrawFromAnyThread();
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -172,8 +192,16 @@ int main(int argc, char** argv) {
         rc = window->run();
         worker.join();
         const int rendered = draws.load() - before;
-        std::printf("wake: %d redraws for %d requests\n", rendered, wakes);
-        if (rc == 0 && rendered < wakes) rc = 3;
+        const int updated = updates.load() - updatesBefore;
+        std::printf("wake: %d redraws and %d updates for %d requests%s\n", rendered, updated, wakes,
+                    minimized ? " while minimized" : "");
+        if (minimized) {
+            // A minimized window that still renders was never minimized, so the check would prove nothing.
+            if (rc == 0 && rendered >= wakes) rc = 4;
+            if (rc == 0 && updated < wakes) rc = 3;
+        } else if (rc == 0 && rendered < wakes) {
+            rc = 3;
+        }
     } else if (frames > 0) {
         if (frames > 1) rc = window->run(frames - 1);
         if (!screenshot.empty()) window->captureNextFrame(screenshot);
