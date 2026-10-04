@@ -40,6 +40,7 @@ add_library(xrpilot_core STATIC
     core/src/FrameAssembler.cpp
     core/src/HumanInput.cpp
     core/src/Png.cpp
+    core/src/Sparkline.cpp
 )
 target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE})
 
@@ -65,7 +66,9 @@ endforeach()
 add_executable(xrpilot-human-tests core/tests/human.cpp)
 target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
-                      human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body)
+                      human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
+                      sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample
+                      sparkline.p90-scale-clips-a-spike)
     add_test(NAME ${name} COMMAND xrpilot-human-tests ${name})
 endforeach()
 

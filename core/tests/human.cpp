@@ -5,6 +5,7 @@
 
 #include "xrpilot/Commands.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/Sparkline.h"
 
 #include <algorithm>
 #include <cmath>
@@ -159,6 +160,44 @@ const std::map<std::string, std::function<void()>> cases = {
          s.head.position[0] = 2.0f;
          const TrackingPacket released = packetOf(s);
          check(std::abs(released.rightControllerPos[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
+     }},
+    {"sparkline.deltas-over-ten-seconds",
+     [] {
+         Sparkline s;
+         for (uint64_t i = 0; i <= 50; ++i)
+             s.sample(i * 3);
+         check(s.deltas().size() == size_t(Sparkline::Samples), "the window keeps 40 samples");
+         check(s.deltas().back() == 3 && s.deltas().front() == 3, "each sample is the increment since the last");
+         Sparkline reset;
+         reset.sample(100);
+         reset.sample(40);
+         check(reset.deltas().back() == 0, "a counter that went backwards adds nothing");
+     }},
+    {"sparkline.fault-colour-follows-its-sample",
+     [] {
+         Sparkline s;
+         const uint64_t totals[] = {0, 0, 0, 2, 2, 2};
+         for (uint64_t t : totals)
+             s.sample(t);
+         const std::vector<Sparkline::Segment> seg = s.segments(390.0f, 20.0f, true);
+         check(seg.size() == 5, "one segment between each pair of samples");
+         check(seg[2].colour == Sparkline::Colour::Fault, "the segment ending on the drop is red");
+         check(seg[3].colour == Sparkline::Colour::Normal && seg[4].colour == Sparkline::Colour::Normal,
+               "the red clears once drops stop");
+         const std::vector<Sparkline::Segment> plain = s.segments(390.0f, 20.0f, false);
+         check(plain[2].colour != Sparkline::Colour::Fault, "a series that is not a fault never goes red");
+     }},
+    {"sparkline.p90-scale-clips-a-spike",
+     [] {
+         Sparkline s;
+         s.sample(0);
+         uint64_t total = 0;
+         for (int i = 0; i < 30; ++i)
+             s.sample(total += 10);
+         s.sample(total += 1000);
+         const std::vector<Sparkline::Segment> seg = s.segments(390.0f, 30.0f, false);
+         check(seg.back().colour == Sparkline::Colour::Clipped && seg.back().y1 == 0.0f, "the spike clips to the top");
+         check(std::abs(seg[seg.size() - 2].y1 - 10.0f) < 0.01f, "steady samples stay at 2/3 height, not flattened");
      }},
 };
 
