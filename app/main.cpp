@@ -324,7 +324,8 @@ public:
     {
         const float labelWidth = 44.0f * ctx.scale;
         const float h = height(ctx.scale);
-        Label(label_, 12.0f).draw(ctx, x, y, labelWidth);
+        Label label(label_, 12.0f);
+        label.draw(ctx, x, y + (h - label.height(ctx.scale)) * 0.5f, labelWidth);
         const float left = x + labelWidth;
         const float width = std::max(0.0f, w - labelWidth);
         const float base[4] = {left, y + h - 1.0f, left + width, y + h - 1.0f};
@@ -529,8 +530,9 @@ int main(int argc, char** argv)
     // Panels on the left, the view on the right.
     SplitTree layout("eye");
     layout.dock("controls", "eye", Side::Left, 0.27);
-    // A one-line status bar: the header plus a sparkline row.
-    layout.dock("stats", "eye", Side::Bottom, 0.06);
+    // A one-line status bar: the header plus a sparkline row, never shorter than both at 2x scale.
+    layout.dock("stats", "eye", Side::Bottom, 0.07);
+    layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
     WindowConfig config;
     config.title = "OXRSys XR Pilot";
     config.width = 1400;
