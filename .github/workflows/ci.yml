@@ -32,6 +32,7 @@ jobs:
           test: false
       - name: Lean tests
         working-directory: lean
+        shell: bash
         run: |
           lake build tests
           .lake/build/bin/tests
