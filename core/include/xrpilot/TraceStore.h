@@ -34,6 +34,8 @@ struct TraceFrame
     int encodedHeight = 0;
     // The head, then the left and the right hand: position (3) and row-major rotation (9) each, metres.
     std::vector<float> pose;
+    // Which frame of the stream this is; a span's end only takes a frame newer than its input.
+    uint64_t sequence = 0;
 };
 
 // Floats in a TraceFrame's pose.
@@ -75,6 +77,7 @@ public:
 private:
     struct Pending
     {
+        uint64_t after = 0; // an end waits for a frame with a sequence above this
         int64_t spanId = 0;
         bool input = true; // false: the edit candidate
     };
@@ -99,6 +102,7 @@ private:
     std::map<int64_t, int> commandSeq_;
     std::map<int64_t, std::vector<uint8_t>> inputThumb_; // a span's input view, small, for its metric
     std::map<int64_t, std::vector<float>> inputPose_;     // a span's input pose, for its metric
+    std::map<int64_t, uint64_t> inputSequence_;           // the frame a span's input was taken from
     std::vector<Pending> wanting_;
     std::deque<Job> jobs_;
     bool busy_ = false;
@@ -108,6 +112,11 @@ private:
     std::condition_variable idle_;
     std::thread thread_;
 };
+
+// RECTGTN's times: an ISO 8601 duration (PT1M2.5S) for an offset from an origin, and civil time, ISO 8601
+// UTC (2026-10-04T17:02:13.123Z), for the origin itself.
+std::string isoDuration(int64_t ms);
+std::string civilTime(int64_t unixMs);
 
 // The names of every column that holds a NULL in any table of the store; empty when the store keeps
 // the rule that a missing fact is a missing row.

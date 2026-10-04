@@ -282,6 +282,7 @@ private:
         TraceFrame frame;
         if (!decoder_.snapshotLeftEye(frame.rgba, frame.width, frame.height))
             return;
+        frame.sequence = shared_.decoded.load();
         if (GpuDecoder::frameSize(lastStreamed_.data(), lastStreamed_.size(), frame.encodedWidth, frame.encodedHeight))
             frame.encoded = lastStreamed_;
         const AgentState agent = client_.agent();

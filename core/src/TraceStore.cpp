@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 namespace xrpilot
 {
@@ -21,18 +22,18 @@ const char* const Vocabularies[] = {"tool",           "task_type",      "dimensi
                                     "asset_kind",     "candidate_axis", "candidate_kind", "metric"};
 
 // Bumped when a relation changes; an older store is moved aside, not altered.
-constexpr int SchemaVersion = 2;
+constexpr int SchemaVersion = 3;
 
 const char* const Schema = R"sql(
 CREATE TABLE IF NOT EXISTS session (
     session_id INTEGER PRIMARY KEY,
-    started_unix_ms INTEGER NOT NULL);
+    started_at TEXT NOT NULL);  -- civil time, ISO 8601 UTC: the origin every span time counts from
 CREATE TABLE IF NOT EXISTS span (
     span_id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES session,
     span_key TEXT NOT NULL,
     tool_id INTEGER NOT NULL REFERENCES tool,
-    started_ms INTEGER NOT NULL);
+    started TEXT NOT NULL);     -- ISO 8601 duration from the session's origin, as RECTGTN's start
 CREATE TABLE IF NOT EXISTS span_detail (
     span_id INTEGER PRIMARY KEY REFERENCES span,
     detail TEXT NOT NULL);
@@ -41,12 +42,12 @@ CREATE TABLE IF NOT EXISTS span_parent (
     parent_span_id INTEGER NOT NULL REFERENCES span);
 CREATE TABLE IF NOT EXISTS span_end (
     span_id INTEGER PRIMARY KEY REFERENCES span,
-    ended_ms INTEGER NOT NULL,
+    ended TEXT NOT NULL,
     ok INTEGER NOT NULL CHECK (ok IN (0, 1)));
 CREATE TABLE IF NOT EXISTS span_command (
     span_id INTEGER NOT NULL REFERENCES span,
     seq INTEGER NOT NULL,
-    at_ms INTEGER NOT NULL,
+    at TEXT NOT NULL,
     command TEXT NOT NULL,
     ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
     PRIMARY KEY (span_id, seq));
@@ -161,6 +162,50 @@ std::vector<uint8_t> thumb(const TraceFrame& f)
 
 } // namespace
 
+std::string isoDuration(int64_t ms)
+{
+    ms = std::max<int64_t>(0, ms);
+    const int64_t hours = ms / 3'600'000;
+    const int64_t minutes = ms / 60'000 % 60;
+    const int64_t seconds = ms / 1000 % 60;
+    const int64_t millis = ms % 1000;
+    std::string out = "PT";
+    if (hours > 0)
+        out += std::to_string(hours) + "H";
+    if (minutes > 0)
+        out += std::to_string(minutes) + "M";
+    if (seconds > 0 || millis > 0 || out == "PT")
+    {
+        out += std::to_string(seconds);
+        if (millis > 0)
+        {
+            char frac[8];
+            std::snprintf(frac, sizeof(frac), ".%03lld", (long long)millis);
+            std::string f = frac;
+            while (f.back() == '0')
+                f.pop_back();
+            out += f;
+        }
+        out += "S";
+    }
+    return out;
+}
+
+std::string civilTime(int64_t unixMs)
+{
+    const time_t seconds = time_t(unixMs / 1000);
+    std::tm utc = {};
+#if defined(_WIN32)
+    gmtime_s(&utc, &seconds);
+#else
+    gmtime_r(&seconds, &utc);
+#endif
+    char out[40];
+    std::snprintf(out, sizeof(out), "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ", utc.tm_year + 1900, utc.tm_mon + 1,
+                  utc.tm_mday, utc.tm_hour, utc.tm_min, utc.tm_sec, (long long)(unixMs % 1000));
+    return out;
+}
+
 TraceStore::~TraceStore()
 {
     close();
@@ -227,8 +272,8 @@ bool TraceStore::open(const std::string& path, int64_t wallClockMs, int64_t nowM
     ok = ok && exec(("PRAGMA user_version = " + std::to_string(SchemaVersion)).c_str(), error);
     if (ok)
     {
-        Statement insert(db_, "INSERT INTO session (started_unix_ms) VALUES (?)");
-        ok = insert.bind(1, wallClockMs).run();
+        Statement insert(db_, "INSERT INTO session (started_at) VALUES (?)");
+        ok = insert.bind(1, civilTime(wallClockMs)).run();
         session_ = sqlite3_last_insert_rowid(db_);
     }
     if (!ok)
@@ -263,6 +308,7 @@ void TraceStore::close()
     running_.clear();
     commandSeq_.clear();
     inputThumb_.clear();
+    inputSequence_.clear();
     wanting_.clear();
 }
 
@@ -281,8 +327,8 @@ void TraceStore::begin(const std::string& key, const std::string& tool, const st
     if (db_ == nullptr)
         return;
     std::lock_guard<std::mutex> lock(mutex_);
-    Statement insert(db_, "INSERT INTO span (session_id, span_key, tool_id, started_ms) VALUES (?, ?, ?, ?)");
-    insert.bind(1, session_).bind(2, key).bind(3, intern("tool", tool)).bind(4, atMs - epochMs_).run();
+    Statement insert(db_, "INSERT INTO span (session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?)");
+    insert.bind(1, session_).bind(2, key).bind(3, intern("tool", tool)).bind(4, isoDuration(atMs - epochMs_)).run();
     const int64_t id = sqlite3_last_insert_rowid(db_);
     if (!detail.empty())
         Statement(db_, "INSERT INTO span_detail VALUES (?, ?)").bind(1, id).bind(2, detail).run();
@@ -290,7 +336,7 @@ void TraceStore::begin(const std::string& key, const std::string& tool, const st
         Statement(db_, "INSERT INTO span_parent VALUES (?, ?)").bind(1, id).bind(2, running_.back()).run();
     spanByKey_[key] = id;
     running_.push_back(id);
-    wanting_.push_back({id, true});
+    wanting_.push_back({0, id, true});
 }
 
 void TraceStore::end(const std::string& key, bool ok, int64_t atMs)
@@ -304,11 +350,13 @@ void TraceStore::end(const std::string& key, bool ok, int64_t atMs)
     const int64_t id = found->second;
     Statement(db_, "INSERT OR REPLACE INTO span_end VALUES (?, ?, ?)")
         .bind(1, id)
-        .bind(2, atMs - epochMs_)
+        .bind(2, isoDuration(atMs - epochMs_))
         .bind(3, int64_t(ok ? 1 : 0))
         .run();
     running_.erase(std::remove(running_.begin(), running_.end(), id), running_.end());
-    wanting_.push_back({id, false});
+    const std::map<int64_t, uint64_t>::iterator taken = inputSequence_.find(id);
+    // An end whose input frame is not taken yet waits for any frame after it.
+    wanting_.push_back({taken != inputSequence_.end() ? taken->second : UINT64_MAX, id, false});
 }
 
 void TraceStore::command(const std::string& text, bool ok, int64_t atMs)
@@ -322,7 +370,7 @@ void TraceStore::command(const std::string& text, bool ok, int64_t atMs)
     Statement(db_, "INSERT INTO span_command VALUES (?, ?, ?, ?, ?)")
         .bind(1, id)
         .bind(2, int64_t(commandSeq_[id]++))
-        .bind(3, atMs - epochMs_)
+        .bind(3, isoDuration(atMs - epochMs_))
         .bind(4, text)
         .bind(5, int64_t(ok ? 1 : 0))
         .run();
@@ -346,8 +394,35 @@ void TraceStore::frame(TraceFrame frame)
             return;
         }
         Job job;
+        std::vector<Pending> later;
+        for (Pending& p : wanting_)
+        {
+            if (p.input)
+            {
+                inputSequence_[p.spanId] = frame.sequence;
+                job.spans.push_back(p);
+            }
+            else if (p.after != UINT64_MAX && frame.sequence > p.after)
+            {
+                inputSequence_.erase(p.spanId);
+                job.spans.push_back(p);
+            }
+            else
+            {
+                // A span that began and ended within one frame waits for the next.
+                if (p.after == UINT64_MAX)
+                {
+                    const std::map<int64_t, uint64_t>::iterator taken = inputSequence_.find(p.spanId);
+                    if (taken != inputSequence_.end())
+                        p.after = taken->second;
+                }
+                later.push_back(p);
+            }
+        }
+        wanting_.swap(later);
+        if (job.spans.empty())
+            return;
         job.frame = std::move(frame);
-        job.spans.swap(wanting_);
         jobs_.push_back(std::move(job));
     }
     wake_.notify_all();
