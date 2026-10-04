@@ -7,10 +7,12 @@
 #include "xrpilot/FrameAssembler.h"
 #include "xrpilot/Json.h"
 #include "xrpilot/Png.h"
+#include "xrpilot/Rotation.h"
 
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -211,12 +213,12 @@ const std::map<std::string, std::function<void()>> cases = {
          ClientStatus status;
          runCommand("trigger right 1", s, status, 0);
          runCommand("button a 1", s, status, 0);
-         runCommand("head 1 1.7 2 30 -10 0", s, status, 0);
+         runCommand("head 1 1.7 2 0 0 1 0 1 0 -1 0 0", s, status, 0);
          runCommand("release", s, status, 0);
          oxr::protocol::TrackingPacket p;
          fillTrackingPacket(s, 1, p);
          check(p.rightTrigger == 0.0f && p.buttonState == 0, "release lets go of every input");
-         check(s.head.yaw == 30.0f, "release keeps where the head looks");
+         check(s.head.rotation.m[2] == 1.0f && s.head.rotation.m[6] == -1.0f, "release keeps where the head looks");
      }},
     {"agent.absent-hands-clear-flags",
      [] {
@@ -233,8 +235,9 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          AgentState s;
          ClientStatus status;
-         for (const char* bad : {"head 1 2", "head 1 2 3 4 5 nan", "hand middle 0 0 0 0 0", "trigger right",
-                                 "button jump 1", "fov 5", "head 0 0 0 0 0 0 extra"})
+         for (const char* bad : {"head 1 2", "head 1 2 3 4 5 6", "head 0 0 0 1 0 0 0 1 0 0 0 nan",
+                                 "hand middle 0 0 0 1 0 0 0 1 0 0 0 1", "trigger right", "button jump 1", "fov 5",
+                                 "head 0 0 0 1 0 0 0 1 0 0 0 1 extra"})
              check(runCommand(bad, s, status, 0).reply.rfind("{\"ok\":false", 0) == 0, bad);
      }},
     {"commands.json-string-escapes",
@@ -282,11 +285,75 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          AgentState s;
          ClientStatus status;
-         runCommand("head 0 1.6 0 45 -20 0", s, status, 0);
+         runCommand("head 0 1.6 0 0 0 1 0 1 0 -1 0 0", s, status, 0);
          const std::string json = runCommand("state", s, status, 12).reply;
-         check(json.find("\"yaw\":45") != std::string::npos && json.find("\"pitch\":-20") != std::string::npos,
-               "state reports the head");
+         check(json.find("\"rotation\":[[0,0,1],[0,1,0],[-1,0,0]]") != std::string::npos,
+               "state reports the head's rotation as a matrix");
+         check(json.find("\"yaw\"") == std::string::npos, "state carries no Euler angles");
          check(json.find("\"decoded\":12") != std::string::npos, "state reports decoded frames");
+     }},
+    {"rotation.euler-orders-match-axis-products",
+     [] {
+         // Each order is the product of its axis rotations, checked against a vector it turns.
+         const float v[3] = {0.0f, 0.0f, -1.0f};
+         float out[3];
+         apply(fromEuler(EulerOrder::YXZ, 90.0f, 0.0f, 0.0f), v, out);
+         check(std::abs(out[0] + 1.0f) < 1e-5f && std::abs(out[2]) < 1e-5f, "yaw 90 turns forward to -X");
+         apply(fromEuler(EulerOrder::YXZ, 0.0f, 30.0f, 0.0f), v, out);
+         check(std::abs(out[1] - 0.5f) < 1e-5f, "pitch 30 raises forward by sin 30");
+         const Rotation yxz = fromEuler(EulerOrder::YXZ, 40.0f, -25.0f, 10.0f);
+         const Rotation zxy = fromEuler(EulerOrder::ZXY, 10.0f, -25.0f, 40.0f);
+         check(std::abs(yxz.m[1] - zxy.m[1]) > 1e-3f, "YXZ and ZXY with the same angles differ");
+         EulerOrder order;
+         int parsed = 0;
+         for (const char* name : {"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"})
+             parsed += parseEulerOrder(name, order) && isRotation(fromEuler(order, 33.0f, -71.0f, 12.0f)) ? 1 : 0;
+         check(parsed == 6, "all six Tait-Bryan orders parse and give rotations");
+         check(!parseEulerOrder("XYX", order) && !parseEulerOrder("yxz", order), "proper Euler and lower case are refused");
+         float yaw, pitch, roll;
+         toYawPitchRoll(yxz, yaw, pitch, roll);
+         check(std::abs(yaw - 40.0f) < 1e-3f && std::abs(pitch + 25.0f) < 1e-3f && std::abs(roll - 10.0f) < 1e-3f,
+               "YXZ angles come back out of the matrix");
+     }},
+    {"rotation.quaternion-round-trip",
+     [] {
+         for (EulerOrder order : {EulerOrder::XYZ, EulerOrder::ZYX, EulerOrder::YXZ})
+         {
+             const Rotation r = fromEuler(order, 120.0f, 50.0f, -170.0f);
+             float q[4];
+             toQuaternion(r, q);
+             Rotation back;
+             check(fromQuaternion(q, back), "the quaternion converts back");
+             float worst = 0.0f;
+             for (int i = 0; i < 9; ++i)
+                 worst = std::max(worst, std::abs(back.m[i] - r.m[i]));
+             check(worst < 1e-5f, "matrix to quaternion to matrix is exact to 1e-5");
+         }
+         const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+         Rotation unused;
+         check(!fromQuaternion(zero, unused), "a zero quaternion is refused");
+     }},
+    {"rotation.non-rotations-refused",
+     [] {
+         check(isRotation(Rotation()), "the identity is a rotation");
+         const Rotation scaled = {{2.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}};
+         const Rotation mirrored = {{-1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}};
+         const Rotation sheared = {{1.0f, 0.2f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f}};
+         check(!isRotation(scaled) && !isRotation(mirrored) && !isRotation(sheared),
+               "scale, mirror and shear are refused");
+     }},
+    {"commands.head-takes-a-rotation-matrix",
+     [] {
+         AgentState s;
+         ClientStatus status;
+         check(runCommand("head 0 1.6 0 0 0 1 0 1 0 -1 0 0", s, status, 0).reply == "{\"ok\":true}",
+               "a rotation matrix is accepted");
+         check(runCommand("head 0 1.6 0 1 0 0 0 1 0 0 0 -1", s, status, 0).reply.rfind("{\"ok\":false", 0) == 0,
+               "a mirror is refused");
+         check(s.head.rotation.m[2] == 1.0f, "a refused command leaves the head where it was");
+         check(runCommand("hand left 0 1 0 0 0 1 0 1 0 -1 0 0", s, status, 0).reply == "{\"ok\":true}" &&
+                   s.hands[0].manual && s.hands[0].pose.rotation.m[2] == 1.0f,
+               "a hand takes a rotation matrix");
      }},
 };
 

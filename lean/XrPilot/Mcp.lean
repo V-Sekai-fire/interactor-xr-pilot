@@ -52,6 +52,24 @@ private def schema (props : List (String × Json)) (required : List String) : Js
   Json.mkObj [("type", "object"), ("properties", Json.mkObj props),
               ("required", Json.arr (required.map Json.str).toArray)]
 
+private def rotationProp : Json :=
+  Json.mkObj [("type", "array"), ("minItems", 3), ("maxItems", 3),
+              ("items", Json.mkObj [("type", "array"), ("minItems", 3), ("maxItems", 3), ("items", Json.mkObj [("type", "number")])]),
+              ("description", "A 3x3 rotation matrix, row by row, taking head-local vectors to world; the canonical form")]
+
+private def eulerProp : Json :=
+  Json.mkObj [("type", "object"),
+              ("properties", Json.mkObj [
+                ("order", Json.mkObj [("type", "string"), ("enum", Json.arr (eulerOrders.map Json.str).toArray),
+                                      ("description", "Intrinsic Tait-Bryan order: YXZ with degrees [a, b, c] is Ry(a) Rx(b) Rz(c)")]),
+                ("degrees", Json.mkObj [("type", "array"), ("minItems", 3), ("maxItems", 3), ("items", Json.mkObj [("type", "number")])])]),
+              ("required", Json.arr #["order", "degrees"]),
+              ("description", "Euler angles, an input converted to the matrix; YXZ is yaw (left positive), pitch (up positive), roll")]
+
+private def quaternionProp : Json :=
+  Json.mkObj [("type", "array"), ("minItems", 4), ("maxItems", 4), ("items", Json.mkObj [("type", "number")]),
+              ("description", "A quaternion [x, y, z, w], an input converted to the matrix")]
+
 private def handProp : Json :=
   Json.mkObj [("type", "string"), ("enum", Json.arr #["left", "right"]),
               ("description", "Which controller; right by default")]
@@ -64,9 +82,9 @@ def tools : Array Json := #[
     ("description", "Connection, eye size and field of view, head and hand poses, held inputs and frame counts."),
     ("inputSchema", schema [] [])],
   Json.mkObj [("name", "look"),
-    ("description", "Turns the head. Degrees; yaw positive turns left, pitch positive looks up. relative adds to the current pose."),
-    ("inputSchema", schema [("yaw", prop "number" "Yaw in degrees"), ("pitch", prop "number" "Pitch in degrees"),
-                            ("relative", prop "boolean" "Add to the current pose")] [])],
+    ("description", "Turns the head to a rotation given as exactly one of: a 3x3 matrix (canonical), Euler angles in a named Tait-Bryan order, or a quaternion. relative applies it in the head's own frame. Replies with the resulting matrix."),
+    ("inputSchema", schema [("rotation", rotationProp), ("euler", eulerProp), ("quaternion", quaternionProp),
+                            ("relative", prop "boolean" "Turn from the current rotation, in the head's frame")] [])],
   Json.mkObj [("name", "move"),
     ("description", "Walks the head in metres: forward along where it faces, right, and up."),
     ("inputSchema", schema [("forward", prop "number" "Metres forward"), ("right", prop "number" "Metres right"),
@@ -113,12 +131,39 @@ private def sendAll (b : Backend) (cmds : List String) : IO (Option Json) := do
     if !ok? r then return some r
   return none
 
+private def headRotation (state : Json) : Mat3 :=
+  (Mat3.ofJson? ((state.getObjValD "head").getObjValD "rotation")).getD Mat3.identity
+
+/-- The rotation a look asks for: exactly one of matrix, Euler angles or quaternion. -/
+def rotationInput (args : Json) : Except String Mat3 := do
+  let given := ["rotation", "euler", "quaternion"].filter fun k => !(args.getObjValD k).isNull
+  if given.length != 1 then
+    throw "give exactly one of rotation (a 3x3 matrix), euler or quaternion"
+  let r ← match given.head! with
+    | "rotation" =>
+      match Mat3.ofJson? (args.getObjValD "rotation") with
+      | some r => pure r
+      | none => throw "rotation must be three rows of three numbers"
+    | "euler" =>
+      let e := args.getObjValD "euler"
+      let d := e.getObjValD "degrees"
+      match fromEuler (str e "order" "") (arrNum d 0) (arrNum d 1) (arrNum d 2) with
+      | some r => pure r
+      | none => throw s!"euler order must be one of {eulerOrders}"
+    | _ =>
+      let q := args.getObjValD "quaternion"
+      match fromQuaternion (arrNum q 0) (arrNum q 1) (arrNum q 2) (arrNum q 3) with
+      | some r => pure r
+      | none => throw "quaternion must be four numbers, not all zero"
+  if !r.isRotation then throw "not a rotation: the matrix must be orthonormal with determinant +1"
+  return r
+
 private def viewFrom (state : Json) (shot : Float × Float) : View :=
   let head := state.getObjValD "head"
   let pos := head.getObjValD "position"
   let eye := state.getObjValD "eye"
   { headX := arrNum pos 0, headY := arrNum pos 1, headZ := arrNum pos 2
-    yaw := num head "yaw" 0.0, pitch := num head "pitch" 0.0
+    rotation := headRotation state
     halfFovH := num eye "half_fov_horizontal" 50.0, halfFovV := num eye "half_fov_vertical" 50.0
     ipd := num eye "ipd" 0.064
     width := if shot.1 > 0.0 then shot.1 else num eye "width" 1.0
@@ -131,7 +176,7 @@ private def pointCommand (b : Backend) (args : Json) : IO (Except Json (String �
   if !ok? state then return .error state
   let hand := str args "hand" "right"
   let aim := aimThroughPixel (viewFrom state (← b.lastShot.get)) (num args "x" 0.0) (num args "y" 0.0)
-  return .ok (s!"hand {hand} {fmt aim.origin.x} {fmt aim.origin.y} {fmt aim.origin.z} {fmt aim.yaw} {fmt aim.pitch}", aim)
+  return .ok (s!"hand {hand} {fmt aim.origin.x} {fmt aim.origin.y} {fmt aim.origin.z} {aim.rotation.args}", aim)
 
 def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
   let refused (r : Json) : Json := toolResult #[text r.compress] true
@@ -151,27 +196,28 @@ def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
   | "look" =>
     let state ← b.send "state"
     if !ok? state then return refused state
-    let head := state.getObjValD "head"
-    let pos := head.getObjValD "position"
-    let rel := bool args "relative" false
-    let yaw := num args "yaw" 0.0 + (if rel then num head "yaw" 0.0 else 0.0)
-    let pitch := num args "pitch" 0.0 + (if rel then num head "pitch" 0.0 else 0.0)
-    let r ← b.send s!"head {fmt (arrNum pos 0)} {fmt (arrNum pos 1)} {fmt (arrNum pos 2)} {fmt yaw} {fmt pitch} 0"
-    return toolResult #[text r.compress] (!ok? r)
+    let pos := (state.getObjValD "head").getObjValD "position"
+    match rotationInput args with
+    | .error e => return refused (Json.mkObj [("ok", false), ("error", e)])
+    | .ok input =>
+      let r := if bool args "relative" false then (headRotation state).mul input else input
+      let reply ← b.send s!"head {fmt (arrNum pos 0)} {fmt (arrNum pos 1)} {fmt (arrNum pos 2)} {r.args}"
+      if !ok? reply then return refused reply
+      return toolResult #[text (Json.mkObj [("ok", true), ("rotation", r.toJson)]).compress]
   | "move" =>
     let state ← b.send "state"
     if !ok? state then return refused state
-    let head := state.getObjValD "head"
-    let pos := head.getObjValD "position"
-    let d := walk (num head "yaw" 0.0) (num args "forward" 0.0) (num args "right" 0.0) (num args "up" 0.0)
-    let r ← b.send s!"head {fmt (arrNum pos 0 + d.x)} {fmt (arrNum pos 1 + d.y)} {fmt (arrNum pos 2 + d.z)} {fmt (num head "yaw" 0.0)} {fmt (num head "pitch" 0.0)} 0"
+    let pos := (state.getObjValD "head").getObjValD "position"
+    let rotation := headRotation state
+    let d := walk rotation (num args "forward" 0.0) (num args "right" 0.0) (num args "up" 0.0)
+    let r ← b.send s!"head {fmt (arrNum pos 0 + d.x)} {fmt (arrNum pos 1 + d.y)} {fmt (arrNum pos 2 + d.z)} {rotation.args}"
     return toolResult #[text r.compress] (!ok? r)
   | "point_at" =>
     match ← pointCommand b args with
     | .error r => return refused r
     | .ok (cmd, aim) =>
       let r ← b.send cmd
-      return toolResult #[text s!"aimed yaw {fmt aim.yaw} pitch {fmt aim.pitch}; {r.compress}"] (!ok? r)
+      return toolResult #[text (Json.mkObj [("ok", ok? r), ("rotation", aim.rotation.toJson)]).compress] (!ok? r)
   | "click" =>
     match ← pointCommand b args with
     | .error r => return refused r
@@ -182,7 +228,7 @@ def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
       if let some r ← sendAll b [s!"trigger {hand} 1"] then return refused r
       b.sleepMs (num args "hold_ms" 100.0).toUInt64.toNat
       if let some r ← sendAll b [s!"trigger {hand} 0"] then return refused r
-      return toolResult #[text s!"clicked with the {hand} trigger at yaw {fmt aim.yaw} pitch {fmt aim.pitch}"]
+      return toolResult #[text (Json.mkObj [("ok", true), ("hand", hand), ("rotation", aim.rotation.toJson)]).compress]
   | "press" =>
     let button := str args "button" ""
     let hand := str args "hand" "right"

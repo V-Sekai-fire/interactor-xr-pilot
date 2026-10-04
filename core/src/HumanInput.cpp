@@ -54,10 +54,19 @@ Vector rotate(const Quaternion& q, const Vector& v)
     return {p.x, p.y, p.z};
 }
 
-Quaternion headQuaternion(float yaw, float pitch, float roll)
+Vector rotate(const Rotation& r, const Vector& v)
 {
-    return multiply(multiply(axisAngle(0.0f, 1.0f, 0.0f, yaw), axisAngle(1.0f, 0.0f, 0.0f, pitch)),
-                    axisAngle(0.0f, 0.0f, 1.0f, roll));
+    const float in[3] = {v.x, v.y, v.z};
+    float out[3];
+    apply(r, in, out);
+    return {out[0], out[1], out[2]};
+}
+
+float headYaw(const Pose& head)
+{
+    float yaw, pitch, roll;
+    toYawPitchRoll(head.rotation, yaw, pitch, roll);
+    return yaw;
 }
 
 bool held(const AgentState& state, int k)
@@ -91,19 +100,23 @@ void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTi
     }
     state.pointingAge += deltaTime;
 
+    // The mouse and E/R turn the head through its yaw, pitch and roll; the matrix stays the pose.
     Pose& head = state.head;
-    head.yaw -= mouseDx * MouseSensitivity * DegreesPerRadian;
-    head.pitch -= mouseDy * MouseSensitivity * DegreesPerRadian;
-    head.pitch = std::clamp(head.pitch, -1.5f * DegreesPerRadian, 1.5f * DegreesPerRadian);
-
+    float yaw, pitch, roll;
+    toYawPitchRoll(head.rotation, yaw, pitch, roll);
+    yaw -= mouseDx * MouseSensitivity * DegreesPerRadian;
+    pitch -= mouseDy * MouseSensitivity * DegreesPerRadian;
+    pitch = std::clamp(pitch, -1.5f * DegreesPerRadian, 1.5f * DegreesPerRadian);
     if (held(state, key::E))
     {
-        head.roll -= 1.5f * deltaTime * DegreesPerRadian;
+        roll -= 1.5f * deltaTime * DegreesPerRadian;
     }
     if (held(state, key::R))
     {
-        head.roll += 1.5f * deltaTime * DegreesPerRadian;
+        roll += 1.5f * deltaTime * DegreesPerRadian;
     }
+    if (mouseDx != 0.0f || mouseDy != 0.0f || heldAny(state, {key::E, key::R}))
+        head.rotation = fromEuler(EulerOrder::YXZ, yaw, pitch, roll);
 
     float forwardAmount = 0.0f;
     float strafeAmount = 0.0f;
@@ -124,11 +137,11 @@ void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTi
         strafeAmount -= 1.0f;
     }
 
-    const float yaw = head.yaw * RadiansPerDegree;
-    const float forwardX = -std::sin(yaw);
-    const float forwardZ = -std::cos(yaw);
-    const float rightX = std::cos(yaw);
-    const float rightZ = -std::sin(yaw);
+    const float walkYaw = yaw * RadiansPerDegree;
+    const float forwardX = -std::sin(walkYaw);
+    const float forwardZ = -std::cos(walkYaw);
+    const float rightX = std::cos(walkYaw);
+    const float rightZ = -std::sin(walkYaw);
     const float moveX = forwardX * forwardAmount + rightX * strafeAmount;
     const float moveZ = forwardZ * forwardAmount + rightZ * strafeAmount;
     const float moveLength = std::sqrt(moveX * moveX + moveZ * moveZ);
@@ -165,27 +178,25 @@ Pose handPose(const AgentState& state, int hand)
         // The hand points from just under and right of the eye, clear of the line of sight so the
         // avatar's hand does not cover what it clicks, at the gaze point UI-panel distance away.
         constexpr float PanelDistance = 0.6f;
-        const Quaternion orientation = headQuaternion(headPose.yaw * RadiansPerDegree, headPose.pitch * RadiansPerDegree,
-                                                      headPose.roll * RadiansPerDegree);
-        const Vector local = rotate(orientation, {0.05f, -0.10f, -0.25f});
+        const Vector local = rotate(headPose.rotation, {0.05f, -0.10f, -0.25f});
         const Vector at = {head.x + local.x, head.y + local.y, head.z + local.z};
-        const Vector g = rotate(orientation, {0.0f, 0.0f, -PanelDistance});
+        const Vector g = rotate(headPose.rotation, {0.0f, 0.0f, -PanelDistance});
         const Vector aim = {head.x + g.x - at.x, head.y + g.y - at.y, head.z + g.z - at.z};
         const float length = std::max(std::sqrt(aim.x * aim.x + aim.y * aim.y + aim.z * aim.z), 1e-4f);
         out.position[0] = at.x;
         out.position[1] = at.y;
         out.position[2] = at.z;
-        out.yaw = std::atan2(-aim.x, -aim.z) * DegreesPerRadian;
-        out.pitch = std::asin(std::clamp(aim.y / length, -1.0f, 1.0f)) * DegreesPerRadian;
+        out.rotation = fromEuler(EulerOrder::YXZ, std::atan2(-aim.x, -aim.z) * DegreesPerRadian,
+                                 std::asin(std::clamp(aim.y / length, -1.0f, 1.0f)) * DegreesPerRadian, 0.0f);
         return out;
     }
-    const Quaternion bodyYaw = axisAngle(0.0f, 1.0f, 0.0f, headPose.yaw * RadiansPerDegree);
+    const Quaternion bodyYaw = axisAngle(0.0f, 1.0f, 0.0f, headYaw(headPose) * RadiansPerDegree);
     const float* offset = state.handOffset[hand];
     const Vector side = rotate(bodyYaw, {offset[0], offset[1], offset[2]});
     out.position[0] = head.x + side.x;
     out.position[1] = head.y + side.y;
     out.position[2] = head.z + side.z;
-    out.yaw = headPose.yaw;
+    out.rotation = fromEuler(EulerOrder::YXZ, headYaw(headPose), 0.0f, 0.0f);
     return out;
 }
 

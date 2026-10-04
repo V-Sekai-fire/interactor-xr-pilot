@@ -3,8 +3,8 @@
 // The line protocol the MCP server speaks to the pilot over stdio, one command per line and one JSON
 // object per reply line:
 //   state
-//   head <x> <y> <z> <yaw> <pitch> <roll>          metres, degrees
-//   hand <left|right> <x> <y> <z> <yaw> <pitch>    places and shows the hand
+//   head <x> <y> <z> <r00> ... <r22>               metres, then the rotation matrix row by row
+//   hand <left|right> <x> <y> <z> <r00> ... <r22>  places and shows the hand
 //   present <left|right> <0|1>
 //   button <a|b|x|y|menu|left_thumbstick|right_thumbstick|headset> <0|1>
 //   trigger|grip <left|right> <0..1>

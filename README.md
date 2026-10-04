@@ -24,7 +24,7 @@ to it as a headset would, so neither the runtime nor the app needs changing.
 |---|---|
 | `screenshot` | The left eye as a PNG, with the head pose and field of view |
 | `get_state` | Connection, eye size and field of view, head and hand poses, held inputs, frame counts |
-| `look` | Turns the head: yaw (positive turns left) and pitch (positive looks up), absolute or relative |
+| `look` | Turns the head to exactly one of a 3x3 rotation matrix, Euler angles in a named Tait-Bryan order, or a quaternion; absolute or relative to the head |
 | `move` | Walks the head forward, right and up, in metres |
 | `point_at` | Aims a controller through a screenshot pixel, from the eye, so its ray hits what the pixel shows |
 | `click` | `point_at`, a 150 ms hover, then a trigger press and release |
@@ -33,6 +33,8 @@ to it as a headset would, so neither the runtime nor the app needs changing.
 | `set_controllers` | Whether the app sees controllers |
 | `release_all` | Lets go of every input; the head stays where it is |
 | `wait` | Waits so the app can react |
+
+Every rotation the tools report, and every one the pilot's line protocol carries, is a row-major 3x3 matrix taking head- or hand-local vectors to world space; its columns are the local +X, +Y and +Z axes. Euler angles (`XYZ`, `XZY`, `YXZ`, `YZX`, `ZXY`, `ZYX`, intrinsic, degrees) and quaternions (`[x, y, z, w]`) are inputs to `look`, converted to the matrix and never reported back. A matrix that is not orthonormal with determinant +1 is refused.
 
 Pixel arguments refer to the last screenshot, so `point_at` and `click` refuse until one is taken.
 
