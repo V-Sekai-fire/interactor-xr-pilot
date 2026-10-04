@@ -15,7 +15,8 @@
 class Tray final
 {
 public:
-    Tray();
+    // setUpDesk installs the packaged OXRSys files and registers the SteamVR driver on start.
+    explicit Tray(bool setUpDesk = true);
     ~Tray();
 
     Tray(const Tray&) = delete;
