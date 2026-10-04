@@ -493,10 +493,13 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 
 } // namespace
 
-Tray::Tray()
+Tray::Tray(bool setUpDesk)
 {
-    installPackagedFiles();
-    registerSteamVrDriver();
+    if (setUpDesk)
+    {
+        installPackagedFiles();
+        registerSteamVrDriver();
+    }
     idleIcon_ = loadIcon("tray_idle.png");
     streamingIcon_ = loadIcon("tray_streaming.png");
     tray_ = SDL_CreateTray(idleIcon_, "OXRSys");

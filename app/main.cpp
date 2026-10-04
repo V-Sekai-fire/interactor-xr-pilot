@@ -533,14 +533,10 @@ int main(int argc, char** argv)
     }
     windowPtr = window.get();
     window->setPanel("eye", std::make_unique<EyePanel>(client, shared, *window));
-    // A person's pilot carries the OXRSys tray; one an agent starts stays out of the desk's settings.
-    std::unique_ptr<Tray> tray;
-    if (!agent)
-    {
-        tray = std::make_unique<Tray>();
-        if (!tray->ok())
-            std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
-    }
+    // Every pilot carries the OXRSys tray; one an agent starts leaves the desk's install alone at start.
+    std::unique_ptr<Tray> tray = std::make_unique<Tray>(!agent);
+    if (!tray->ok())
+        std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
     window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, tray.get()));
     window->setPanel("stats", std::make_unique<StatsPanel>(client, shared));
 
