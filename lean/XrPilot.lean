@@ -2,4 +2,5 @@
 import XrPilot.Base64
 import XrPilot.Rotation
 import XrPilot.Ray
+import XrPilot.Plan
 import XrPilot.Mcp

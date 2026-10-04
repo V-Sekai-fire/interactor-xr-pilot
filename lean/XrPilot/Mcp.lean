@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
 import Lean.Data.Json
 import XrPilot.Base64
+import XrPilot.Plan
 import XrPilot.Ray
 
 namespace XrPilot
@@ -114,7 +115,12 @@ def tools : Array Json := #[
     ("inputSchema", schema [] [])],
   Json.mkObj [("name", "wait"),
     ("description", "Waits so the app can react before the next screenshot."),
-    ("inputSchema", schema [("ms", prop "integer" "Milliseconds")] ["ms"])]
+    ("inputSchema", schema [("ms", prop "integer" "Milliseconds")] ["ms"])],
+  Json.mkObj [("name", "plan"),
+    ("description", "Runs a taskweft-style task network in one call. methods: {name: {params, alternatives: [{name, check, subtasks}]}}; a subtask is a method call [name, arg...] or a tool call [tool, {arguments}], with \"{param}\" substituted. check is a list of taskweft eval guards ({eval: {type: math/eq|ne|gt|ge|lt|le, a, b}}, with {pointer_get: \"/connected\"} reading get_state). Actions run for real; when one fails the method tries its next alternative from the world as it is. Replies with each action's outcome and the reason it stopped. Every method and tool shows as a span in the pilot's trace."),
+    ("inputSchema", schema [("methods", Json.mkObj [("type", "object"), ("description", "Method name to {params, alternatives}")]),
+                            ("todo_list", Json.mkObj [("type", "array"), ("description", "Tasks to run in order, e.g. [[\"open_door\"], [\"click\", {\"x\": 568, \"y\": 632}]]")]),
+                            ("max_steps", prop "integer" "Most actions to run; 256 by default")] ["todo_list"])]
 ]
 
 private def text (s : String) : Json := Json.mkObj [("type", "text"), ("text", s)]
@@ -183,7 +189,7 @@ def spanDetail (args : Json) : String :=
   let shown := if args.isNull then "" else (args.compress.replace "\n" " ").replace "\r" " "
   if shown.length > 160 then (shown.take 157).toString ++ "..." else shown
 
-private def runTool (b : Backend) (name : String) (args : Json) : IO Json := do
+private def runTool (b : Backend) (name : String) (args : Json) (call : String → Json → IO Json) : IO Json := do
   let refused (r : Json) : Json := toolResult #[text r.compress] true
   match name with
   | "screenshot" =>
@@ -264,14 +270,25 @@ private def runTool (b : Backend) (name : String) (args : Json) : IO Json := do
   | "wait" =>
     b.sleepMs (num args "ms" 0.0).toUInt64.toNat
     return toolResult #[text "waited"]
+  | "plan" =>
+    let actor : Actor := {
+      tool := call
+      state := b.send "state"
+      mark := fun line => do let _ ← b.send line
+      isTool := fun n => n != "plan" && tools.any (fun t => str t "name" "" == n) }
+    let limits : PlanLimits := { maxSteps := (num args "max_steps" 256.0).toUInt64.toNat }
+    let trace ← runPlan actor args limits
+    let reply := Json.mkObj [("ok", trace.failure.isNone), ("steps", Json.arr trace.steps),
+                             ("failure", match trace.failure with | some f => Json.str f | none => Json.null)]
+    return toolResult #[text reply.compress] trace.failure.isSome
   | other => throw (IO.userError s!"unknown tool: {other}")
 
 /-- Runs a tool inside a span, so the pilot's trace shows the call, its commands, its time and its outcome. -/
-def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
+partial def callTool (b : Backend) (name : String) (args : Json) : IO Json := do
   let id := toString (← IO.monoNanosNow)
   let _ ← b.send s!"span begin {id} {name} {spanDetail args}"
   try
-    let result ← runTool b name args
+    let result ← runTool b name args (callTool b)
     let failed := bool result "isError" false
     let _ ← b.send s!"span end {id} {if failed then "error" else "ok"}"
     return result

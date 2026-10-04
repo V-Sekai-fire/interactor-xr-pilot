@@ -127,7 +127,7 @@ def main : IO UInt32 := do
   let names := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
     | .ok ts => ts.map (fun (t : Json) => match (t.getObjValD "name").getStr? with | .ok s => s | .error _ => "")
     | .error _ => #[]
-  c (names.size == 11 && names.contains "click" && names.contains "screenshot") s!"tools/list lists 11 tools, got {names}"
+  c (names.size == 12 && names.contains "click" && names.contains "plan") s!"tools/list lists 12 tools, got {names}"
 
   let unknown ← call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"teleport\"}}"
   c (code unknown == -32602) "an unknown tool is a JSON-RPC error"
@@ -178,6 +178,38 @@ def main : IO UInt32 := do
       (marks[1]!).startsWith "span end " && (marks[1]!).endsWith " ok")
     s!"a tool call opens and closes one span, marked {marks}"
   c ((spanDetail (Json.str (String.ofList (List.replicate 400 (Char.ofNat 120))))).length ≤ 160) "a long argument list is cut to one short line"
+
+  -- plan: a method falls through to its next alternative when an action fails, and a check gates one.
+  let planCall (body : String) : IO Json := call s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":\{\"name\":\"plan\",\"arguments\":{body}}}"
+  f.sent.set #[]
+  let fallthrough ← planCall "{\"methods\":{\"poke\":{\"params\":[\"b\"],\"alternatives\":[{\"name\":\"broken\",\"subtasks\":[[\"teleport\",{}]]},{\"name\":\"press_it\",\"subtasks\":[[\"press\",{\"button\":\"{b}\"}]]}]}},\"todo_list\":[[\"poke\",\"a\"]]}"
+  c (!isError fallthrough && (← f.sent.get) == #["button a 1", "button a 0"])
+    s!"plan falls through to the alternative that works and substitutes its parameter, sent {← f.sent.get}"
+  f.sent.set #[]
+  let gated ← planCall "{\"methods\":{\"poke\":{\"alternatives\":[{\"name\":\"offline\",\"check\":[{\"eval\":{\"type\":\"math/eq\",\"a\":{\"pointer_get\":\"/connected\"},\"b\":false}}],\"subtasks\":[[\"press\",{\"button\":\"x\"}]]},{\"name\":\"online\",\"check\":[{\"eval\":{\"type\":\"math/eq\",\"a\":{\"pointer_get\":\"/connected\"},\"b\":true}}],\"subtasks\":[[\"press\",{\"button\":\"y\"}]]}]}},\"todo_list\":[[\"poke\"]]}"
+  c (!isError gated && ((← f.sent.get).filter (·.startsWith "button")) == #["button y 1", "button y 0"])
+    s!"a false check skips its alternative and a true one runs, sent {← f.sent.get}"
+  let none ← planCall "{\"methods\":{},\"todo_list\":[[\"nothing_here\"]]}"
+  c (isError none) "control: a task that is neither a tool nor a method fails the plan"
+  let fuel ← planCall "{\"methods\":{\"loop\":{\"alternatives\":[{\"name\":\"again\",\"subtasks\":[[\"wait\",{\"ms\":0}],[\"loop\"]]}]}},\"todo_list\":[[\"loop\"]],\"max_steps\":5}"
+  c (isError fuel) "control: a plan that never ends runs out of fuel instead of hanging"
+  c (evalCheck (Json.mkObj [("frames", Json.mkObj [("decoded", (12 : Nat))])])
+      (Json.mkObj [("eval", Json.mkObj [("type", "math/gt"), ("a", Json.mkObj [("pointer_get", "/frames/decoded")]), ("b", (10 : Nat))])]))
+    "a pointer reads a nested number for a comparison"
+  f.sent.set #[]
+  let met ← planCall "{\"methods\":{},\"todo_list\":[{\"goal\":[{\"pointer\":\"/connected\",\"eq\":true}]}]}"
+  c (!isError met && ((← f.sent.get).filter (· != "state")).isEmpty) "a goal already met runs nothing"
+  let unreachable ← planCall "{\"methods\":{\"connected\":{\"params\":[\"want\"],\"alternatives\":[{\"name\":\"wait_for_it\",\"subtasks\":[[\"wait\",{\"ms\":0}]]}]}},\"todo_list\":[{\"goal\":[{\"pointer\":\"/connected\",\"eq\":false}]}]}"
+  c (isError unreachable) "control: a goal its method does not reach fails the plan"
+  f.sent.set #[]
+  let refusedCap ← planCall "{\"capabilities\":[\"wait\"],\"methods\":{},\"todo_list\":[[\"press\",{\"button\":\"a\"}]]}"
+  c (isError refusedCap && ((← f.sent.get).filter (·.startsWith "button")).isEmpty)
+    "control: an action outside the capabilities is refused before it runs"
+  let timed ← planCall "{\"capabilities\":[\"wait\"],\"methods\":{},\"todo_list\":[[\"wait\",{\"ms\":0}]]}"
+  let firstContent := (((timed.getObjValD "result").getObjValD "content").getArrVal? 0).toOption.getD Json.null
+  let timedText := ((firstContent.getObjValD "text").getStr?).toOption.getD ""
+  c (!isError timed && (timedText.splitOn "duration_ms").length > 1 && (timedText.splitOn "start_ms").length > 1)
+    s!"each action records when it started and how long it took, got {timedText}"
 
   f.backend.lastShot.set (0.0, 0.0)
   f.sent.set #[]
