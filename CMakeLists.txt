@@ -65,6 +65,18 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       json.malformed-rejected)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
+# Installing OXRSys into the per-user folders, MPL-2.0 like the tray it serves; no SDL, so CI tests it.
+add_library(xrpilot_install STATIC tray/src/Install.cpp)
+target_include_directories(xrpilot_install PUBLIC tray/include)
+target_link_libraries(xrpilot_install PUBLIC xrpilot_core)
+add_executable(xrpilot-install-tests tray/tests/install.cpp)
+target_link_libraries(xrpilot-install-tests PRIVATE xrpilot_install)
+foreach(name IN ITEMS install.complete-source-installs install.files-identical-to-source
+                      install.changed-source-is-recopied install.missing-driver-writes-nothing
+                      install.missing-runtime-refused install.stale-manifest-is-not-an-install)
+    add_test(NAME ${name} COMMAND xrpilot-install-tests ${name})
+endforeach()
+
 add_executable(xrpilot-human-tests core/tests/human.cpp)
 target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
@@ -122,7 +134,7 @@ target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 # The OXRSys tray, MPL-2.0 like the Home tray it is ported from.
 add_library(xrpilot_tray STATIC tray/src/Tray.cpp)
 target_include_directories(xrpilot_tray PUBLIC tray/include)
-target_link_libraries(xrpilot_tray PUBLIC xrpilot_core panelspun)
+target_link_libraries(xrpilot_tray PUBLIC xrpilot_install panelspun)
 
 add_executable(xr-pilot app/main.cpp)
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
