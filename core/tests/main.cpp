@@ -398,14 +398,19 @@ const std::map<std::string, std::function<void()>> cases = {
          log.end("m", true, 6);
          log.end("p", true, 7);
          rows = log.visible();
-         check(rows.size() == 1 && rows[0].name == "plan", "a finished plan folds everything inside it");
+         check(rows.size() == 2 && rows[1].name == "glance/turn", "the latest plan stays open on its method");
+         log.begin("q", "screenshot", "{}", 8);
+         log.end("q", true, 9);
+         rows = log.visible();
+         check(rows.size() == 2 && rows[0].name == "plan" && rows[1].name == "screenshot",
+               "control: once another span follows, a finished plan folds everything inside it");
          log.toggle("p");
          rows = log.visible();
-         check(rows.size() == 2 && rows[1].name == "glance/turn", "expanding the plan shows its method, still folded");
+         check(rows.size() == 3 && rows[1].name == "glance/turn", "expanding the plan shows its method, still folded");
          log.toggle("m");
-         check(log.visible().size() == 4, "expanding the method too shows its tools");
+         check(log.visible().size() == 5, "expanding the method too shows its tools");
          log.toggle("p");
-         check(log.visible().size() == 1, "folding the plan hides the expanded method again");
+         check(log.visible().size() == 2, "folding the plan hides the expanded method again");
          SpanLog siblings;
          siblings.begin("a", "plan", "{}", 0);
          siblings.begin("x", "look", "{}", 1);

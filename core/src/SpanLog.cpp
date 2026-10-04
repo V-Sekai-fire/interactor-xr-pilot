@@ -92,6 +92,16 @@ std::vector<Span> SpanLog::visible() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<Span> rows;
+    // The latest top-level span stays unfolded, so the most recent motions show without a click.
+    std::string latest;
+    for (std::deque<Span>::const_reverse_iterator it = spans_.rbegin(); it != spans_.rend(); ++it)
+    {
+        if (it->parent.empty())
+        {
+            latest = it->id;
+            break;
+        }
+    }
     // Whether each span shows its nested spans, by id; parents come before their children.
     std::vector<std::pair<std::string, bool>> opens;
     for (const Span& span : spans_)
@@ -108,7 +118,8 @@ std::vector<Span> SpanLog::visible() const
                 }
             }
         }
-        opens.emplace_back(span.id, shown && (span.running() || span.expanded));
+        const bool open = span.running() || (span.id == latest ? !span.expanded : span.expanded);
+        opens.emplace_back(span.id, shown && open);
         if (shown)
             rows.push_back(span);
     }

@@ -60,7 +60,8 @@ public:
     // Oldest first, every span.
     std::vector<Span> recent() const;
     // The rows a trace shows, oldest first: a nested span shows while every span above it is
-    // running or expanded, so a finished span folds what ran inside it.
+    // running or expanded, so a finished span folds what ran inside it. The latest top-level span is
+    // the exception, open until toggled.
     std::vector<Span> visible() const;
     // Expands a finished span, or folds it again.
     void toggle(const std::string& id);
