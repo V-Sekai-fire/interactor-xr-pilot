@@ -1,22 +1,10 @@
 # interactor-xr-pilot
-Lets an AI agent see and drive OpenXR apps through OXRSys: eye frames in, head, hands and buttons out, over MCP.
+Lets an AI agent see and drive OpenXR apps.
 
 XR Pilot is a computer-use tool for VR. An agent takes a screenshot of what an OpenXR app shows the
 left eye, then turns the head, walks, points a controller at a pixel, clicks with the trigger, or
 presses buttons, the way a desktop computer-use driver moves a mouse. The app runs on the desktop OpenXR runtime, and XR Pilot connects
 to it as a headset would, so neither the runtime nor the app needs changing.
-
-## Pieces
-
-- `xr_pilot_mcp` (Lean 4, `lean/`): the MCP server an agent registers. JSON-RPC 2.0 over stdio, and
-  the pixel-to-ray maths (`XrPilot/Ray.lean`). It starts `xr-pilot` and drives it over that
-  process's stdin and stdout.
-- `xr-pilot` (C++20, `app/`, `core/`): the OXRSys client. It finds a runtime by its UDP announce,
-  streams the agent's head and controllers at 90 Hz, and decodes the PyroWave video on the GPU:
-  PyroWave decodes into planes and the Lean-authored `yuv420_to_rgbx` kernel from OXRSys packs RGBX,
-  on the same Vulkan device the window presents with. Frames come back to the CPU only for a
-  screenshot. The window, built with [panelspun](https://github.com/V-Sekai-fire/interactor-panelspun)
-  (SDL3 and ThorVG), shows the left eye and the agent's state.
 
 ## Tools
 
