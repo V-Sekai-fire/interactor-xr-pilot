@@ -120,6 +120,8 @@ def tools : Array Json := #[
     ("description", "Runs a taskweft-style task network in one call. methods: {name: {params, alternatives: [{name, check, subtasks}]}}; a subtask is a method call [name, arg...] or a tool call [tool, {arguments}], with \"{param}\" substituted. check is a list of taskweft eval guards ({eval: {type: math/eq|ne|gt|ge|lt|le, a, b}}, with {pointer_get: \"/connected\"} reading get_state). Actions run for real; when one fails the method tries its next alternative from the world as it is. Replies with each action's outcome and the reason it stopped. Every method and tool shows as a span in the pilot's trace."),
     ("inputSchema", schema [("methods", Json.mkObj [("type", "object"), ("description", "Method name to {params, alternatives}")]),
                             ("todo_list", Json.mkObj [("type", "array"), ("description", "Tasks to run in order, e.g. [[\"open_door\"], [\"click\", {\"x\": 568, \"y\": 632}]]")]),
+                            ("capabilities", Json.mkObj [("type", "array"), ("items", Json.mkObj [("type", "string")]),
+                              ("description", "The tools this plan may use; any other is refused. All tools when absent")]),
                             ("max_steps", prop "integer" "Most actions to run; 256 by default")] ["todo_list"])]
 ]
 

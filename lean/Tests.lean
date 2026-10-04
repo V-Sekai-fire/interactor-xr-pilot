@@ -128,6 +128,13 @@ def main : IO UInt32 := do
     | .ok ts => ts.map (fun (t : Json) => match (t.getObjValD "name").getStr? with | .ok s => s | .error _ => "")
     | .error _ => #[]
   c (names.size == 12 && names.contains "click" && names.contains "plan") s!"tools/list lists 12 tools, got {names}"
+  -- A client sends only the properties a tool declares, so every field plan reads must be in its schema.
+  let planSchema := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
+    | .ok ts => (ts.find? (fun (t : Json) => (t.getObjValD "name").getStr?.toOption == some "plan")).getD Json.null
+    | .error _ => Json.null
+  let declared := (planSchema.getObjValD "inputSchema").getObjValD "properties"
+  c (["methods", "todo_list", "capabilities", "max_steps"].all fun k => !(declared.getObjValD k).isNull)
+    "plan's schema declares every field it reads"
 
   let unknown ← call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"teleport\"}}"
   c (code unknown == -32602) "an unknown tool is a JSON-RPC error"
