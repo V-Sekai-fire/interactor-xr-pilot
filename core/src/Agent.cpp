@@ -38,6 +38,20 @@ AgentState::AgentState()
     head.position[1] = 1.6f;
 }
 
+void setSeated(AgentState& state, bool seated)
+{
+    if (state.seated == seated)
+        return;
+    state.seated = seated;
+    const float dy = seated ? -SeatedEyeDrop : SeatedEyeDrop;
+    state.head.position[1] += dy;
+    for (HandState& hand : state.hands)
+    {
+        if (hand.manual)
+            hand.pose.position[1] += dy;
+    }
+}
+
 void poseQuaternion(const Pose& pose, float out[4])
 {
     float yaw[4];

@@ -161,6 +161,22 @@ const std::map<std::string, std::function<void()>> cases = {
          const TrackingPacket released = packetOf(s);
          check(std::abs(released.rightControllerPos[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
      }},
+    {"human.seated-lowers-head-and-hands",
+     [] {
+         AgentState s;
+         s.hands[0].manual = true;
+         s.hands[0].pose.position[1] = 1.0f;
+         const float standingHand = handPose(s, 1).position[1];
+         setSeated(s, true);
+         check(std::abs(s.head.position[1] - 1.2f) < 1e-5f, "seated eyes at 1.2 m");
+         check(std::abs(s.hands[0].pose.position[1] - 0.6f) < 1e-5f, "a placed hand drops with the head");
+         check(std::abs(standingHand - handPose(s, 1).position[1] - SeatedEyeDrop) < 1e-5f,
+               "a body-relative hand drops with the head");
+         setSeated(s, true);
+         check(std::abs(s.head.position[1] - 1.2f) < 1e-5f, "sitting twice does not drop twice");
+         setSeated(s, false);
+         check(std::abs(s.head.position[1] - 1.6f) < 1e-5f, "standing restores 1.6 m");
+     }},
     {"sparkline.deltas-over-ten-seconds",
      [] {
          Sparkline s;

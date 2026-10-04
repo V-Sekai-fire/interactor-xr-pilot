@@ -48,12 +48,19 @@ struct AgentState
     bool pointing = false;
     float pointingAge = 0.0f;
     std::set<int> keys; // held keys and mouse buttons, as HumanInput's key codes
+    bool seated = false;
 
     AgentState();
 };
 
 // Builds the packet the runtime reads; the left eye FOV is symmetric at verticalFovDegrees and eyeAspect.
 void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::protocol::TrackingPacket& packet);
+
+// How far the eyes drop from standing to sitting on a chair: 1.6 m to 1.2 m.
+constexpr float SeatedEyeDrop = 0.4f;
+
+// Sits or stands: the head and any placed hand move by SeatedEyeDrop; body-relative hands follow the head.
+void setSeated(AgentState& state, bool seated);
 
 // Quaternion (x, y, z, w) of a pose's orientation.
 void poseQuaternion(const Pose& pose, float out[4]);
