@@ -134,7 +134,7 @@ def tools : Array Json := #[
                             ("meters", prop "number" "smooth: how far, at 1.5 m/s; 1 by default"),
                             ("count", prop "integer" "snap_turn: how many turns; teleport: how many hops; 1 by default")] ["mode"])],
   Json.mkObj [("name", "plan"),
-    ("description", "Runs a taskweft-style task network in one call. methods: {name: {params, alternatives: [{name, check, subtasks}]}}; a subtask is a method call [name, arg...] or a tool call [tool, {arguments}], with \"{param}\" substituted. check is a list of taskweft eval guards ({eval: {type: math/eq|ne|gt|ge|lt|le, a, b}}, with {pointer_get: \"/connected\"} reading get_state). Actions run for real; when one fails the method tries its next alternative from the world as it is. Replies with each action's outcome and the reason it stopped. Every method and tool shows as a span in the pilot's trace."),
+    ("description", "Runs a taskweft-style task network in one call; the last screenshot a step takes comes back with the reply. methods: {name: {params, alternatives: [{name, check, subtasks}]}}; a subtask is a method call [name, arg...] or a tool call [tool, {arguments}], with \"{param}\" substituted. check is a list of taskweft eval guards ({eval: {type: math/eq|ne|gt|ge|lt|le, a, b}}, with {pointer_get: \"/connected\"} reading get_state). Actions run for real; when one fails the method tries its next alternative from the world as it is. Replies with each action's outcome and the reason it stopped. Every method and tool shows as a span in the pilot's trace."),
     ("inputSchema", schema [("methods", Json.mkObj [("type", "object"), ("description", "Method name to {params, alternatives}")]),
                             ("todo_list", Json.mkObj [("type", "array"), ("description", "Tasks to run in order, e.g. [[\"open_door\"], [\"click\", {\"x\": 568, \"y\": 632}]]")]),
                             ("capabilities", Json.mkObj [("type", "array"), ("items", Json.mkObj [("type", "string")]),
@@ -344,8 +344,18 @@ private def runTool (b : Backend) (name : String) (args : Json) (call : String �
       return toolResult #[text s!"teleported x{count}"]
     | other => return refused (Json.mkObj [("ok", false), ("error", s!"mode must be smooth, snap_turn or teleport, got {other}")])
   | "plan" =>
+    -- The last image a step returned comes back with the plan's reply, so a plan can end on a screenshot.
+    let lastImage ← IO.mkRef (none : Option Json)
+    let keepImage := fun (name : String) (stepArgs : Json) => do
+      let result ← call name stepArgs
+      match result.getObjValD "content" with
+      | .arr items =>
+        for item in items do
+          if str item "type" "" == "image" then lastImage.set (some item)
+      | _ => pure ()
+      return result
     let actor : Actor := {
-      tool := call
+      tool := keepImage
       state := b.send "state"
       mark := fun line => do let _ ← b.send line
       isTool := fun n => n != "plan" && tools.any (fun t => str t "name" "" == n) }
@@ -353,7 +363,10 @@ private def runTool (b : Backend) (name : String) (args : Json) (call : String �
     let trace ← runPlan actor args limits
     let reply := Json.mkObj [("ok", trace.failure.isNone), ("steps", Json.arr trace.steps),
                              ("failure", match trace.failure with | some f => Json.str f | none => Json.null)]
-    return toolResult #[text reply.compress] trace.failure.isSome
+    let content := match ← lastImage.get with
+      | some image => #[text reply.compress, image]
+      | none => #[text reply.compress]
+    return toolResult content trace.failure.isSome
   | other => throw (IO.userError s!"unknown tool: {other}")
 
 /-- Runs a tool inside a span, so the pilot's trace shows the call, its commands, its time and its outcome. -/
