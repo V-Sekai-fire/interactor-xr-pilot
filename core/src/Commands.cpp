@@ -96,8 +96,11 @@ std::string errorJson(const std::string& message)
 
 std::string stateJson(const AgentState& state, const ClientStatus& status, uint64_t framesDecoded)
 {
-    const float halfV = state.verticalFovDegrees * 0.5f;
-    const float halfH = std::atan(std::tan(halfV * 0.017453292f) * state.eyeAspect) * 57.29578f;
+    float halfH = 0.0f;
+    float halfV = 0.0f;
+    eyeHalfFov(state, halfH, halfV);
+    halfH *= 57.29578f;
+    halfV *= 57.29578f;
     std::string hands;
     for (int i = 0; i < 2; ++i)
     {

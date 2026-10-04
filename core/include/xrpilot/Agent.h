@@ -41,6 +41,9 @@ struct AgentState
     float ipd = 0.064f;
     float verticalFovDegrees = 100.0f;
     float eyeAspect = 1.0f;
+    // The left eye's tangents (left, right, up, down) when the runtime renders a fixed field of view;
+    // all zero when it renders the one sent in eyeFov.
+    float renderTangents[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     // Hands rest at the sides, relative to the head in its yaw frame, so they follow walking and turning.
     float handOffset[2][3] = {{-0.22f, -0.72f, -0.05f}, {0.22f, -0.72f, -0.05f}};
     // Pointing latches with no time limit (WCAG 2.2 SC 2.2.1) until the person lowers the hand.
@@ -52,7 +55,10 @@ struct AgentState
     AgentState();
 };
 
-// Builds the packet the runtime reads; the left eye FOV is symmetric at verticalFovDegrees and eyeAspect.
+// The left eye's half fields of view in radians: the runtime's when it fixes them, else verticalFovDegrees and eyeAspect.
+void eyeHalfFov(const AgentState& state, float& horizontal, float& vertical);
+
+// Builds the packet the runtime reads; the left eye FOV comes from eyeHalfFov.
 void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::protocol::TrackingPacket& packet);
 
 // How far the eyes drop from standing to sitting on a chair: 1.6 m to 1.2 m.

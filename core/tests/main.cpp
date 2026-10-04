@@ -292,6 +292,24 @@ const std::map<std::string, std::function<void()>> cases = {
          check(json.find("\"yaw\"") == std::string::npos, "state carries no Euler angles");
          check(json.find("\"decoded\":12") != std::string::npos, "state reports decoded frames");
      }},
+    {"commands.state-reports-runtime-fov",
+     [] {
+         AgentState s;
+         s.eyeAspect = 0.9f;
+         ClientStatus status;
+         const std::string own = runCommand("state", s, status, 0).reply;
+         check(own.find("\"half_fov_vertical\":50") != std::string::npos, "without the runtime's FOV, the pilot's own 100 degrees");
+         const float fixed[4] = {-1.0f, 1.0f, 1.0f, -1.0f};
+         std::copy(fixed, fixed + 4, s.renderTangents);
+         const std::string runtime = runCommand("state", s, status, 0).reply;
+         check(runtime.find("\"half_fov_vertical\":45") != std::string::npos &&
+                   runtime.find("\"half_fov_horizontal\":45") != std::string::npos,
+               "tangents of 1 report 45 degrees each way");
+         oxr::protocol::TrackingPacket p;
+         fillTrackingPacket(s, 1, p);
+         check(std::abs(p.eyeFov[2] - 0.785398f) < 1e-4f && std::abs(p.eyeFov[0] + 0.785398f) < 1e-4f,
+               "the packet sends the runtime's field of view");
+     }},
     {"rotation.euler-orders-match-axis-products",
      [] {
          // Each order is the product of its axis rotations, checked against a vector it turns.
