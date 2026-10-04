@@ -22,6 +22,8 @@ struct WindowConfig {
     bool vulkanAllFeatures = false;
     // Wakes the frame loop this many times a second even with no events, for held keys; 0 waits for events.
     int tickHz = 0;
+    // Keeps the panels where the layout put them: split handles do not drag or highlight.
+    bool lockLayout = false;
 };
 
 class Window {
