@@ -21,6 +21,8 @@ using NativeSocket = int;
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -128,7 +130,8 @@ bool Client::start(std::string* error)
     discoverySocket_ = openUdp(oxr::protocol::DISCOVERY_PORT, 0, error);
     videoSocket_ = discoverySocket_ < 0 ? -1 : openUdp(oxr::protocol::VIDEO_PORT, 8 * 1024 * 1024, error);
     sendSocket_ = videoSocket_ < 0 ? -1 : openUdp(0, 0, error);
-    if (sendSocket_ < 0)
+    motionSocket_ = sendSocket_ < 0 ? -1 : openUdp(0, 0, error);
+    if (motionSocket_ < 0)
     {
         stop();
         return false;
@@ -137,13 +140,14 @@ bool Client::start(std::string* error)
     discovery_ = std::thread([this] { discoveryLoop(); });
     video_ = std::thread([this] { videoLoop(); });
     tracking_ = std::thread([this] { trackingLoop(); });
+    motion_ = std::thread([this] { motionLoop(); });
     return true;
 }
 
 void Client::stop()
 {
     const bool wasRunning = running_.exchange(false);
-    for (std::thread* t : {&discovery_, &video_, &tracking_})
+    for (std::thread* t : {&discovery_, &video_, &tracking_, &motion_})
     {
         if (t->joinable())
             t->join();
@@ -158,7 +162,7 @@ void Client::stop()
             sendTo(sendSocket_, serverAddress_, oxr::protocol::CONTROL_PORT, &bye, sizeof(bye));
         }
     }
-    for (intptr_t* s : {&discoverySocket_, &videoSocket_, &sendSocket_})
+    for (intptr_t* s : {&discoverySocket_, &videoSocket_, &sendSocket_, &motionSocket_})
     {
         if (*s >= 0)
             closeSocket(*s);
@@ -301,21 +305,97 @@ void Client::trackingLoop()
         oxr::protocol::TrackingPacket packet;
         uint32_t address = 0;
         bool connected = false;
+        AgentState agent;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             fillTrackingPacket(agent_, monotonicNowNs(), packet);
+            agent = agent_;
             address = serverAddress_;
             connected = status_.connected;
             if (connected)
                 ++status_.trackingSent;
         }
         if (connected)
+        {
             sendTo(sendSocket_, address, oxr::protocol::TRACKING_PORT, &packet, sizeof(packet));
+            sendBody(agent, packet, address);
+        }
         const int64_t wait = next - monotonicNowNs();
         if (wait > 0)
             std::this_thread::sleep_for(std::chrono::nanoseconds(wait));
         else
             next = monotonicNowNs();
+    }
+}
+
+// The left stick walks the legs: it steers MotionBricks a third of the ticks, and the game world slides
+// past at the smooth locomotion speed, which carries the planted feet with it.
+void Client::sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address)
+{
+    const float sx = packet.leftThumbstick[0];
+    const float sy = packet.leftThumbstick[1];
+    const float push = std::min(1.0f, std::sqrt(sx * sx + sy * sy));
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
+    toYawPitchRoll(agent.head.rotation, yaw, pitch, roll);
+    const Rotation turn = fromEuler(EulerOrder::YXZ, yaw, 0.0f, 0.0f);
+    const float local[3] = {sx, 0.0f, -sy};
+    float walk[3];
+    apply(turn, local, walk);
+    const float dt = float(TrackingPeriodNs) * 1e-9f;
+    SimBody body;
+    bool fresh = false;
+    float scale = 1.0f;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (int c = 0; c < 3; ++c)
+            locomotion_[c] -= walk[c] * SmoothLocomotionSpeed * dt;
+        fresh = g1AtNs_ != 0 && monotonicNowNs() - g1AtNs_ < 500'000'000;
+        if (fresh)
+        {
+            body = composeBody(agent, g1_, locomotion_, legs_);
+            scale = legScale(agent, legs_);
+            ++status_.bodySent;
+        }
+    }
+    if (fresh)
+    {
+        oxr::protocol::BodyPose pose;
+        pose.contactMask = body.contact;
+        std::memcpy(pose.joints, body.joints, sizeof(pose.joints));
+        sendTo(sendSocket_, address, oxr::protocol::CONTROL_PORT, &pose, sizeof(pose));
+    }
+    if (steerTick_++ % 3 == 0)
+    {
+        // G1 faces +Z with its left at +X; it walks slower by the scale, so its stride lands where ours does.
+        char steer[96];
+        const float speed = push > 0.15f ? push * SmoothLocomotionSpeed / scale : 0.0f;
+        const int n = std::snprintf(steer, sizeof(steer), "steer %.3f %.3f 0 1 %.3f", -sx, sy, speed);
+        sendTo(motionSocket_, htonl(INADDR_LOOPBACK), MotionHostPort, steer, size_t(n));
+    }
+}
+
+void Client::motionLoop()
+{
+    std::vector<char> buffer(2048);
+    while (running_)
+    {
+        sockaddr_in from{};
+        SocketLength fromLength = sizeof(from);
+        const int n = recvfrom(NativeSocket(motionSocket_), buffer.data(), int(buffer.size()), 0,
+                               reinterpret_cast<sockaddr*>(&from), &fromLength);
+        const size_t expected = 8 + sizeof(float) * 3 * g1::Joints;
+        if (n != int(expected) || std::memcmp(buffer.data(), "MBF1", 4) != 0)
+            continue;
+        uint32_t joints = 0;
+        std::memcpy(&joints, buffer.data() + 4, sizeof(joints));
+        if (joints != uint32_t(g1::Joints))
+            continue;
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::memcpy(g1_, buffer.data() + 8, sizeof(g1_));
+        g1AtNs_ = monotonicNowNs();
+        ++status_.motionFrames;
     }
 }
 

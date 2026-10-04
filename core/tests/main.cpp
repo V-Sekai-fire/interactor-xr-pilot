@@ -46,6 +46,118 @@ float distance3(const float* p, const float* q)
     return std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
 }
 
+// An analytic G1 walk at 0.8 m/s along +Z, one stride a second, the pelvis swaying 3 cm and bobbing 2 cm:
+// each foot rests at its footprint for 60% of the cycle and swings to the next; legs 0.4 + 0.4 m.
+void syntheticG1(float t, float out[g1::Joints * 3], bool& stance0, bool& stance1)
+{
+    const float speed = 0.8f;
+    const float period = 1.0f;
+    const float pi = 3.14159265f;
+    for (int i = 0; i < g1::Joints * 3; ++i)
+        out[i] = 0.0f;
+    const float pelvis[3] = {0.03f * std::sin(2.0f * pi * t / period), 0.8f + 0.02f * std::cos(4.0f * pi * t / period),
+                             speed * t};
+    for (int c = 0; c < 3; ++c)
+        out[3 * g1::Pelvis + c] = pelvis[c];
+    for (int i = 0; i < 2; ++i)
+    {
+        const float cycle = t / period + 0.5f * float(i);
+        const float n = std::floor(cycle);
+        const float phase = cycle - n;
+        const float footprint = speed * period * (n - 0.5f * float(i)) + speed * period * 0.3f;
+        float ankle[3] = {i == 0 ? 0.1f : -0.1f, 0.04f, footprint};
+        if (phase >= 0.6f)
+        {
+            const float u = (phase - 0.6f) / 0.4f;
+            ankle[2] = footprint + speed * period * u;
+            ankle[1] = 0.04f + 0.15f * std::sin(pi * u);
+        }
+        (i == 0 ? stance0 : stance1) = phase < 0.6f;
+        const float hip[3] = {pelvis[0] + (i == 0 ? 0.1f : -0.1f), pelvis[1] - 0.05f, pelvis[2]};
+        float mid[3];
+        float span[3];
+        for (int c = 0; c < 3; ++c)
+        {
+            mid[c] = 0.5f * (hip[c] + ankle[c]);
+            span[c] = ankle[c] - hip[c];
+        }
+        const float d = std::sqrt(span[0] * span[0] + span[1] * span[1] + span[2] * span[2]);
+        const float bend = std::sqrt(std::max(0.0f, 0.16f - 0.25f * d * d));
+        // Forward (+Z) and perpendicular to the leg in its sagittal plane.
+        const float perpY = span[2] / std::sqrt(span[1] * span[1] + span[2] * span[2]);
+        const float perpZ = -span[1] / std::sqrt(span[1] * span[1] + span[2] * span[2]);
+        const float knee[3] = {mid[0], mid[1] + bend * perpY, mid[2] + bend * perpZ};
+        for (int c = 0; c < 3; ++c)
+        {
+            out[3 * g1::Hip[i] + c] = hip[c];
+            out[3 * g1::Knee[i] + c] = knee[c];
+            out[3 * g1::Ankle[i] + c] = ankle[c];
+        }
+        out[3 * g1::Toe[i]] = ankle[0];
+        out[3 * g1::Toe[i] + 1] = ankle[1] - 0.03f;
+        out[3 * g1::Toe[i] + 2] = ankle[2] + 0.15f;
+    }
+}
+
+// Walks the synthetic G1 for four seconds at 30 frames a second, the player standing still while the
+// game world slides past at the walk's speed in this body, and measures each planted foot against the
+// world: how far it drifts within one stance, how far its ankle is from its floor height, its toe from
+// the floor, and how far each leg bone is from its length.
+struct GaitMeasure
+{
+    float worstSlip = 0.0f;
+    float worstAnkleHeight = 0.0f;
+    float worstToe = 0.0f;
+    float worstBone = 0.0f;
+    int plantedFrames = 0;
+};
+
+GaitMeasure walkSynthetic(const ComposeOptions& options)
+{
+    AgentState s;
+    BodyModel body;
+    LegState legs;
+    GaitMeasure m;
+    const float k = body.scaleFor(1.6f);
+    float frame[g1::Joints * 3];
+    bool stance[2] = {false, false};
+    float start[2][3] = {};
+    bool wasPlanted[2] = {false, false};
+    for (int f = 0; f < 120; ++f)
+    {
+        const float t = 0.5f + float(f) / 30.0f;
+        syntheticG1(t, frame, stance[0], stance[1]);
+        if (f == 0)
+            legs = LegState{};
+        const float s0 = f == 0 ? 1.0f : legScale(s, legs, body);
+        // Forward is -Z, so the world slides towards +Z as the player walks.
+        const float move[3] = {0.0f, 0.0f, s0 * 0.8f * t};
+        const SimBody b = composeBody(s, frame, move, legs, body, options);
+        for (int i = 0; i < 2; ++i)
+        {
+            const int ankle = i == 0 ? oxr::protocol::BODY_LEFT_ANKLE : oxr::protocol::BODY_RIGHT_ANKLE;
+            const bool planted = stance[i] && f > 0 && (!options.plantFeet || (b.contact & (1u << i)) != 0);
+            float world[3] = {b.joints[ankle][0] - move[0], b.joints[ankle][1] - move[1], b.joints[ankle][2] - move[2]};
+            if (planted && !wasPlanted[i])
+                std::memcpy(start[i], world, sizeof(world));
+            if (planted && f > 1)
+            {
+                const float dx = world[0] - start[i][0];
+                const float dz = world[2] - start[i][2];
+                m.worstSlip = std::max(m.worstSlip, std::sqrt(dx * dx + dz * dz));
+                m.worstAnkleHeight = std::max(m.worstAnkleHeight, std::abs(b.joints[ankle][1] - k * body.ankleHeight));
+                m.worstToe = std::max(m.worstToe, std::abs(b.joints[ankle + 1][1]));
+                ++m.plantedFrames;
+            }
+            wasPlanted[i] = planted;
+            const int hip = ankle - 2;
+            m.worstBone = std::max(m.worstBone, std::abs(distance3(b.joints[hip], b.joints[hip + 1]) - k * body.thigh));
+            m.worstBone = std::max(m.worstBone, std::abs(distance3(b.joints[hip + 1], b.joints[ankle]) - k * body.shin));
+        }
+    }
+    return m;
+}
+
 void check(bool ok, const char* what)
 {
     if (!ok)
@@ -506,6 +618,25 @@ const std::map<std::string, std::function<void()>> cases = {
          ClientStatus status;
          const std::string reply = runCommand("reach right 0.25 1.1 -0.35", s, status, 0).reply;
          check(reply.find("\"reachable\":true") != std::string::npos && s.hands[1].manual, "the reach command places the hand");
+     }},
+    {"body.feet-planted-in-the-world",
+     [] {
+         const GaitMeasure m = walkSynthetic(ComposeOptions{});
+         std::printf("planted frames %d, slip %.4f m, ankle %.4f m, toe %.4f m, bone %.4f m\n", m.plantedFrames,
+                     m.worstSlip, m.worstAnkleHeight, m.worstToe, m.worstBone);
+         check(m.plantedFrames > 60, "the walk plants its feet");
+         check(m.worstSlip < 0.01f, "a planted foot moves less than 1 cm (an AAA battery's width) in the world");
+         check(m.worstAnkleHeight < 1e-4f, "a planted ankle sits at its height above the floor");
+         check(m.worstToe < 0.01f, "a planted toe touches the floor");
+         check(m.worstBone < 1e-3f, "the thigh and shin keep ANNY's lengths");
+     }},
+    {"body.feet-unplanted-slide",
+     [] {
+         ComposeOptions loose;
+         loose.plantFeet = false;
+         const GaitMeasure m = walkSynthetic(loose);
+         std::printf("unplanted stance frames %d, slip %.4f m\n", m.plantedFrames, m.worstSlip);
+         check(m.worstSlip > 0.01f, "control: without the floor lock a stance foot slides more than 1 cm");
      }},
     {"commands.json-string-escapes",
      [] {
