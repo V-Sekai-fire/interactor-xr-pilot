@@ -64,7 +64,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
-                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck rotation.euler-orders-match-axis-products
+                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})

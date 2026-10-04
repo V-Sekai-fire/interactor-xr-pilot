@@ -295,6 +295,38 @@ const std::map<std::string, std::function<void()>> cases = {
          slow.begin("b", "look", "{}", 10 + SpanDuckMs + 1);
          check(slow.recent().size() == 2, "control: the same tool SpanDuckMs after the last ended gets its own span");
      }},
+    {"spans.nested-fold-and-expand",
+     [] {
+         SpanLog log;
+         log.begin("p", "plan", "{}", 0);
+         log.begin("m", "glance/turn", "", 1);
+         log.begin("t1", "look", "{}", 2);
+         log.end("t1", true, 3);
+         log.begin("t2", "wait", "{}", 4);
+         std::vector<Span> rows = log.visible();
+         check(rows.size() == 4 && rows[1].depth == 1 && rows[2].depth == 2 && rows[1].parent == "p",
+               "while the plan runs its method and tool spans show nested beneath it");
+         check(rows[0].nested == 3, "the plan counts the three spans begun inside it");
+         log.end("t2", true, 5);
+         log.end("m", true, 6);
+         log.end("p", true, 7);
+         rows = log.visible();
+         check(rows.size() == 1 && rows[0].name == "plan", "a finished plan folds everything inside it");
+         log.toggle("p");
+         rows = log.visible();
+         check(rows.size() == 2 && rows[1].name == "glance/turn", "expanding the plan shows its method, still folded");
+         log.toggle("m");
+         check(log.visible().size() == 4, "expanding the method too shows its tools");
+         log.toggle("p");
+         check(log.visible().size() == 1, "folding the plan hides the expanded method again");
+         SpanLog siblings;
+         siblings.begin("a", "plan", "{}", 0);
+         siblings.begin("x", "look", "{}", 1);
+         siblings.end("x", true, 2);
+         siblings.end("a", true, 3);
+         siblings.begin("y", "look", "{}", 4);
+         check(siblings.recent().size() == 3, "control: a look at the top does not duck into a look nested in a plan");
+     }},
     {"commands.json-string-escapes",
      [] {
          check(jsonString("C:\\temp\\a \"b\".png") == "\"C:\\\\temp\\\\a \\\"b\\\".png\"",
