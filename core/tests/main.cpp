@@ -5,6 +5,7 @@
 #include "xrpilot/Agent.h"
 #include "xrpilot/Commands.h"
 #include "xrpilot/FrameAssembler.h"
+#include "xrpilot/Json.h"
 #include "xrpilot/Png.h"
 
 #include <oxrsys/protocol/FecCodec.h>
@@ -247,6 +248,35 @@ const std::map<std::string, std::function<void()>> cases = {
          ClientStatus status;
          check(runCommand("teleport 1 2 3", s, status, 0).reply.find("unknown command") != std::string::npos,
                "an unknown verb is an error");
+     }},
+    {"json.round-trip-keeps-order-and-numbers",
+     [] {
+         const std::string text = "{\"steamvr\":{\"forcedDriver\":\"x\",\"supersampleScale\":1.50,\"enable\":true},"
+                                  "\"list\":[\"a\\b\",null,-2e3],\"empty\":{}}";
+         Json j;
+         check(parseJson(text, j), "a settings file parses");
+         check(j.members[0].first == "steamvr" && j.members[1].first == "list", "members keep file order");
+         Json back;
+         check(parseJson(writeJson(j), back), "what is written parses again");
+         check(back.find("steamvr")->find("supersampleScale")->text == "1.50", "a number is kept as written");
+         check(back.find("list")->items[0].str() == "a\b" && back.find("list")->items[2].text == "-2e3",
+               "strings and numbers survive the round trip");
+     }},
+    {"json.set-and-erase",
+     [] {
+         Json j;
+         parseJson("{\"a\":1,\"b\":2}", j);
+         j.set("a", Json::string("x"));
+         j.set("c", Json::string("y"));
+         check(j.members.size() == 3 && j.members[0].first == "a" && j.find("a")->str() == "x",
+               "set replaces in place and appends new keys");
+         check(j.erase("b") && !j.find("b") && !j.erase("b"), "erase removes a key once");
+     }},
+    {"json.malformed-rejected",
+     [] {
+         Json j;
+         for (const char* bad : {"", "{", "{\"a\":}", "[1,]", "{\"a\" 1}", "\"unterminated", "tru", "{} extra"})
+             check(!parseJson(bad, j), bad);
      }},
     {"commands.state-reports-head",
      [] {

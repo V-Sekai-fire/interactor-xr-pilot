@@ -16,6 +16,7 @@
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/Png.h"
 #include "xrpilot/Sparkline.h"
+#include "xrpilot/Tray.h"
 
 #include <algorithm>
 #include <atomic>
@@ -58,8 +59,9 @@ int64_t nowNs()
     return monotonicNowNs();
 }
 
-// The left eye, and the person's keyboard and mouse: left click captures the mouse, then pulls the
-// trigger; right click toggles capture; Escape or leaving the window lets go.
+// The left eye, and the person's keyboard and mouse: a left click captures the mouse and a left drag
+// looks around; captured, left click pulls the trigger; right click toggles capture; Escape or
+// leaving the window lets go.
 class EyePanel final : public Panel
 {
 public:
@@ -82,7 +84,10 @@ public:
             if (e.button == SDL_BUTTON_RIGHT)
                 setCaptured(!captured);
             else if (e.button == SDL_BUTTON_LEFT && !captured)
-                setCaptured(true);
+            {
+                dragging_ = true;
+                dragDistance_ = 0.0f;
+            }
             else if (e.button == SDL_BUTTON_LEFT)
                 press(key::TriggerMouse);
             else if (e.button == SDL_BUTTON_MIDDLE)
@@ -90,7 +95,13 @@ public:
         }
         else if (e.action == PointerAction::Up)
         {
-            if (e.button == SDL_BUTTON_LEFT)
+            if (e.button == SDL_BUTTON_LEFT && dragging_)
+            {
+                dragging_ = false;
+                if (dragDistance_ < 4.0f)
+                    setCaptured(true);
+            }
+            else if (e.button == SDL_BUTTON_LEFT)
                 release(key::TriggerMouse);
             else if (e.button == SDL_BUTTON_MIDDLE)
             {
@@ -98,10 +109,11 @@ public:
                 release(key::HeadsetButton);
             }
         }
-        else if (e.action == PointerAction::Move && captured)
+        else if (e.action == PointerAction::Move && (captured || dragging_))
         {
             mouseDx_ += e.dx;
             mouseDy_ += e.dy;
+            dragDistance_ += std::abs(e.dx) + std::abs(e.dy);
         }
         else if (e.action == PointerAction::Wheel)
         {
@@ -134,6 +146,7 @@ public:
     void focusLost() override
     {
         shared_.captured = false;
+        dragging_ = false;
         keys_.clear();
         pressedThisTick_.clear();
         releaseNextTick_.clear();
@@ -186,7 +199,7 @@ public:
     void recordVulkan(const VulkanRegionFrame& frame) override
     {
         if (ready_)
-            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height);
+            decoder_.recordLeftEye(frame.commands, frame.image, frame.width, frame.height, true);
     }
 
 private:
@@ -285,6 +298,8 @@ private:
     float mouseDx_ = 0.0f;
     float mouseDy_ = 0.0f;
     float wheel_ = 0.0f;
+    bool dragging_ = false;
+    float dragDistance_ = 0.0f;
     int64_t lastTickNs_ = 0;
     uint64_t lastDropped_ = 0;
     int consecutiveErrors_ = 0;
@@ -375,8 +390,9 @@ std::string fixed(float value, int digits)
 class ControlsPanel final : public WidgetPanel
 {
 public:
-    ControlsPanel(Client& client, Shared& shared)
+    ControlsPanel(Client& client, Shared& shared, Tray* tray)
         : WidgetPanel("XR Pilot")
+        , tray_(tray)
         , client_(client)
         , shared_(shared)
     {
@@ -405,10 +421,20 @@ public:
         pose_ = add(std::make_unique<Label>(""));
         capture_ = add(std::make_unique<Label>(""));
         last_ = add(std::make_unique<Label>(""));
-        for (const char* help : {"Click the view to capture; right click or Esc lets go",
+        for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
                                  "WASD walk, E/R roll, Shift moves a hand, wheel steps",
                                  "T/H/click triggers, F/G grips, 1-4 XYAB, M menu, P lowers"})
             add(std::make_unique<Label>(help, 11.0f));
+    }
+
+    void update(const VulkanContext&) override
+    {
+        const int64_t now = nowNs();
+        if (tray_ != nullptr && now - lastTrayNs_ >= 2'000'000'000)
+        {
+            lastTrayNs_ = now;
+            tray_->poll();
+        }
     }
 
     void draw(DrawContext& ctx) override
@@ -449,6 +475,8 @@ private:
     Label* pose_ = nullptr;
     Label* capture_ = nullptr;
     Label* last_ = nullptr;
+    Tray* tray_ = nullptr;
+    int64_t lastTrayNs_ = 0;
 };
 
 } // namespace
@@ -490,6 +518,7 @@ int main(int argc, char** argv)
     config.height = 900;
     config.vulkanAllFeatures = true;
     config.tickHz = 90;
+    config.lockLayout = true;
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
@@ -499,7 +528,15 @@ int main(int argc, char** argv)
     }
     windowPtr = window.get();
     window->setPanel("eye", std::make_unique<EyePanel>(client, shared, *window));
-    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared));
+    // A person's pilot carries the OXRSys tray; one an agent starts stays out of the desk's settings.
+    std::unique_ptr<Tray> tray;
+    if (!agent)
+    {
+        tray = std::make_unique<Tray>();
+        if (!tray->ok())
+            std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
+    }
+    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, tray.get()));
     window->setPanel("stats", std::make_unique<StatsPanel>(client, shared));
 
     if (!client.start(&error))
@@ -557,6 +594,7 @@ int main(int argc, char** argv)
     client.stop();
     windowPtr = nullptr;
     window.reset();
+    tray.reset();
     SDL_Quit();
     std::fflush(stdout);
     std::_Exit(rc);
