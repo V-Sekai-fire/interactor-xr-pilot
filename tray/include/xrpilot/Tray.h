@@ -36,6 +36,8 @@ private:
     void rebuildRuntimeMenu();
     void rebuildDeveloperEntries();
     void makeDefaultRuntime(const std::string& manifest);
+    void bind();
+    void bindNow(const std::string& unused);
     void unbind();
     void uninstall();
     void addRuntimeManifest();

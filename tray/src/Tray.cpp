@@ -318,6 +318,48 @@ void installPackagedFiles()
     copyTree(package / "driver" / "oxrsys", fs::path(installBase()) / "driver" / "oxrsys");
 }
 
+// An OXRSys build to install from when the pilot is not packaged: the workspace's oxrsys checkout
+// beside this one, as windows_build.ps1 leaves it.
+fs::path oxrsysBuild()
+{
+    const char* base = SDL_GetBasePath();
+    if (base == nullptr)
+        return {};
+    const fs::path build = fs::path(base).parent_path().parent_path().parent_path() / "oxrsys" / "build" / "windows";
+    std::error_code error;
+    return fs::exists(build / "runtime" / "liboxrsys-runtime.dll", error) &&
+                   fs::exists(build / "driver" / "oxrsys" / "driver.vrdrivermanifest", error)
+               ? build
+               : fs::path();
+}
+
+// Puts the runtime and driver in installBase(), as windows_build.ps1 -Install does; false when there
+// is neither a package nor a build to install from.
+bool installRuntime()
+{
+    installPackagedFiles();
+    if (fs::exists(fs::path(installedRuntimeManifest())))
+        return true;
+    const fs::path build = oxrsysBuild();
+    if (build.empty())
+        return false;
+    const fs::path runtime = fs::path(installBase()) / "runtime";
+    const fs::path driver = fs::path(installBase()) / "driver" / "oxrsys";
+    std::error_code error;
+    fs::create_directories(runtime, error);
+    fs::copy_file(build / "runtime" / "liboxrsys-runtime.dll", runtime / "liboxrsys-runtime.dll",
+                  fs::copy_options::overwrite_existing, error);
+    Json entry;
+    entry.set("name", Json::string("OXRSys Runtime"));
+    entry.set("library_path", Json::string(".\\liboxrsys-runtime.dll"));
+    Json manifest;
+    manifest.set("file_format_version", Json::string("1.0.0"));
+    manifest.set("runtime", entry);
+    std::ofstream(runtime / "oxrsys-runtime.json", std::ios::binary | std::ios::trunc) << xrpilot::writeJson(manifest);
+    copyTree(build / "driver" / "oxrsys", driver);
+    return fs::exists(fs::path(installedRuntimeManifest())) && fs::exists(driver / "driver.vrdrivermanifest");
+}
+
 Json openVrPaths()
 {
     return readJson(fs::path(environment("LOCALAPPDATA")) / "openvr" / "openvrpaths.vrpath");
@@ -468,7 +510,8 @@ SDL_Surface* loadIcon(const char* name)
 
 enum Command : intptr_t
 {
-    CommandUnbind = 1,
+    CommandBind = 1,
+    CommandUnbind,
     CommandUninstall,
     CommandShowPilot,
     CommandLogs,
@@ -510,6 +553,7 @@ Tray::Tray()
     runtimeMenu_ = SDL_CreateTraySubmenu(runtimes);
 
     const std::pair<const char*, Command> commands[] = {
+        {"Bind OXRSys", CommandBind},
         {"Unbind OXRSys", CommandUnbind},
         {"Uninstall OXRSys...", CommandUninstall},
         {"Show XR Pilot", CommandShowPilot},
@@ -698,6 +742,25 @@ void Tray::makeDefaultRuntimeNow(const std::string& manifest)
     setMessage("Default runtime: " + runtimeName(manifest) + (headsetChanged ? "; restart SteamVR for its headset to follow" : ""));
 }
 
+// One step: install the runtime and driver, register the driver with SteamVR, and make OXRSys the
+// default OpenXR runtime and SteamVR's headset, behind one administrator prompt.
+void Tray::bind()
+{
+    setMessage("Installing OXRSys...");
+    runInBackground(&Tray::bindNow, std::string());
+}
+
+void Tray::bindNow(const std::string&)
+{
+    if (!installRuntime())
+    {
+        setMessage("Nothing to install: no OXRSys package or build beside XR Pilot");
+        return;
+    }
+    shownRuntimes_.clear();
+    makeDefaultRuntimeNow(installedRuntimeManifest());
+}
+
 void Tray::unbind()
 {
     setMessage("Unbinding...");
@@ -801,6 +864,9 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
     Tray* self = target->tray;
     switch (target->command)
     {
+    case CommandBind:
+        self->bind();
+        break;
     case CommandUnbind:
         self->unbind();
         break;
