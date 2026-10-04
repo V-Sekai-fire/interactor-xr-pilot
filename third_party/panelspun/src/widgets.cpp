@@ -36,6 +36,18 @@ bool inside(const PointerEvent& e, float x, float y, float w, float h) {
 
 }
 
+void drawPolyline(DrawContext& ctx, const float* xy, int count, Color color, float width) {
+    if (count < 2) return;
+    tvg::Shape* s = tvg::Shape::gen();
+    s->moveTo(xy[0], xy[1]);
+    for (int i = 1; i < count; ++i) s->lineTo(xy[2 * i], xy[2 * i + 1]);
+    s->strokeWidth(width);
+    s->strokeFill(color.r, color.g, color.b, color.a);
+    s->strokeJoin(tvg::StrokeJoin::Round);
+    s->strokeCap(tvg::StrokeCap::Round);
+    ctx.scene->add(s);
+}
+
 float Label::height(float scale) const { return size_ * 1.6f * scale; }
 
 void Label::draw(DrawContext& ctx, float x, float y, float w) {
@@ -71,6 +83,8 @@ bool Button::pointer(const PointerEvent& e, float x, float y, float w) {
         return true;
     case PointerAction::Leave:
         hover_ = false;
+        break;
+    case PointerAction::Wheel:
         break;
     }
     return hover_ != wasHover || pressed_ != wasPressed;
@@ -120,6 +134,41 @@ bool Slider::pointer(const PointerEvent& e, float x, float y, float w) {
         dragging_ = false;
         return true;
     case PointerAction::Leave:
+    case PointerAction::Wheel:
+        return false;
+    }
+    return false;
+}
+
+float Toggle::height(float scale) const { return 28.0f * scale; }
+
+void Toggle::draw(DrawContext& ctx, float x, float y, float w) {
+    (void)w;
+    lastScale_ = ctx.scale;
+    float h = height(ctx.scale);
+    float box = 16.0f * ctx.scale;
+    float by = y + (h - box) * 0.5f;
+    addRect(ctx, x, by, box, box, 3.0f * ctx.scale, value_ ? ctx.theme->accent : ctx.theme->control);
+    if (value_) addRect(ctx, x + box * 0.3f, by + box * 0.3f, box * 0.4f, box * 0.4f, 1.0f * ctx.scale, ctx.theme->text);
+    addText(ctx, text_, 13.0f, x + box + 8.0f * ctx.scale, y + h * 0.5f, 0.0f, ctx.theme->text);
+}
+
+bool Toggle::pointer(const PointerEvent& e, float x, float y, float w) {
+    bool in = inside(e, x, y, w, height(lastScale_));
+    switch (e.action) {
+    case PointerAction::Down:
+        pressed_ = in && e.button == 1;
+        return false;
+    case PointerAction::Up:
+        if (!pressed_) return false;
+        pressed_ = false;
+        if (!in) return false;
+        value_ = !value_;
+        if (onChange_) onChange_(value_);
+        return true;
+    case PointerAction::Move:
+    case PointerAction::Leave:
+    case PointerAction::Wheel:
         return false;
     }
     return false;
