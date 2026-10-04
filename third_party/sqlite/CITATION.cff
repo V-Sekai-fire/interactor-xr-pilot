@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+title: SQLite
+message: Vendored amalgamation, unmodified.
+version: 3.47.0
+license: blessing
+url: https://sqlite.org
+authors:
+  - name: SQLite Consortium

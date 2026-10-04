@@ -15,6 +15,7 @@
 #include "xrpilot/GpuDecoder.h"
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/SpanLog.h"
+#include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/Tray.h"
@@ -52,6 +53,7 @@ struct Shared
     std::atomic<uint64_t> decodeErrors{0};
     std::atomic<bool> captured{false};
     SpanLog spans;
+    TraceStore traces; // every span, kept in SQLite
     std::string snapshotPath; // --snapshot: the 90th decoded frame
 };
 
@@ -181,6 +183,7 @@ public:
             {
                 client_.reportLatency(*next, start, nowNs());
                 consecutiveErrors_ = 0;
+                lastStreamed_ = std::move(next->nalUnit);
                 if (++shared_.decoded == 90 && !shared_.snapshotPath.empty())
                     writeSnapshot(shared_.snapshotPath);
             }
@@ -195,6 +198,7 @@ public:
             }
         }
         serveScreenshot();
+        serveTrace();
     }
 
     void recordVulkan(const VulkanRegionFrame& frame) override
@@ -270,6 +274,25 @@ private:
         std::fprintf(stderr, "xr-pilot: snapshot %s %s\n", path.c_str(), ok ? "written" : "failed");
     }
 
+    // A span that began or ended takes the frame on screen now as its input or its edit.
+    void serveTrace()
+    {
+        if (!shared_.traces.wantsFrame())
+            return;
+        TraceFrame frame;
+        if (!decoder_.snapshotLeftEye(frame.rgba, frame.width, frame.height))
+            return;
+        if (GpuDecoder::frameSize(lastStreamed_.data(), lastStreamed_.size(), frame.encodedWidth, frame.encodedHeight))
+            frame.encoded = lastStreamed_;
+        const AgentState agent = client_.agent();
+        for (const Pose* pose : {&agent.head, &agent.hands[0].pose, &agent.hands[1].pose})
+        {
+            frame.pose.insert(frame.pose.end(), pose->position, pose->position + 3);
+            frame.pose.insert(frame.pose.end(), pose->rotation.m, pose->rotation.m + 9);
+        }
+        shared_.traces.frame(std::move(frame));
+    }
+
     void serveScreenshot()
     {
         std::lock_guard<std::mutex> lock(shared_.mutex);
@@ -293,6 +316,7 @@ private:
     Shared& shared_;
     Window& window_;
     GpuDecoder decoder_;
+    std::vector<uint8_t> lastStreamed_; // the frame on screen, as the runtime streamed it
     bool ready_ = false;
     bool failed_ = false;
     std::set<int> keys_;
@@ -382,9 +406,7 @@ public:
                 {
                     y -= sub;
                     const SpanChild& child = it->children[c];
-                    std::string text = child.text;
-                    if (text.size() > 40)
-                        text = text.substr(0, 39) + "...";
+                    const std::string text = fit(child.text, ctx.width - nameX - 10.0f * s - pad, 11.0f, s);
                     tinted(ctx, child.ok ? Color{150, 156, 166, 255} : Red, [&](DrawContext& t) {
                         Label(text, 11.0f).draw(t, nameX + 10.0f * s, y, 0.0f);
                     });
@@ -402,6 +424,7 @@ public:
             std::string name = it->name + (it->count > 1 ? "  x" + std::to_string(it->count) : "");
             if (!it->running() && it->nested > 0)
                 name = std::string(it->expanded ? "v " : "> ") + name + "  (" + std::to_string(it->nested) + ")";
+            name = fit(name, barX - 8.0f * s - nameX, 13.0f, s);
             tinted(ctx, shade(Color{223, 225, 229, 255}, fade),
                    [&](DrawContext& t) { Label(name, 13.0f).draw(t, nameX, y, 0.0f); });
             const int64_t ms = it->durationMs(now);
@@ -444,6 +467,15 @@ private:
     static constexpr Color Cyan{98, 214, 255, 255};
     static constexpr Color Green{126, 231, 135, 255};
     static constexpr Color Red{240, 98, 98, 255};
+
+    // The text cut to fit width at the UI font's average glyph width, so a label never runs into the bar.
+    static std::string fit(const std::string& text, float width, float points, float scale)
+    {
+        const size_t room = size_t(std::max(0.0f, width / (0.58f * points * scale)));
+        if (text.size() <= room)
+            return text;
+        return room > 3 ? text.substr(0, room - 3) + "..." : std::string();
+    }
 
     static Color shade(Color c, float f) { return Color{uint8_t(c.r * f), uint8_t(c.g * f), uint8_t(c.b * f), c.a}; }
     static void tinted(DrawContext& ctx, Color c, const std::function<void(DrawContext&)>& draw)
@@ -616,6 +648,7 @@ int main(int argc, char** argv)
     Shared shared;
     bool autoConnect = true;
     bool agent = false;
+    std::string tracePath;
     for (int i = 1; i < argc; ++i)
     {
         if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
@@ -624,11 +657,32 @@ int main(int argc, char** argv)
             autoConnect = false;
         else if (!std::strcmp(argv[i], "--agent"))
             agent = true;
+        else if (!std::strcmp(argv[i], "--traces") && i + 1 < argc)
+            tracePath = argv[++i];
         else
         {
-            std::fprintf(stderr, "usage: xr-pilot [--agent] [--snapshot out.png] [--no-autoconnect]\n");
+            std::fprintf(stderr,
+                         "usage: xr-pilot [--agent] [--snapshot out.png] [--no-autoconnect] [--traces db.sqlite]\n");
             return 2;
         }
+    }
+
+    if (tracePath.empty())
+    {
+        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
+        tracePath = std::string(pref != nullptr ? pref : "") + "traces.sqlite";
+        SDL_free(pref);
+    }
+    {
+        std::string traceError;
+        const int64_t wallMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
+            std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
+        else
+            std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
+                         (long long)shared.traces.session());
     }
 
     Window* windowPtr = nullptr;
@@ -647,11 +701,12 @@ int main(int argc, char** argv)
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
     WindowConfig config;
     config.title = "OXRSys XR Pilot";
-    config.width = 1400;
+    config.width = 1600;
     config.height = 900;
     config.vulkanAllFeatures = true;
     config.tickHz = 90;
     config.lockLayout = true;
+    config.aspectRatio = 16.0f / 9.0f; // OBS captures the window into a 16:9 canvas
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
@@ -689,9 +744,15 @@ int main(int argc, char** argv)
             SpanLine mark;
             const bool isMark = parseSpanLine(line, mark);
             if (isMark && mark.begin)
+            {
                 shared.spans.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
+                shared.traces.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
+            }
             else if (isMark)
+            {
                 shared.spans.end(mark.id, mark.ok, nowNs() / 1'000'000);
+                shared.traces.end(mark.id, mark.ok, nowNs() / 1'000'000);
+            }
             const ClientStatus status = client.status();
             CommandResult result;
             client.updateAgent([&](AgentState& s) { result = runCommand(line, s, status, shared.decoded.load()); });
@@ -710,7 +771,11 @@ int main(int argc, char** argv)
                 reply = shared.screenshotReply;
             }
             if (!isMark)
-                shared.spans.child(line, reply.rfind("{\"ok\":false", 0) != 0, nowNs() / 1'000'000);
+            {
+                const bool ok = reply.rfind("{\"ok\":false", 0) != 0;
+                shared.spans.child(line, ok, nowNs() / 1'000'000);
+                shared.traces.command(line, ok, nowNs() / 1'000'000);
+            }
             std::cout << reply << std::endl;
             windowPtr->requestRedrawFromAnyThread();
         }
@@ -729,6 +794,7 @@ int main(int argc, char** argv)
     windowPtr = nullptr;
     window.reset();
     tray.reset();
+    shared.traces.close();
     SDL_Quit();
     std::fflush(stdout);
     std::_Exit(rc);
