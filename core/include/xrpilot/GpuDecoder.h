@@ -48,7 +48,9 @@ public:
     int height() const;
 
     // Records a letterboxed copy of the left eye into target, which is in TRANSFER_DST_OPTIMAL and stays so.
-    void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight);
+    // With reticle, two short white bars cross at the centre of the eye, where gaze and pointing aim.
+    void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight,
+                       bool reticle = false);
 
     // The left eye of the last decoded frame, read back from the GPU as tightly packed RGBA8.
     bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height);

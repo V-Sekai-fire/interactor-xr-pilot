@@ -20,6 +20,10 @@ struct WindowConfig {
     // Creates a Vulkan 1.3 instance and device with every supported core feature enabled, for a
     // consumer recording compute work on the window's device; fails on a device below 1.3.
     bool vulkanAllFeatures = false;
+    // Wakes the frame loop this many times a second even with no events, for held keys; 0 waits for events.
+    int tickHz = 0;
+    // Keeps the panels where the layout put them: split handles do not drag or highlight.
+    bool lockLayout = false;
 };
 
 class Window {
@@ -43,6 +47,9 @@ public:
     // Safe from any thread: wakes the frame loop and redraws, for content produced off the UI thread.
     void requestRedrawFromAnyThread();
     void requestClose();
+    // Hides the cursor and reports motion as dx, dy to the panel that has the keyboard; focus loss turns it off.
+    void setRelativeMouse(bool on);
+    bool relativeMouse() const;
 
     // Copies the next presented frame to a BMP file.
     void captureNextFrame(std::string path);

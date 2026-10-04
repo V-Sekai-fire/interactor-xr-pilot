@@ -2,9 +2,11 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -55,6 +57,55 @@ private:
     PFN_vkCmdClearColorImage clear_ = nullptr;
 };
 
+constexpr std::uint8_t kLineRgb[3] = {230, 40, 200};
+
+// Counts the input that reaches it; with a line, draws a thick one across its middle.
+class ProbePanel : public Panel {
+public:
+    ProbePanel(Window* window, bool line) : Panel("Probe"), window_(window), line_(line) {}
+    void draw(DrawContext& ctx) override {
+        if (!line_) return;
+        float y = ctx.height * 0.5f;
+        float xy[6] = {0.0f, y, ctx.width * 0.5f, y, static_cast<float>(ctx.width), y};
+        drawPolyline(ctx, xy, 3, Color{kLineRgb[0], kLineRgb[1], kLineRgb[2], 255}, 12.0f);
+    }
+    bool pointer(const PointerEvent& e) override {
+        if (e.action == PointerAction::Down) window_->setRelativeMouse(true);
+        if (e.action == PointerAction::Wheel) wheel += e.dy;
+        if (e.action == PointerAction::Move) {
+            dx += e.dx;
+            dy += e.dy;
+        }
+        return false;
+    }
+    bool key(const KeyEvent& e) override {
+        (void)e;
+        ++keys;
+        return false;
+    }
+    void focusLost() override { ++focusLosses; }
+    void update(const VulkanContext& context) override {
+        (void)context;
+        ++updates;
+    }
+
+    int keys = 0;
+    int focusLosses = 0;
+    std::atomic<int> updates{0};
+    float wheel = 0.0f;
+    float dx = 0.0f;
+    float dy = 0.0f;
+
+private:
+    Window* window_;
+    bool line_;
+};
+
+void post(SDL_Event e) {
+    SDL_PushEvent(&e);
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+}
+
 bool pixelMatches(SDL_Surface* s, int x, int y, const std::uint8_t rgb[3]) {
     Uint8 r = 0, g = 0, b = 0, a = 0;
     if (!SDL_ReadSurfacePixel(s, x, y, &r, &g, &b, &a)) return false;
@@ -62,7 +113,7 @@ bool pixelMatches(SDL_Surface* s, int x, int y, const std::uint8_t rgb[3]) {
 }
 
 // The video region must show the Vulkan clear colour and the controls panel must not.
-int checkCapture(const std::string& path, SplitTree tree) {
+int checkCapture(const std::string& path, SplitTree tree, bool line) {
     SDL_Surface* s = SDL_LoadBMP(path.c_str());
     if (!s) {
         std::fprintf(stderr, "FAIL could not read %s: %s\n", path.c_str(), SDL_GetError());
@@ -70,6 +121,19 @@ int checkCapture(const std::string& path, SplitTree tree) {
     }
     std::vector<LeafRect> leaves = tree.layout(Rect{0, 0, s->w, s->h});
     int failures = 0;
+    if (line) {
+        for (const LeafRect& l : leaves) {
+            if (l.id != "video") continue;
+            int x = l.rect.x + l.rect.w / 2;
+            int y = l.rect.y + 12 + (l.rect.h - 12) / 2;
+            bool hit = false;
+            for (int dy = -40; dy <= 40 && !hit; ++dy) hit = pixelMatches(s, x, y + dy, kLineRgb);
+            std::printf("%s the polyline colour %s near (%d,%d)\n", hit ? "PASS" : "FAIL", hit ? "is" : "is not", x, y);
+            failures += hit ? 0 : 1;
+        }
+        SDL_DestroySurface(s);
+        return failures == 0 ? 0 : 3;
+    }
     for (const LeafRect& l : leaves) {
         int x = l.rect.x + l.rect.w / 2;
         int y = l.rect.y + l.rect.h - 8;
@@ -96,6 +160,14 @@ int main(int argc, char** argv) {
     int wakes = -1;
     bool sendWakes = true;
     bool minimized = false;
+    bool inputCheck = false;
+    bool focusClick = true;
+    int tickCheck = 0;
+    bool tick = true;
+    bool polylineCheck = false;
+    bool polyline = true;
+    bool lockCheck = false;
+    bool locked = true;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--screenshot") && i + 1 < argc) screenshot = argv[++i];
@@ -107,10 +179,20 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--wake-check") && i + 1 < argc) wakes = std::atoi(argv[++i]);
         else if (!std::strcmp(argv[i], "--no-wake")) sendWakes = false;
         else if (!std::strcmp(argv[i], "--minimized")) minimized = true;
+        else if (!std::strcmp(argv[i], "--input-check")) inputCheck = true;
+        else if (!std::strcmp(argv[i], "--no-focus-click")) focusClick = false;
+        else if (!std::strcmp(argv[i], "--tick-check") && i + 1 < argc) tickCheck = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--no-tick")) tick = false;
+        else if (!std::strcmp(argv[i], "--polyline-check")) polylineCheck = true;
+        else if (!std::strcmp(argv[i], "--no-polyline")) polyline = false;
+        else if (!std::strcmp(argv[i], "--lock-check")) lockCheck = true;
+        else if (!std::strcmp(argv[i], "--unlocked")) locked = false;
         else {
             std::fprintf(stderr,
                          "usage: panelspun-demo [--frames N] [--screenshot out.bmp] [--check] [--validate] "
-                         "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]]\n");
+                         "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]] "
+                         "[--input-check [--no-focus-click]] [--tick-check HZ [--no-tick]] [--polyline-check [--no-polyline]] "
+                         "[--lock-check [--unlocked]]\n");
             return 2;
         }
     }
@@ -130,6 +212,8 @@ int main(int argc, char** argv) {
     config.title = "panelspun demo";
     config.vulkanValidation = validate;
     config.vulkanAllFeatures = allFeatures;
+    config.tickHz = tickCheck > 0 && tick ? tickCheck : 0;
+    config.lockLayout = lockCheck && locked;
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, tree, &error);
     if (!window) {
@@ -146,7 +230,14 @@ int main(int argc, char** argv) {
 
     std::atomic<int> draws{0};
     std::atomic<int> updates{0};
-    window->setPanel("video", std::make_unique<VideoPanel>(vulkanRegion, &draws, &updates));
+    ProbePanel* probe = nullptr;
+    if (inputCheck || tickCheck > 0 || polylineCheck) {
+        std::unique_ptr<ProbePanel> p = std::make_unique<ProbePanel>(window.get(), polylineCheck && polyline);
+        probe = p.get();
+        window->setPanel("video", std::move(p));
+    } else {
+        window->setPanel("video", std::make_unique<VideoPanel>(vulkanRegion, &draws, &updates));
+    }
 
     std::unique_ptr<WidgetPanel> controls = std::make_unique<WidgetPanel>("Controls");
     Label* level = controls->add(std::make_unique<Label>("Exposure: 50%"));
@@ -164,7 +255,138 @@ int main(int argc, char** argv) {
     window->setPanel("actions", std::move(actions));
 
     int rc = 0;
-    if (wakes > 0) {
+    if (lockCheck) {
+        // A worker drags the first split handle 100 px; a locked layout must not move.
+        std::string before;
+        std::thread worker([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            before = window->layout().serialize();
+            int count = 0;
+            SDL_Window** windows = SDL_GetWindows(&count);
+            SDL_Window* w = count > 0 ? windows[0] : nullptr;
+            SDL_free(windows);
+            const SDL_WindowID id = SDL_GetWindowID(w);
+            const float density = std::max(1.0f, SDL_GetWindowPixelDensity(w));
+            const SplitHandle h = window->layout().handles().front();
+            const float x = (h.rect.x + h.rect.w * 0.5f) / density;
+            const float y = (h.rect.y + h.rect.h * 0.5f) / density;
+            SDL_Event down{};
+            down.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            down.button.windowID = id;
+            down.button.button = SDL_BUTTON_LEFT;
+            down.button.down = true;
+            down.button.clicks = 1;
+            down.button.x = x;
+            down.button.y = y;
+            post(down);
+            SDL_Event move{};
+            move.type = SDL_EVENT_MOUSE_MOTION;
+            move.motion.windowID = id;
+            move.motion.state = SDL_BUTTON_LMASK;
+            move.motion.x = h.axis == Axis::Horizontal ? x - 100.0f : x;
+            move.motion.y = h.axis == Axis::Horizontal ? y : y - 100.0f;
+            post(move);
+            SDL_Event up = down;
+            up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+            up.button.down = false;
+            up.button.x = move.motion.x;
+            up.button.y = move.motion.y;
+            post(up);
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        rc = window->run();
+        worker.join();
+        const bool moved = window->layout().serialize() != before;
+        std::printf("lock: the layout %s after a 100 px handle drag%s\n", moved ? "moved" : "held",
+                    locked ? "" : " (unlocked)");
+        if (rc == 0 && moved) rc = 3;
+    } else if (inputCheck) {
+        // A worker posts a click, a key, a wheel notch, relative motion and a focus loss, as SDL would.
+        std::thread worker([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            int count = 0;
+            SDL_Window** windows = SDL_GetWindows(&count);
+            SDL_Window* w = count > 0 ? windows[0] : nullptr;
+            SDL_free(windows);
+            int ww = 0, wh = 0;
+            SDL_GetWindowSize(w, &ww, &wh);
+            const SDL_WindowID id = SDL_GetWindowID(w);
+            const float cx = ww * 0.3f, cy = wh * 0.5f;
+            if (focusClick) {
+                for (bool down : {true, false}) {
+                    SDL_Event e{};
+                    e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                    e.button.windowID = id;
+                    e.button.button = SDL_BUTTON_LEFT;
+                    e.button.down = down;
+                    e.button.clicks = 1;
+                    e.button.x = cx;
+                    e.button.y = cy;
+                    post(e);
+                }
+            }
+            for (bool down : {true, false}) {
+                SDL_Event e{};
+                e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+                e.key.windowID = id;
+                e.key.scancode = SDL_SCANCODE_W;
+                e.key.key = SDLK_W;
+                e.key.down = down;
+                post(e);
+            }
+            SDL_Event wheel{};
+            wheel.type = SDL_EVENT_MOUSE_WHEEL;
+            wheel.wheel.windowID = id;
+            wheel.wheel.y = 2.0f;
+            wheel.wheel.mouse_x = cx;
+            wheel.wheel.mouse_y = cy;
+            post(wheel);
+            SDL_Event motion{};
+            motion.type = SDL_EVENT_MOUSE_MOTION;
+            motion.motion.windowID = id;
+            motion.motion.x = cx;
+            motion.motion.y = cy;
+            motion.motion.xrel = 10.0f;
+            motion.motion.yrel = -4.0f;
+            post(motion);
+            SDL_Event lost{};
+            lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+            lost.window.windowID = id;
+            post(lost);
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        rc = window->run();
+        worker.join();
+        const bool relativeAfter = window->relativeMouse();
+        std::printf("input: %d keys, wheel %.1f, motion (%.1f, %.1f), %d focus losses, relative after loss %s\n",
+                    probe->keys, probe->wheel, probe->dx, probe->dy, probe->focusLosses, relativeAfter ? "on" : "off");
+        const bool ok = probe->keys == 2 && probe->wheel == 2.0f && std::abs(probe->dx - 10.0f) < 0.5f &&
+                        std::abs(probe->dy + 4.0f) < 0.5f && probe->focusLosses >= 1 && !relativeAfter;
+        if (rc == 0 && !ok) rc = 3;
+    } else if (tickCheck > 0) {
+        // No events at all for a second: only the tick can wake the loop.
+        std::thread worker([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        });
+        int before = 0;
+        std::thread sampler([&]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            before = probe->updates.load();
+        });
+        rc = window->run();
+        worker.join();
+        sampler.join();
+        const int ticked = probe->updates.load() - before;
+        std::printf("tick: %d updates in about 1 s at %d Hz requested%s\n", ticked, tickCheck, tick ? "" : " (tick off)");
+        if (rc == 0 && ticked < tickCheck / 2) rc = 3;
+    } else if (wakes > 0) {
         // A worker thread asks for redraws; each must render at least once more than an idle window would.
         int before = 0;
         int updatesBefore = 0;
@@ -219,7 +441,7 @@ int main(int argc, char** argv) {
     }
     SplitTree finalLayout = window->layout();
     window.reset();
-    if (rc == 0 && check) rc = checkCapture(screenshot, finalLayout);
+    if (rc == 0 && check) rc = checkCapture(screenshot, finalLayout, polylineCheck);
     SDL_Quit();
     return rc;
 }

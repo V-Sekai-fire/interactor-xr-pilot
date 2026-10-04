@@ -38,7 +38,10 @@ add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Commands.cpp
     core/src/FrameAssembler.cpp
+    core/src/HumanInput.cpp
+    core/src/Json.cpp
     core/src/Png.cpp
+    core/src/Sparkline.cpp
 )
 target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE})
 
@@ -58,8 +61,17 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       png.round-trip png.corrupt-crc-rejected
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
-                      commands.json-string-escapes)
+                      commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
+                      json.malformed-rejected)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
+endforeach()
+add_executable(xrpilot-human-tests core/tests/human.cpp)
+target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
+foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
+                      human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
+                      sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample
+                      sparkline.p90-scale-clips-a-spike)
+    add_test(NAME ${name} COMMAND xrpilot-human-tests ${name})
 endforeach()
 
 if(NOT XRPILOT_BUILD_APP)
@@ -99,6 +111,7 @@ endif()
 set(PANELSPUN_VULKAN_HEADERS_DIR ${granite_SOURCE_DIR}/third_party/khronos/vulkan-headers/include CACHE PATH "" FORCE)
 set(PANELSPUN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(PANELSPUN_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+set(PANELSPUN_SDL_TRAY ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/panelspun)
 
 add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
@@ -106,5 +119,12 @@ target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${oxrsys_SOUR
 target_link_libraries(xrpilot_gpu PUBLIC xrpilot_pyrowave)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
+# The OXRSys tray, MPL-2.0 like the Home tray it is ported from.
+add_library(xrpilot_tray STATIC tray/src/Tray.cpp)
+target_include_directories(xrpilot_tray PUBLIC tray/include)
+target_link_libraries(xrpilot_tray PUBLIC xrpilot_core panelspun)
+
 add_executable(xr-pilot app/main.cpp)
-target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu panelspun)
+target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
+add_custom_command(TARGET xr-pilot POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tray/resources $<TARGET_FILE_DIR:xr-pilot>/resources)

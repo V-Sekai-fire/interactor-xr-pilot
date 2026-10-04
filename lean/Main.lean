@@ -23,7 +23,7 @@ def pilotPath (args : List String) : IO String := do
 abbrev PilotConfig : IO.Process.StdioConfig := { stdin := .piped, stdout := .piped, stderr := .inherit }
 
 def spawnPilot (path : String) : IO (IO.Process.Child PilotConfig) :=
-  IO.Process.spawn { cmd := path, toStdioConfig := PilotConfig }
+  IO.Process.spawn { cmd := path, args := #["--agent"], toStdioConfig := PilotConfig }
 
 def ask (pilot : IO.Process.Child PilotConfig) (cmd : String) : IO (Option String) := do
   try

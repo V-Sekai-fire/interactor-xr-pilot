@@ -166,6 +166,30 @@ void Client::stop()
     }
 }
 
+void Client::connectNow()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    connectRequested_ = true;
+}
+
+void Client::disconnect()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    status_.autoConnect = false;
+    connectRequested_ = false;
+    if (!status_.connected)
+        return;
+    const oxr::protocol::MessageType bye = oxr::protocol::MessageType::ServerDisconnect;
+    sendTo(sendSocket_, serverAddress_, oxr::protocol::CONTROL_PORT, &bye, sizeof(bye));
+    status_.connected = false;
+}
+
+void Client::setAutoConnect(bool on)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    status_.autoConnect = on;
+}
+
 void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& announce)
 {
     oxr::protocol::ClientConnect connect = {};
@@ -189,6 +213,7 @@ void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& an
     if (announce.renderHeight > 0)
         agent_.eyeAspect = float(announce.renderWidth / 2) / float(announce.renderHeight);
     lastVideoNs_ = monotonicNowNs();
+    connectRequested_ = false;
     assembler_.reset();
 }
 
@@ -210,9 +235,20 @@ void Client::discoveryLoop()
         bool reconnect = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            announcedAddress_ = from.sin_addr.s_addr;
+            announced_ = announce;
+            status_.discovered = true;
+            if (!status_.connected)
+            {
+                in_addr text{};
+                text.s_addr = from.sin_addr.s_addr;
+                status_.server = inet_ntoa(text);
+                status_.serverName.assign(announce.serverName, strnlen(announce.serverName, sizeof(announce.serverName)));
+            }
             // The runtime keeps announcing while it streams; a new runtime, or one that went silent, reconnects.
-            reconnect = !status_.connected || from.sin_addr.s_addr != serverAddress_ ||
-                        monotonicNowNs() - lastVideoNs_ > VideoSilenceReconnectNs;
+            const bool wanted = status_.autoConnect || connectRequested_ || status_.connected;
+            reconnect = wanted && (!status_.connected || from.sin_addr.s_addr != serverAddress_ ||
+                                   monotonicNowNs() - lastVideoNs_ > VideoSilenceReconnectNs);
         }
         if (reconnect)
             connectTo(from.sin_addr.s_addr, announce);
@@ -246,6 +282,7 @@ void Client::videoLoop()
                 delivered = true;
             }
             status_.framesDropped = assembler_.droppedFrames();
+            status_.fecRecoveries = assembler_.fecRecoveries();
         }
         if (delivered && onFrame_)
             onFrame_();
@@ -287,7 +324,7 @@ std::optional<AssembledVideoFrame> Client::takeFrame()
     return frame;
 }
 
-void Client::requestKeyframe()
+void Client::requestKeyframe(uint32_t reasonFlags, uint32_t detail)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     const int64_t now = monotonicNowNs();
@@ -295,7 +332,27 @@ void Client::requestKeyframe()
         return;
     lastKeyframeRequestNs_ = now;
     oxr::protocol::RequestKeyframe request = {};
+    request.reasonFlags = reasonFlags;
+    request.detail = detail;
     sendTo(sendSocket_, serverAddress_, oxr::protocol::CONTROL_PORT, &request, sizeof(request));
+}
+
+void Client::reportLatency(const AssembledVideoFrame& frame, int64_t decodeStartNs, int64_t decodeEndNs)
+{
+    oxr::protocol::LatencyReport report = {};
+    report.receiveToDecoderSubmitMs = float(std::max<int64_t>(0, decodeStartNs - frame.receiveTimeNs)) / 1e6f;
+    report.decodeLatencyMs = float(std::max<int64_t>(0, decodeEndNs - decodeStartNs)) / 1e6f;
+    report.compositorLatencyMs = 0.0f;
+    report.totalClientLatencyMs = report.receiveToDecoderSubmitMs + report.decodeLatencyMs;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (status_.connected)
+        sendTo(sendSocket_, serverAddress_, oxr::protocol::CONTROL_PORT, &report, sizeof(report));
+}
+
+void Client::updateAgent(const std::function<void(AgentState&)>& change)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    change(agent_);
 }
 
 AgentState Client::agent()

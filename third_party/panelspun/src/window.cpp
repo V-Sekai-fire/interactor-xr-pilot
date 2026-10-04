@@ -32,6 +32,8 @@ struct Window::Impl {
     int hoverNode = -1;
     std::string capturedPanel;
     std::string hoveredPanel;
+    std::string focusedPanel;
+    bool relative = false;
     std::vector<LeafRect> leaves;
     SDL_Cursor* arrow = nullptr;
     SDL_Cursor* resizeEW = nullptr;
@@ -49,7 +51,14 @@ struct Window::Impl {
         return Rect{r.x, r.y + hh, r.w, r.h - hh};
     }
     Panel* panelAt(int px, int py, std::string* id, Rect* content);
-    bool forward(const std::string& id, PointerAction action, float px, float py, int button);
+    // The split handle under a point, or -1; a locked layout has none to grab.
+    int handleAt(float px, float py) const {
+        if (config.lockLayout) return -1;
+        return tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+    }
+    bool forward(const std::string& id, PointerAction action, float px, float py, int button, float dx = 0.0f,
+                 float dy = 0.0f);
+    bool forwardKey(const SDL_KeyboardEvent& k);
     void handle(const SDL_Event& e);
     enum class Frame { Presented, Skipped, Failed };
     Frame render();
@@ -147,6 +156,10 @@ void Window::requestRedrawFromAnyThread() {
     SDL_PushEvent(&e);
 }
 void Window::requestClose() { impl_->closing = true; }
+void Window::setRelativeMouse(bool on) {
+    if (SDL_SetWindowRelativeMouseMode(impl_->window, on)) impl_->relative = on;
+}
+bool Window::relativeMouse() const { return impl_->relative; }
 void Window::captureNextFrame(std::string path) {
     impl_->capturePath = std::move(path);
     impl_->captureOk = false;
@@ -168,16 +181,25 @@ Panel* Window::Impl::panelAt(int px, int py, std::string* id, Rect* content) {
     return nullptr;
 }
 
-bool Window::Impl::forward(const std::string& id, PointerAction action, float px, float py, int button) {
+bool Window::Impl::forward(const std::string& id, PointerAction action, float px, float py, int button, float dx,
+                           float dy) {
     std::map<std::string, std::unique_ptr<Panel>, std::less<>>::iterator it = panels.find(id);
     if (it == panels.end()) return false;
     for (const LeafRect& l : leaves) {
         if (l.id != id) continue;
         Rect c = contentRect(l.rect);
-        PointerEvent e{action, px - c.x, py - c.y, button};
+        PointerEvent e{action, px - c.x, py - c.y, button, dx, dy};
         return it->second->pointer(e);
     }
     return false;
+}
+
+bool Window::Impl::forwardKey(const SDL_KeyboardEvent& k) {
+    const std::string& id = focusedPanel.empty() ? hoveredPanel : focusedPanel;
+    std::map<std::string, std::unique_ptr<Panel>, std::less<>>::iterator it = panels.find(id);
+    if (it == panels.end()) return false;
+    KeyEvent e{static_cast<int>(k.scancode), k.down, k.repeat, static_cast<std::uint16_t>(k.mod)};
+    return it->second->key(e);
 }
 
 void Window::Impl::handle(const SDL_Event& e) {
@@ -193,6 +215,27 @@ void Window::Impl::handle(const SDL_Event& e) {
     case SDL_EVENT_WINDOW_RESTORED:
         dirty = true;
         break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        if (relative && SDL_SetWindowRelativeMouseMode(window, false)) relative = false;
+        for (std::pair<const std::string, std::unique_ptr<Panel>>& p : panels)
+            if (p.second) p.second->focusLost();
+        dirty = true;
+        break;
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
+        dirty = forwardKey(e.key) || dirty;
+        break;
+    case SDL_EVENT_MOUSE_WHEEL: {
+        std::string id = focusedPanel;
+        float px = e.wheel.mouse_x * density;
+        float py = e.wheel.mouse_y * density;
+        if (!relative) {
+            id.clear();
+            panelAt(static_cast<int>(px), static_cast<int>(py), &id, nullptr);
+        }
+        if (!id.empty()) dirty = forward(id, PointerAction::Wheel, px, py, 0, 0.0f, e.wheel.y) || dirty;
+        break;
+    }
     case SDL_EVENT_WINDOW_MOUSE_LEAVE:
         if (!hoveredPanel.empty() && capturedPanel.empty()) {
             dirty = forward(hoveredPanel, PointerAction::Leave, 0, 0, 0) || dirty;
@@ -206,16 +249,22 @@ void Window::Impl::handle(const SDL_Event& e) {
     case SDL_EVENT_MOUSE_MOTION: {
         float px = e.motion.x * density;
         float py = e.motion.y * density;
+        float dx = e.motion.xrel * density;
+        float dy = e.motion.yrel * density;
+        if (relative && !focusedPanel.empty()) {
+            dirty = forward(focusedPanel, PointerAction::Move, px, py, 0, dx, dy) || dirty;
+            break;
+        }
         if (dragNode != -1) {
             tree.drag(dragNode, static_cast<int>(px), static_cast<int>(py));
             dirty = true;
             break;
         }
         if (!capturedPanel.empty()) {
-            dirty = forward(capturedPanel, PointerAction::Move, px, py, 0) || dirty;
+            dirty = forward(capturedPanel, PointerAction::Move, px, py, 0, dx, dy) || dirty;
             break;
         }
-        int node = tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+        int node = handleAt(px, py);
         if (node != hoverNode) {
             hoverNode = node;
             dirty = true;
@@ -230,13 +279,18 @@ void Window::Impl::handle(const SDL_Event& e) {
             if (!hoveredPanel.empty()) dirty = forward(hoveredPanel, PointerAction::Leave, 0, 0, 0) || dirty;
             hoveredPanel = id;
         }
-        if (!id.empty()) dirty = forward(id, PointerAction::Move, px, py, 0) || dirty;
+        if (!id.empty()) dirty = forward(id, PointerAction::Move, px, py, 0, dx, dy) || dirty;
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         float px = e.button.x * density;
         float py = e.button.y * density;
-        int node = tree.hitTest(static_cast<int>(px), static_cast<int>(py), static_cast<int>(std::lround(3 * scale)));
+        if (relative && !focusedPanel.empty()) {
+            capturedPanel = focusedPanel;
+            dirty = forward(focusedPanel, PointerAction::Down, px, py, e.button.button) || dirty;
+            break;
+        }
+        int node = handleAt(px, py);
         if (node != -1 && e.button.button == SDL_BUTTON_LEFT) {
             dragNode = node;
             dirty = true;
@@ -245,6 +299,7 @@ void Window::Impl::handle(const SDL_Event& e) {
         std::string id;
         if (panelAt(static_cast<int>(px), static_cast<int>(py), &id, nullptr)) {
             capturedPanel = id;
+            focusedPanel = id;
             dirty = forward(id, PointerAction::Down, px, py, e.button.button) || dirty;
         }
         break;
@@ -358,12 +413,22 @@ Window::Impl::Frame Window::Impl::render() {
 int Window::run(int frameLimit) {
     Impl& s = *impl_;
     int presented = 0;
+    const Uint64 tickMs = s.config.tickHz > 0 ? static_cast<Uint64>(std::max(1, 1000 / s.config.tickHz)) : 0;
+    Uint64 lastTick = SDL_GetTicks();
     while (!s.closing) {
         SDL_Event e;
         if (frameLimit > 0) s.dirty = true;
-        if (!s.dirty && SDL_WaitEvent(&e)) s.handle(e);
+        if (!s.dirty && tickMs > 0) {
+            if (SDL_WaitEventTimeout(&e, static_cast<Sint32>(tickMs))) s.handle(e);
+        } else if (!s.dirty && SDL_WaitEvent(&e)) {
+            s.handle(e);
+        }
         while (SDL_PollEvent(&e)) s.handle(e);
         if (s.wakeRequested.exchange(false)) s.dirty = true;
+        if (tickMs > 0 && SDL_GetTicks() - lastTick >= tickMs) {
+            lastTick = SDL_GetTicks();
+            s.dirty = true;
+        }
         if (s.closing || !s.dirty) continue;
         s.dirty = false;
         s.presenter.waitFrame();

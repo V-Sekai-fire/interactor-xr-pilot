@@ -70,10 +70,16 @@ struct GpuDecoder::Gpu
     Buffer rgbx;
     Image frame; // RGBA8, the blit source; left in TRANSFER_SRC_OPTIMAL
     bool hasFrame = false;
+    Image white; // 1x1 RGBA8 white, the reticle's blit source; TRANSFER_SRC_OPTIMAL once made
+    bool whiteReady = false;
 
     ~Gpu()
     {
         releaseFrame();
+        if (whiteReady)
+        {
+            releaseImage(white);
+        }
         if (device != VK_NULL_HANDLE)
         {
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -469,7 +475,54 @@ struct GpuDecoder::Gpu
         return true;
     }
 
-    void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight)
+    bool ensureWhite()
+    {
+        if (whiteReady)
+        {
+            return true;
+        }
+        if (!makeImage(white, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+            !beginCommands())
+        {
+            return false;
+        }
+        transition(white.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkClearColorValue colour = {{1.0f, 1.0f, 1.0f, 1.0f}};
+        const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, white.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
+        transition(white.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        whiteReady = submitAndWait();
+        return whiteReady;
+    }
+
+    // Two short white bars crossing at the centre of the view, where the gaze and the pointing hand aim.
+    void recordReticle(VkCommandBuffer commands, VkImage target, int32_t cx, int32_t cy, int32_t size)
+    {
+        if (!ensureWhite())
+        {
+            return;
+        }
+        barrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT);
+        const int32_t half = std::max(6, size / 2);
+        const int32_t bars[2][4] = {{cx - half, cy - 1, cx + half, cy + 1}, {cx - 1, cy - half, cx + 1, cy + half}};
+        for (const int32_t* bar : bars)
+        {
+            VkImageBlit blit = {};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.srcOffsets[1] = {1, 1, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blit.dstOffsets[0] = {bar[0], bar[1], 0};
+            blit.dstOffsets[1] = {bar[2], bar[3], 1};
+            vkCmdBlitImage(commands, white.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+        }
+    }
+
+    void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight, bool reticle)
     {
         const VkClearColorValue background = {{4.0f / 255.0f, 6.0f / 255.0f, 9.0f / 255.0f, 1.0f}};
         const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -494,6 +547,10 @@ struct GpuDecoder::Gpu
         blit.dstOffsets[1] = {x + w, y + h, 1};
         vkCmdBlitImage(commands, frame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        if (reticle)
+        {
+            recordReticle(commands, target, x + w / 2, y + h / 2, h / 40);
+        }
     }
 
     bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& outWidth, int& outHeight)
@@ -579,11 +636,12 @@ int GpuDecoder::height() const
     return gpu_ ? gpu_->height : 0;
 }
 
-void GpuDecoder::recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight)
+void GpuDecoder::recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight,
+                               bool reticle)
 {
     if (gpu_)
     {
-        gpu_->recordLeftEye(commands, target, targetWidth, targetHeight);
+        gpu_->recordLeftEye(commands, target, targetWidth, targetHeight, reticle);
     }
 }
 

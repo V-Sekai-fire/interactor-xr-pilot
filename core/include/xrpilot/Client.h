@@ -23,6 +23,8 @@ namespace xrpilot
 struct ClientStatus
 {
     bool connected = false;
+    bool discovered = false; // a runtime has announced itself
+    bool autoConnect = true;
     std::string server;
     std::string serverName;
     uint32_t renderWidth = 0;  // per eye
@@ -32,6 +34,7 @@ struct ClientStatus
     uint64_t videoPackets = 0;
     uint64_t framesAssembled = 0;
     uint64_t framesDropped = 0;
+    uint64_t fecRecoveries = 0;
 };
 
 class Client final
@@ -49,10 +52,21 @@ public:
 
     // The newest assembled frame not yet taken, if any.
     std::optional<AssembledVideoFrame> takeFrame();
-    void requestKeyframe();
+    // reasonFlags are oxr::protocol::KeyframeReasonFlags; at most one request a second.
+    void requestKeyframe(uint32_t reasonFlags = 0, uint32_t detail = 0);
+    // Tells the runtime how long the frame waited and decoded, as a headset does after each frame.
+    void reportLatency(const AssembledVideoFrame& frame, int64_t decodeStartNs, int64_t decodeEndNs);
+
+    // Connects to the runtime heard most recently, or the next to announce.
+    void connectNow();
+    // Leaves the runtime and stays away until connectNow or auto-connect.
+    void disconnect();
+    void setAutoConnect(bool on);
 
     AgentState agent();
     void setAgent(const AgentState& state);
+    // Changes the agent state under the client's lock, so a person and the agent never overwrite each other.
+    void updateAgent(const std::function<void(AgentState&)>& change);
     ClientStatus status();
 
 private:
@@ -74,6 +88,9 @@ private:
     AgentState agent_;
     ClientStatus status_;
     uint32_t serverAddress_ = 0; // network byte order
+    uint32_t announcedAddress_ = 0;
+    oxr::protocol::ServerAnnounce announced_ = {};
+    bool connectRequested_ = false;
     std::optional<AssembledVideoFrame> latest_;
     int64_t lastVideoNs_ = 0;
     int64_t lastKeyframeRequestNs_ = 0;
