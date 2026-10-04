@@ -392,10 +392,9 @@ public:
         const float row = 22.0f * s;
         const float sub = 17.0f * s;
         const float nameX0 = pad + 16.0f * s;
-        // Names take the width; the duration is a short bar and its milliseconds at the right edge.
-        const float msW = 44.0f * s;
-        const float barW = std::clamp(ctx.width * 0.12f, 16.0f * s, 60.0f * s);
-        const float barX = ctx.width - pad - msW - barW - 6.0f * s;
+        // Names take the width; the duration is its time, dim, at the right edge.
+        const float msW = 40.0f * s;
+        const float barX = ctx.width - pad - msW;
         float y = ctx.height - pad;
         int age = 0;
         for (std::vector<Span>::const_reverse_iterator it = spans.rbegin(); it != spans.rend() && y > 0.0f; ++it, ++age)
@@ -430,15 +429,10 @@ public:
             tinted(ctx, shade(Color{223, 225, 229, 255}, fade),
                    [&](DrawContext& t) { Label(name, 13.0f).draw(t, nameX, y, 0.0f); });
             const int64_t ms = it->durationMs(now);
-            const float span = std::min(1.0f, std::log10(1.0f + float(ms)) / std::log10(1.0f + 5000.0f));
-            const float track[4] = {barX, mid, barX + barW, mid};
-            drawPolyline(ctx, track, 2, shade(Color{55, 60, 68, 255}, fade), 6.0f * s);
-            const float bar[4] = {barX, mid, barX + std::max(2.0f, barW * span), mid};
-            drawPolyline(ctx, bar, 2, status, 6.0f * s);
             tinted(ctx, shade(Color{150, 156, 166, 255}, fade), [&](DrawContext& t) {
                 const std::string when = ms < 1000 ? std::to_string(ms) + "ms" : std::to_string(ms / 1000) + "." +
                                                                                      std::to_string(ms % 1000 / 100) + "s";
-                Label(when, 11.0f).draw(t, barX + barW + 6.0f * s, y, 0.0f);
+                Label(when, 11.0f).draw(t, barX, y, 0.0f);
             });
         }
     }
@@ -699,7 +693,7 @@ int main(int argc, char** argv)
     // Panels on the left, the view on the right.
     SplitTree layout("eye");
     layout.dock("controls", "eye", Side::Left, 0.27);
-    layout.dock("trace", "eye", Side::Right, 0.26);
+    layout.dock("trace", "eye", Side::Right, 0.3);
     // A one-line status bar: the header plus a sparkline row, never shorter than both at 2x scale.
     layout.dock("stats", "eye", Side::Bottom, 0.07);
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
