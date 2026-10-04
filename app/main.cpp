@@ -51,7 +51,6 @@ struct Shared
     std::atomic<uint64_t> decoded{0};
     std::atomic<uint64_t> decodeErrors{0};
     std::atomic<bool> captured{false};
-    std::string lastCommand = "none";
     SpanLog spans;
     std::string snapshotPath; // --snapshot: the 90th decoded frame
 };
@@ -517,7 +516,6 @@ public:
         }));
         pose_ = add(std::make_unique<Label>(""));
         capture_ = add(std::make_unique<Label>(""));
-        last_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
                                  "WASD walk, E/R roll, Shift moves a hand, wheel steps",
                                  "T/H/click triggers, F/G grips, 1-4 XYAB, M menu, P lowers"})
@@ -561,10 +559,6 @@ public:
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
-        {
-            std::lock_guard<std::mutex> lock(shared_.mutex);
-            last_->setText("Agent's last command: " + shared_.lastCommand);
-        }
         WidgetPanel::draw(ctx);
     }
 
@@ -580,7 +574,6 @@ private:
     Toggle* seated_ = nullptr;
     Label* pose_ = nullptr;
     Label* capture_ = nullptr;
-    Label* last_ = nullptr;
     Tray* tray_ = nullptr;
     int64_t lastTrayNs_ = 0;
 };
@@ -684,10 +677,6 @@ int main(int argc, char** argv)
                     shared.screenshotReply = errorJson("the window did not render within 5 s");
                 }
                 reply = shared.screenshotReply;
-            }
-            {
-                std::lock_guard<std::mutex> lock(shared.mutex);
-                shared.lastCommand = line;
             }
             if (!isMark)
                 shared.spans.child(line, reply.rfind("{\"ok\":false", 0) != 0, nowNs() / 1'000'000);
