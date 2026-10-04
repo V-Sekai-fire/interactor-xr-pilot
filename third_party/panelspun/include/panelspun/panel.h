@@ -67,6 +67,8 @@ public:
     // A panel returning true has its content rect filled by recordVulkan instead of draw.
     virtual bool usesVulkanRegion() const { return false; }
     virtual void recordVulkan(const VulkanRegionFrame& frame) { (void)frame; }
+    // Runs on the window thread at every wake once the previous frame is done, minimized or not.
+    virtual void update(const VulkanContext& context) { (void)context; }
 
 private:
     std::string title_;

@@ -366,6 +366,9 @@ int Window::run(int frameLimit) {
         if (s.wakeRequested.exchange(false)) s.dirty = true;
         if (s.closing || !s.dirty) continue;
         s.dirty = false;
+        s.presenter.waitFrame();
+        for (std::pair<const std::string, std::unique_ptr<Panel>>& p : s.panels)
+            if (p.second) p.second->update(s.presenter.context());
         Impl::Frame f = s.render();
         if (f == Impl::Frame::Failed) return 1;
         if (f == Impl::Frame::Presented) {

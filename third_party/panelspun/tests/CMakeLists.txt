@@ -57,7 +57,11 @@ if(PANELSPUN_GPU_TESTS AND TARGET panelspun-demo)
   add_test(NAME demo.redraw-from-worker-thread COMMAND panelspun-demo --wake-check 3)
   add_test(NAME demo.control-no-redraw-without-wake COMMAND panelspun-demo --wake-check 3 --no-wake)
   set_tests_properties(demo.control-no-redraw-without-wake PROPERTIES WILL_FAIL TRUE)
+  add_test(NAME demo.update-while-minimized COMMAND panelspun-demo --wake-check 3 --minimized)
+  add_test(NAME demo.control-no-update-without-wake COMMAND panelspun-demo --wake-check 3 --minimized --no-wake)
+  set_tests_properties(demo.control-no-update-without-wake PROPERTIES WILL_FAIL TRUE)
   set_tests_properties(demo.vulkan-region-composited demo.control-without-vulkan-region-fails
     demo.all-features-device demo.control-default-device-lacks-features
-    demo.redraw-from-worker-thread demo.control-no-redraw-without-wake PROPERTIES RUN_SERIAL TRUE)
+    demo.redraw-from-worker-thread demo.control-no-redraw-without-wake
+    demo.update-while-minimized demo.control-no-update-without-wake PROPERTIES RUN_SERIAL TRUE)
 endif()
