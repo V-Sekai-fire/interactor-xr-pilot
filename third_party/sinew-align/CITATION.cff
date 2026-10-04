@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: If you use this code, cite the interactor-gyre tree it is vendored from and the sinew-mocap/solve specification it ports.
+title: sinew_align, the C port of sinew-mocap/solve's Align.lean rotation fitter (vendored)
+abstract: >-
+  V-Sekai-fire/interactor-gyre at 6e047600849cb4c78e28b9779cc30d386cabeb97
+  (src/gen/sinew_align.c, sinew_align.h, test/unit/test_sinew_align.c),
+  copied file for file: the direct C transcription, function for function,
+  of sinew-mocap/solve's core/spec/Sinew/Align.lean (lean/Sinew here):
+  det9 / mul9 / transpose9 on row-major 3x3 arrays, rodrigues (one pair),
+  ns30 (a 30-iteration Newton-Schulz orthonormalisation of the covariance,
+  two or more pairs), regularize, valid9, jacobi9 and the Jacobi-SVD kabsch
+  fallback, finishAlign and align (targets[i] ~= R sources[i]). The unit
+  test is AlignTest.lean's oracle: a 120-degree rotation (the unit
+  quaternion (0.5, 0.5, 0.5, 0.5) as a matrix) recovered at N=5, N=2 and
+  N=1 to 1e-4. Local adaptations: none to the three files; sinew_align_cli.c
+  (this tree) wraps sinew_align as a host command for the gates' analysis
+  scripts (centres each point set on its own centroid, optionally a fit
+  about y); guest/drape/similarity.h feeds it the centred cross-covariance
+  through sinew_finish_align for the drape's fit phase, and drape.elf's
+  drape_sinew_align_test runs the oracle in the guest. Rotations stay 3x3
+  matrices throughout (AGENTS.md rule 11).
+authors:
+  - family-names: Lee
+    given-names: K. S. Ernest (iFire)
+repository-code: https://github.com/V-Sekai-fire/interactor-gyre
+commit: 6e047600849cb4c78e28b9779cc30d386cabeb97
+license: MIT
