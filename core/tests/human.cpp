@@ -71,10 +71,13 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          AgentState s;
          advanceHuman(s, 0.0f, 100.0f, 0.0f);
-         check(s.head.pitch < 0.0f, "moving the mouse down looks down");
+         float yaw, pitch, roll;
+         toYawPitchRoll(s.head.rotation, yaw, pitch, roll);
+         check(pitch < 0.0f, "moving the mouse down looks down");
          AgentState t;
          advanceHuman(t, 100.0f, 0.0f, 0.0f);
-         check(t.head.yaw < 0.0f, "moving the mouse right turns right");
+         toYawPitchRoll(t.head.rotation, yaw, pitch, roll);
+         check(yaw < 0.0f, "moving the mouse right turns right");
      }},
     {"human.touch-keys",
      [] {
@@ -111,8 +114,7 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          constexpr float Deg = 57.29577951308232f;
          AgentState s;
-         s.head.yaw = 1.2f * Deg;
-         s.head.pitch = -0.4f * Deg;
+         s.head.rotation = fromEuler(EulerOrder::YXZ, 1.2f * Deg, -0.4f * Deg, 0.0f);
          s.head.position[0] = 3.0f;
          const TrackingPacket idle = packetOf(s);
          check(idle.rightControllerPos[1] < 1.0f && idle.leftControllerPos[1] < 1.0f,
@@ -152,7 +154,7 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          AgentState s;
          ClientStatus status;
-         runCommand("hand right 0.5 1.2 -0.4 10 -5", s, status, 0);
+         runCommand("hand right 0.5 1.2 -0.4 1 0 0 0 1 0 0 0 1", s, status, 0);
          const TrackingPacket placed = packetOf(s);
          check(placed.rightControllerPos[0] == 0.5f && placed.rightControllerPos[1] == 1.2f,
                "an agent-placed hand is sent where the agent put it");

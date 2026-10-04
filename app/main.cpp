@@ -247,7 +247,9 @@ private:
             if (wheel != 0.0f)
             {
                 // A wheel notch walks a quarter metre along where the head faces.
-                const float yaw = s.head.yaw * 0.017453292f;
+                float yawDegrees, pitchDegrees, rollDegrees;
+                toYawPitchRoll(s.head.rotation, yawDegrees, pitchDegrees, rollDegrees);
+                const float yaw = yawDegrees * 0.017453292f;
                 s.head.position[0] += -std::sin(yaw) * 0.25f * wheel;
                 s.head.position[2] += -std::cos(yaw) * 0.25f * wheel;
             }
@@ -456,7 +458,9 @@ public:
         controllers_->setValue(a.hands[1].present);
         pointing_->setValue(a.pointing);
         seated_->setValue(a.seated);
-        pose_->setText("Head yaw " + fixed(a.head.yaw, 0) + "  pitch " + fixed(a.head.pitch, 0) + "  at " +
+        float yaw, pitch, roll;
+        toYawPitchRoll(a.head.rotation, yaw, pitch, roll);
+        pose_->setText("Head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");

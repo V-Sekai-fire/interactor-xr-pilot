@@ -27,25 +27,6 @@ std::string escape(const std::string& text)
     return out;
 }
 
-std::string number(float value)
-{
-    std::ostringstream out;
-    out.precision(5);
-    out << (std::isfinite(value) ? value : 0.0f);
-    return out.str();
-}
-
-std::string poseJson(const Pose& pose)
-{
-    return "{\"position\":[" + number(pose.position[0]) + "," + number(pose.position[1]) + "," + number(pose.position[2]) +
-           "],\"yaw\":" + number(pose.yaw) + ",\"pitch\":" + number(pose.pitch) + ",\"roll\":" + number(pose.roll) + "}";
-}
-
-int handIndex(const std::string& name)
-{
-    return name == "left" ? 0 : name == "right" ? 1 : -1;
-}
-
 bool readFloats(std::istringstream& in, float* out, int count)
 {
     for (int i = 0; i < count; ++i)
@@ -56,6 +37,48 @@ bool readFloats(std::istringstream& in, float* out, int count)
     std::string extra;
     return !(in >> extra);
 }
+
+std::string number(float value)
+{
+    std::ostringstream out;
+    out.precision(5);
+    out << (std::isfinite(value) ? value : 0.0f);
+    return out.str();
+}
+
+std::string poseJson(const Pose& pose)
+{
+    const float* m = pose.rotation.m;
+    std::string rows;
+    for (int row = 0; row < 3; ++row)
+    {
+        rows += std::string(row == 0 ? "[" : ",[") + number(m[row * 3]) + "," + number(m[row * 3 + 1]) + "," +
+                number(m[row * 3 + 2]) + "]";
+    }
+    return "{\"position\":[" + number(pose.position[0]) + "," + number(pose.position[1]) + "," + number(pose.position[2]) +
+           "],\"rotation\":[" + rows + "]}";
+}
+
+// Position then a rotation matrix row by row; false unless the matrix is a proper rotation.
+bool readPose(std::istringstream& in, Pose& pose)
+{
+    float v[12];
+    if (!readFloats(in, v, 12))
+        return false;
+    Rotation r;
+    std::copy(v + 3, v + 12, r.m);
+    if (!isRotation(r))
+        return false;
+    std::copy(v, v + 3, pose.position);
+    pose.rotation = r;
+    return true;
+}
+
+int handIndex(const std::string& name)
+{
+    return name == "left" ? 0 : name == "right" ? 1 : -1;
+}
+
 
 const char* ok = "{\"ok\":true}";
 
@@ -106,13 +129,10 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
     }
     else if (verb == "head")
     {
-        float v[6];
-        if (!readFloats(in, v, 6))
-            return {errorJson("head needs x y z yaw pitch roll"), {}};
-        std::copy(v, v + 3, state.head.position);
-        state.head.yaw = v[3];
-        state.head.pitch = std::clamp(v[4], -89.0f, 89.0f);
-        state.head.roll = v[5];
+        Pose head;
+        if (!readPose(in, head))
+            return {errorJson("head needs x y z and a 3x3 rotation matrix row by row"), {}};
+        state.head = head;
         result.reply = ok;
     }
     else if (verb == "hand")
@@ -120,13 +140,10 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         std::string name;
         in >> name;
         const int i = handIndex(name);
-        float v[5];
-        if (i < 0 || !readFloats(in, v, 5))
-            return {errorJson("hand needs left|right x y z yaw pitch"), {}};
-        std::copy(v, v + 3, state.hands[i].pose.position);
-        state.hands[i].pose.yaw = v[3];
-        state.hands[i].pose.pitch = v[4];
-        state.hands[i].pose.roll = 0.0f;
+        Pose pose;
+        if (i < 0 || !readPose(in, pose))
+            return {errorJson("hand needs left|right, x y z and a 3x3 rotation matrix row by row"), {}};
+        state.hands[i].pose = pose;
         state.hands[i].present = true;
         state.hands[i].manual = true;
         result.reply = ok;

@@ -14,24 +14,8 @@ namespace
 
 constexpr float DegreesToRadians = 0.017453292519943295f;
 
-void multiply(const float a[4], const float b[4], float out[4])
-{
-    out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
-    out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
-    out[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
-    out[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
-}
-
-void axisAngle(float x, float y, float z, float degrees, float out[4])
-{
-    const float half = degrees * DegreesToRadians * 0.5f;
-    out[0] = x * std::sin(half);
-    out[1] = y * std::sin(half);
-    out[2] = z * std::sin(half);
-    out[3] = std::cos(half);
-}
-
 } // namespace
+
 
 AgentState::AgentState()
 {
@@ -54,15 +38,7 @@ void setSeated(AgentState& state, bool seated)
 
 void poseQuaternion(const Pose& pose, float out[4])
 {
-    float yaw[4];
-    float pitch[4];
-    float roll[4];
-    float yawPitch[4];
-    axisAngle(0.0f, 1.0f, 0.0f, pose.yaw, yaw);
-    axisAngle(1.0f, 0.0f, 0.0f, pose.pitch, pitch);
-    axisAngle(0.0f, 0.0f, 1.0f, pose.roll, roll);
-    multiply(yaw, pitch, yawPitch);
-    multiply(yawPitch, roll, out);
+    toQuaternion(pose.rotation, out);
 }
 
 void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::protocol::TrackingPacket& packet)

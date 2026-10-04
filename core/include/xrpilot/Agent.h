@@ -9,6 +9,8 @@
 #include <set>
 #include <string>
 
+#include "xrpilot/Rotation.h"
+
 #include <oxrsys/protocol/Protocol.h>
 
 namespace xrpilot
@@ -17,10 +19,7 @@ namespace xrpilot
 struct Pose
 {
     float position[3] = {0.0f, 0.0f, 0.0f};
-    // Degrees; orientation is yaw about +Y, then pitch about +X, then roll about +Z.
-    float yaw = 0.0f;
-    float pitch = 0.0f;
-    float roll = 0.0f;
+    Rotation rotation;
 };
 
 struct HandState
@@ -62,7 +61,7 @@ constexpr float SeatedEyeDrop = 0.4f;
 // Sits or stands: the head and any placed hand move by SeatedEyeDrop; body-relative hands follow the head.
 void setSeated(AgentState& state, bool seated);
 
-// Quaternion (x, y, z, w) of a pose's orientation.
+// Quaternion (x, y, z, w) of a pose's rotation, for the tracking packet.
 void poseQuaternion(const Pose& pose, float out[4]);
 
 // Maps a button name (trigger and grip are analog and handled apart) to its flag; 0 when unknown.
