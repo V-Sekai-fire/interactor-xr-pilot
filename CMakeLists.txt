@@ -38,6 +38,7 @@ add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Commands.cpp
     core/src/FrameAssembler.cpp
+    core/src/HumanInput.cpp
     core/src/Png.cpp
 )
 target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE})
@@ -60,6 +61,12 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
                       commands.json-string-escapes)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
+endforeach()
+add_executable(xrpilot-human-tests core/tests/human.cpp)
+target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
+foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
+                      human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body)
+    add_test(NAME ${name} COMMAND xrpilot-human-tests ${name})
 endforeach()
 
 if(NOT XRPILOT_BUILD_APP)

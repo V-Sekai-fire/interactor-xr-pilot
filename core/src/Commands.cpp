@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #include "xrpilot/Commands.h"
+#include "xrpilot/HumanInput.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,7 +80,7 @@ std::string stateJson(const AgentState& state, const ClientStatus& status, uint6
     {
         const HandState& h = state.hands[i];
         hands += std::string(i == 0 ? "\"left\":" : ",\"right\":") + "{\"present\":" + (h.present ? "true" : "false") +
-                 ",\"pose\":" + poseJson(h.pose) + ",\"trigger\":" + number(h.trigger) + ",\"grip\":" + number(h.grip) +
+                 ",\"pose\":" + poseJson(handPose(state, i)) + ",\"trigger\":" + number(h.trigger) + ",\"grip\":" + number(h.grip) +
                  ",\"stick\":[" + number(h.stick[0]) + "," + number(h.stick[1]) + "]}";
     }
     return "{\"ok\":true,\"connected\":" + std::string(status.connected ? "true" : "false") + ",\"server\":\"" +
@@ -127,6 +128,7 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         state.hands[i].pose.pitch = v[4];
         state.hands[i].pose.roll = 0.0f;
         state.hands[i].present = true;
+        state.hands[i].manual = true;
         result.reply = ok;
     }
     else if (verb == "present")

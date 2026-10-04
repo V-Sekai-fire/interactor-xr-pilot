@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <string>
 
 #include <oxrsys/protocol/Protocol.h>
@@ -25,6 +26,8 @@ struct Pose
 struct HandState
 {
     bool present = true;
+    // Set when the agent places the hand; otherwise it follows the body (HumanInput's handPose).
+    bool manual = false;
     Pose pose;
     float trigger = 0.0f;
     float grip = 0.0f;
@@ -39,6 +42,12 @@ struct AgentState
     float ipd = 0.064f;
     float verticalFovDegrees = 100.0f;
     float eyeAspect = 1.0f;
+    // Hands rest at the sides, relative to the head in its yaw frame, so they follow walking and turning.
+    float handOffset[2][3] = {{-0.22f, -0.72f, -0.05f}, {0.22f, -0.72f, -0.05f}};
+    // Pointing latches with no time limit (WCAG 2.2 SC 2.2.1) until the person lowers the hand.
+    bool pointing = false;
+    float pointingAge = 0.0f;
+    std::set<int> keys; // held keys and mouse buttons, as HumanInput's key codes
 
     AgentState();
 };

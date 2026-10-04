@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #include "xrpilot/Agent.h"
+#include "xrpilot/HumanInput.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,13 +36,6 @@ void axisAngle(float x, float y, float z, float degrees, float out[4])
 AgentState::AgentState()
 {
     head.position[1] = 1.6f;
-    // Hands rest at the sides until the agent places them.
-    for (int i = 0; i < 2; ++i)
-    {
-        hands[i].pose.position[0] = i == 0 ? -0.22f : 0.22f;
-        hands[i].pose.position[1] = 0.88f;
-        hands[i].pose.position[2] = -0.05f;
-    }
 }
 
 void poseQuaternion(const Pose& pose, float out[4])
@@ -67,10 +61,12 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
 
     const HandState& left = state.hands[0];
     const HandState& right = state.hands[1];
-    std::copy(std::begin(left.pose.position), std::end(left.pose.position), std::begin(packet.leftControllerPos));
-    std::copy(std::begin(right.pose.position), std::end(right.pose.position), std::begin(packet.rightControllerPos));
-    poseQuaternion(left.pose, packet.leftControllerRot);
-    poseQuaternion(right.pose, packet.rightControllerRot);
+    const Pose leftPose = handPose(state, 0);
+    const Pose rightPose = handPose(state, 1);
+    std::copy(std::begin(leftPose.position), std::end(leftPose.position), std::begin(packet.leftControllerPos));
+    std::copy(std::begin(rightPose.position), std::end(rightPose.position), std::begin(packet.rightControllerPos));
+    poseQuaternion(leftPose, packet.leftControllerRot);
+    poseQuaternion(rightPose, packet.rightControllerRot);
     packet.trackingFlags = (left.present ? TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE : 0u) |
                            (right.present ? TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE : 0u);
 
@@ -89,6 +85,7 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
         packet.buttonState |= BUTTON_RIGHT_GRIP;
     std::copy(std::begin(left.stick), std::end(left.stick), std::begin(packet.leftThumbstick));
     std::copy(std::begin(right.stick), std::end(right.stick), std::begin(packet.rightThumbstick));
+    addHumanKeys(state, packet);
 
     packet.ipd = state.ipd;
     const float halfV = std::clamp(state.verticalFovDegrees, 30.0f, 170.0f) * 0.5f * DegreesToRadians;
