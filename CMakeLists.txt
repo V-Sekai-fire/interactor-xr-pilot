@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+cmake_minimum_required(VERSION 3.24)
+project(xr_pilot VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(XRPILOT_BUILD_APP "Build the xr-pilot window (needs a display and Vulkan)" ON)
+
+include(FetchContent)
+
+# The OXRSys wire protocol and the Lean-authored yuv420_to_rgbx kernel, read from oxrsys at a pinned commit.
+FetchContent_Declare(
+    oxrsys
+    GIT_REPOSITORY https://github.com/V-Sekai-fire/oxrsys.git
+    GIT_TAG eb9295ebd2e60a5c9ada006bb9b982873cadab2d
+    SOURCE_SUBDIR none
+)
+# PyroWave's C API (MIT) and the Granite subset it pins, at the commits oxrsys uses.
+FetchContent_Declare(
+    pyrowave
+    GIT_REPOSITORY https://github.com/V-Sekai-fire/pyrowave.git
+    GIT_TAG 89f7e47d4abbf650c91fae766728af866c5e32a0
+    SOURCE_SUBDIR none
+)
+FetchContent_Declare(
+    granite
+    GIT_REPOSITORY https://github.com/Themaister/Granite.git
+    GIT_TAG 1b2d1801d2910fb09ebcded2f0bb3a3a781103b5
+    GIT_SUBMODULES third_party/volk third_party/khronos/vulkan-headers
+    SOURCE_SUBDIR none
+)
+FetchContent_MakeAvailable(oxrsys)
+set(XRPILOT_PROTOCOL_INCLUDE ${oxrsys_SOURCE_DIR}/common/protocol/include)
+
+add_library(xrpilot_core STATIC
+    core/src/Agent.cpp
+    core/src/Commands.cpp
+    core/src/FrameAssembler.cpp
+    core/src/Png.cpp
+)
+target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE})
+
+add_library(xrpilot_net STATIC core/src/Client.cpp)
+target_link_libraries(xrpilot_net PUBLIC xrpilot_core)
+if(WIN32)
+    target_link_libraries(xrpilot_net PUBLIC ws2_32)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(xrpilot_net PUBLIC Threads::Threads)
+endif()
+
+enable_testing()
+add_executable(xrpilot-core-tests core/tests/main.cpp)
+target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
+foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
+                      png.round-trip png.corrupt-crc-rejected
+                      agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
+                      commands.malformed-rejected commands.unknown-rejected commands.state-reports-head)
+    add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
+endforeach()
+
+if(NOT XRPILOT_BUILD_APP)
+    return()
+endif()
+
+FetchContent_MakeAvailable(pyrowave granite)
+set(GRANITE_VULKAN_SHADER_MANAGER_RUNTIME_COMPILER OFF CACHE BOOL "" FORCE)
+set(GRANITE_SHADER_COMPILER_OPTIMIZE OFF CACHE BOOL "" FORCE)
+set(GRANITE_POSITION_INDEPENDENT ON CACHE BOOL "" FORCE)
+set(GRANITE_SHIPPING ON CACHE BOOL "" FORCE)
+set(GRANITE_VULKAN_SPIRV_CROSS OFF CACHE BOOL "" FORCE)
+set(GRANITE_VULKAN_SYSTEM_HANDLES OFF CACHE BOOL "" FORCE)
+set(GRANITE_RENDERER OFF CACHE BOOL "" FORCE)
+set(GRANITE_VULKAN_FOSSILIZE OFF CACHE BOOL "" FORCE)
+set(GRANITE_PLATFORM "null" CACHE STRING "" FORCE)
+add_subdirectory(${granite_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/granite-build EXCLUDE_FROM_ALL)
+
+add_library(xrpilot_pyrowave STATIC
+    ${pyrowave_SOURCE_DIR}/pyrowave_encoder.cpp
+    ${pyrowave_SOURCE_DIR}/pyrowave_decoder.cpp
+    ${pyrowave_SOURCE_DIR}/pyrowave_common.cpp
+    ${pyrowave_SOURCE_DIR}/pyrowave_c.cpp
+    ${granite_SOURCE_DIR}/video/scaler.cpp
+)
+target_include_directories(xrpilot_pyrowave
+    PUBLIC ${pyrowave_SOURCE_DIR}
+    PRIVATE ${pyrowave_SOURCE_DIR}/shaders ${granite_SOURCE_DIR}/video
+)
+target_link_libraries(xrpilot_pyrowave PUBLIC granite-vulkan granite-math)
+target_compile_definitions(xrpilot_pyrowave PRIVATE PYROWAVE_PRECISION=1)
+if(MSVC)
+    target_compile_options(xrpilot_pyrowave PRIVATE /D_CRT_SECURE_NO_WARNINGS /wd4267 /wd4244 /wd4309 /wd4005)
+endif()
+
+# panelspun (SDL3 + ThorVG), subtreed; one copy of the Vulkan headers for every target.
+set(PANELSPUN_VULKAN_HEADERS_DIR ${granite_SOURCE_DIR}/third_party/khronos/vulkan-headers/include CACHE PATH "" FORCE)
+set(PANELSPUN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(PANELSPUN_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/panelspun)
+
+add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
+target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${oxrsys_SOURCE_DIR}/kernels/simulator/spirv)
+target_link_libraries(xrpilot_gpu PUBLIC xrpilot_pyrowave)
+
+add_executable(xr-pilot app/main.cpp)
+target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu panelspun)

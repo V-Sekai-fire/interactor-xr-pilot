@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "XR Pilot: an MCP server that lets an AI agent see and drive OpenXR apps through OXRSys"
+type: software
+authors:
+  - name: "K. S. Ernest (iFire) Lee"
+license: "Apache-2.0 OR MIT"
+repository-code: "https://github.com/V-Sekai-fire/interactor-xr-pilot"
+version: 0.1.0
+date-released: "2026-10-04"
+references:
+  - type: software
+    title: "OXRSys"
+    repository-code: "https://github.com/V-Sekai-fire/oxrsys"
+    commit: "eb9295ebd2e60a5c9ada006bb9b982873cadab2d"
+    license: MPL-2.0
+  - type: software
+    title: "PyroWave"
+    repository-code: "https://github.com/V-Sekai-fire/pyrowave"
+    commit: "89f7e47d4abbf650c91fae766728af866c5e32a0"
+    license: MIT
+  - type: software
+    title: "Granite"
+    repository-code: "https://github.com/Themaister/Granite"
+    commit: "1b2d1801d2910fb09ebcded2f0bb3a3a781103b5"
+    license: MIT
+  - type: software
+    title: "panelspun"
+    repository-code: "https://github.com/V-Sekai-fire/interactor-panelspun"
+    license: "Apache-2.0 OR MIT"
