@@ -140,7 +140,9 @@ add_library(xrpilot_tray STATIC tray/src/Tray.cpp)
 target_include_directories(xrpilot_tray PUBLIC tray/include)
 target_link_libraries(xrpilot_tray PUBLIC xrpilot_install panelspun)
 
-add_executable(xr-pilot app/main.cpp)
+# A GUI program, so a launch from the shell or the tray opens the pilot window and no console; the
+# MCP server still talks to it over the stdin and stdout pipes it hands over.
+add_executable(xr-pilot WIN32 app/main.cpp)
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
 add_custom_command(TARGET xr-pilot POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tray/resources $<TARGET_FILE_DIR:xr-pilot>/resources)
