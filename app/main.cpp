@@ -392,8 +392,10 @@ public:
         const float row = 22.0f * s;
         const float sub = 17.0f * s;
         const float nameX0 = pad + 16.0f * s;
-        const float barX = ctx.width * 0.48f;
-        const float barW = std::max(10.0f, ctx.width - barX - 64.0f * s);
+        // Names take the width; the duration is a short bar and its milliseconds at the right edge.
+        const float msW = 44.0f * s;
+        const float barW = std::clamp(ctx.width * 0.12f, 16.0f * s, 60.0f * s);
+        const float barX = ctx.width - pad - msW - barW - 6.0f * s;
         float y = ctx.height - pad;
         int age = 0;
         for (std::vector<Span>::const_reverse_iterator it = spans.rbegin(); it != spans.rend() && y > 0.0f; ++it, ++age)
@@ -434,7 +436,9 @@ public:
             const float bar[4] = {barX, mid, barX + std::max(2.0f, barW * span), mid};
             drawPolyline(ctx, bar, 2, status, 6.0f * s);
             tinted(ctx, shade(Color{150, 156, 166, 255}, fade), [&](DrawContext& t) {
-                Label(std::to_string(ms) + " ms", 11.0f).draw(t, barX + barW + 8.0f * s, y, 0.0f);
+                const std::string when = ms < 1000 ? std::to_string(ms) + "ms" : std::to_string(ms / 1000) + "." +
+                                                                                     std::to_string(ms % 1000 / 100) + "s";
+                Label(when, 11.0f).draw(t, barX + barW + 6.0f * s, y, 0.0f);
             });
         }
     }
