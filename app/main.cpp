@@ -94,7 +94,7 @@ public:
             else if (e.button == SDL_BUTTON_LEFT)
                 press(key::TriggerMouse);
             else if (e.button == SDL_BUTTON_MIDDLE)
-                press(middleKey());
+                press(key::HeadsetButton);
         }
         else if (e.action == PointerAction::Up)
         {
@@ -108,7 +108,6 @@ public:
                 release(key::TriggerMouse);
             else if (e.button == SDL_BUTTON_MIDDLE)
             {
-                release(key::M);
                 release(key::HeadsetButton);
             }
         }
@@ -208,12 +207,6 @@ public:
     }
 
 private:
-    int middleKey()
-    {
-        // With controllers the middle button is the menu; without them it is the headset button.
-        return client_.agent().hands[1].present ? key::M : key::HeadsetButton;
-    }
-
     void press(int code)
     {
         keys_.insert(code);
