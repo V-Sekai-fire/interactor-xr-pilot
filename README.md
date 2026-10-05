@@ -56,8 +56,18 @@ builds and tests only the core, without a display or Vulkan.
 The same build compiles the OXRSys runtime and PC VR driver from `oxrsys/` into `build/oxrsys/`,
 which is where the tray installs them from; `-DXRPILOT_BUILD_OXRSYS=OFF` leaves them out.
 `scripts/windows_build.ps1` does the whole Windows build with CMake, Ninja and the Vulkan loader from
-`pixi.toml`, and `scripts/windows_package_msix.ps1` packs XR Pilot, the runtime and the driver into
-one MSIX.
+`pixi.toml`. `cpack -G WIX` in that build tree packs XR Pilot, the runtime and the driver into one
+per-user MSI with WiX Toolset v4 (`dotnet tool install --global wix --version 4.0.6`, then
+`wix extension add -g WixToolset.UI.wixext/4.0.6`). It installs under
+`%LOCALAPPDATA%\Programs\XR Pilot` with no UAC prompt and adds an `XR Pilot` Start-menu shortcut;
+`scripts/windows_check_msi.ps1` installs, checks and uninstalls one.
+
+The MSI writes nothing outside the user's profile. On first launch the tray copies the runtime and the
+driver to `%LOCALAPPDATA%\OXRSys` and registers the driver with SteamVR, both per-user. Making OXRSys
+the default OpenXR runtime stays a tray action with one UAC prompt: the Khronos loader (OpenXR-SDK
+1.1.63, `src/loader/manifest_file.cpp`) reads `ActiveRuntime` from `HKEY_LOCAL_MACHINE` only, and reads
+`HKEY_CURRENT_USER` for API layers, not runtimes. Without it, `XR_RUNTIME_JSON` pointed at
+`runtime\oxrsys-runtime.json` selects OXRSys for one unelevated process.
 
 ## OXRSys
 
@@ -77,7 +87,7 @@ runtime at a time, so close the OXRSys simulator or headset client first.
 ## Licence
 
 Apache-2.0 OR MIT. `oxrsys/` is MPL-2.0 (`oxrsys/LICENSE`), forked from `demonixis/oxrsys`, unless
-a file there states otherwise; the Windows build and packaging scripts and `packaging/msix` came
+a file there states otherwise; the Windows build script came
 from it and stay MPL-2.0. `core/src/FrameAssembler.cpp`, `core/src/GpuDecoder.cpp`, the tray and their
 headers are ported from OXRSys and stay under MPL-2.0, file by file. `third_party/panelspun` carries
 its own licences. `third_party/witness-cpp` is the header-only property-testing ladder
