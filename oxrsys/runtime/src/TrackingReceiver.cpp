@@ -1,0 +1,460 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#include "TrackingReceiver.h"
+
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+namespace
+{
+
+int64_t SteadyClockNowNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+glm::quat LoadQuat(const float* src)
+{
+    return glm::normalize(glm::quat(src[3], src[0], src[1], src[2]));
+}
+
+void StoreQuat(float* dst, const glm::quat& quat)
+{
+    glm::quat normalized = glm::normalize(quat);
+    dst[0] = normalized.x;
+    dst[1] = normalized.y;
+    dst[2] = normalized.z;
+    dst[3] = normalized.w;
+}
+
+glm::quat CanonicalizeQuat(const glm::quat& quat, const glm::quat* reference)
+{
+    glm::quat normalized = glm::normalize(quat);
+    if (reference != nullptr && glm::dot(normalized, *reference) < 0.0f)
+    {
+        normalized = -normalized;
+    }
+    return normalized;
+}
+
+glm::vec3 LoadVec3(const float* src)
+{
+    return glm::vec3(src[0], src[1], src[2]);
+}
+
+void StoreVec3(float* dst, const glm::vec3& vec)
+{
+    dst[0] = vec.x;
+    dst[1] = vec.y;
+    dst[2] = vec.z;
+}
+
+// Predict position using client-reported velocity if available, otherwise finite difference.
+glm::vec3 PredictPosition(const glm::vec3& previous, const glm::vec3& current,
+                          float dtSeconds, float horizonSeconds, float maxSpeed,
+                          const glm::vec3& reportedVelocity = glm::vec3(0.0f))
+{
+    if (horizonSeconds <= 0.0f)
+    {
+        return current;
+    }
+
+    glm::vec3 velocity;
+    float reportedSpeed = glm::length(reportedVelocity);
+    if (reportedSpeed > 0.001f)
+    {
+        // Use client-reported IMU velocity (more accurate than finite difference)
+        velocity = reportedVelocity;
+    }
+    else if (dtSeconds > 0.0001f)
+    {
+        // Fallback to finite difference
+        velocity = (current - previous) / dtSeconds;
+    }
+    else
+    {
+        return current;
+    }
+
+    float speed = glm::length(velocity);
+    if (speed > maxSpeed && speed > 0.0f)
+    {
+        velocity *= maxSpeed / speed;
+    }
+
+    return current + velocity * horizonSeconds;
+}
+
+// Predict orientation using client-reported angular velocity if available.
+glm::quat PredictOrientationFromVelocity(const glm::quat& current,
+                                          const glm::vec3& angularVelocity,
+                                          float horizonSeconds, float maxRadians)
+{
+    if (horizonSeconds <= 0.0f)
+    {
+        return current;
+    }
+
+    float angSpeed = glm::length(angularVelocity);
+    if (angSpeed < 0.001f)
+    {
+        return current;
+    }
+
+    glm::vec3 axis = angularVelocity / angSpeed;
+    float angle = angSpeed * horizonSeconds;
+    angle = std::clamp(angle, -maxRadians, maxRadians);
+
+    glm::quat rotation = glm::angleAxis(angle, axis);
+    return glm::normalize(rotation * current);
+}
+
+glm::quat PredictOrientation(const glm::quat& previous, const glm::quat& current,
+                             float dtSeconds, float horizonSeconds, float maxRadians)
+{
+    if (dtSeconds <= 0.0001f || horizonSeconds <= 0.0f)
+    {
+        return current;
+    }
+
+    glm::quat prev = glm::normalize(previous);
+    glm::quat cur = glm::normalize(current);
+    if (glm::dot(prev, cur) < 0.0f)
+    {
+        prev = -prev;
+    }
+
+    glm::quat delta = glm::normalize(cur * glm::inverse(prev));
+    float cosHalfAngle = std::clamp(delta.w, -1.0f, 1.0f);
+    float halfAngle = std::acos(cosHalfAngle);
+    float sinHalfAngle = std::sqrt(std::max(0.0f, 1.0f - cosHalfAngle * cosHalfAngle));
+    if (sinHalfAngle < 0.0001f || halfAngle < 0.0001f)
+    {
+        return cur;
+    }
+
+    glm::vec3 axis(delta.x, delta.y, delta.z);
+    axis /= sinHalfAngle;
+
+    float angle = halfAngle * 2.0f;
+    float extrapolatedAngle = angle * (horizonSeconds / dtSeconds);
+    extrapolatedAngle = std::clamp(extrapolatedAngle, -maxRadians, maxRadians);
+
+    glm::quat extra = glm::angleAxis(extrapolatedAngle, glm::normalize(axis));
+    return glm::normalize(extra * cur);
+}
+
+} // namespace
+
+TrackingReceiver::~TrackingReceiver()
+{
+    Stop();
+}
+
+bool TrackingReceiver::Start()
+{
+    socket_ = oxrsys::runtime_socket::Create(AF_INET, SOCK_DGRAM, 0);
+    if (!oxrsys::runtime_socket::IsValid(socket_))
+    {
+        spdlog::error("TrackingReceiver: Failed to create socket: {}",
+                      oxrsys::runtime_socket::LastErrorText());
+        return false;
+    }
+
+    oxrsys::runtime_socket::SetReuseAddress(socket_);
+
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(oxr::protocol::TRACKING_PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(socket_, (sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        spdlog::error("TrackingReceiver: Failed to bind on port {}",
+                       oxr::protocol::TRACKING_PORT);
+        oxrsys::runtime_socket::Close(socket_);
+        return false;
+    }
+
+    running_.store(true);
+    receiveThread_ = std::thread(&TrackingReceiver::ReceiveThread, this);
+
+    spdlog::info("TrackingReceiver: Listening on port {}", oxr::protocol::TRACKING_PORT);
+    return true;
+}
+
+void TrackingReceiver::Stop()
+{
+    running_.store(false);
+
+    oxrsys::runtime_socket::Close(socket_);
+
+    if (receiveThread_.joinable())
+    {
+        receiveThread_.join();
+    }
+
+    spdlog::info("TrackingReceiver: Stopped ({} packets received)", packetCount_.load());
+}
+
+void TrackingReceiver::ReceiveThread()
+{
+    uint8_t buffer[sizeof(oxr::protocol::TrackingPacket)];
+
+    while (running_.load())
+    {
+        oxrsys::runtime_socket::SetReceiveTimeout(socket_, 0, 5000);
+
+        int received = oxrsys::runtime_socket::Receive(socket_, buffer, sizeof(buffer), 0);
+        if (received < static_cast<int>(sizeof(oxr::protocol::TrackingPacket)))
+        {
+            continue;
+        }
+
+        oxr::protocol::TrackingPacket packet = {};
+        memcpy(&packet, buffer, sizeof(packet));
+        StorePacket(packet, SteadyClockNowNs());
+    }
+}
+
+void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
+{
+    if (size < sizeof(oxr::protocol::TrackingPacket))
+    {
+        return;
+    }
+
+    oxr::protocol::TrackingPacket packet = {};
+    memcpy(&packet, data, sizeof(packet));
+    StorePacket(packet, SteadyClockNowNs());
+}
+
+bool TrackingReceiver::GetLatestPose(oxr::protocol::TrackingPacket& outPacket) const
+{
+    if (!hasData_.load())
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    outPacket = latestPacket_;
+    return true;
+}
+
+bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket) const
+{
+    if (!hasData_.load())
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    if (history_.empty())
+    {
+        return false;
+    }
+
+    outPacket = history_.back().packet;
+    if (history_.size() < 2)
+    {
+        return true;
+    }
+
+    float horizonMs = std::clamp(predictionHorizonMs_.load(), 0.0f, 80.0f);
+    if (horizonMs <= 0.01f)
+    {
+        return true;
+    }
+
+    const HistorySample& previous = history_[history_.size() - 2];
+    const HistorySample& current = history_.back();
+
+    int64_t packetDeltaNs = current.packet.timestampNs - previous.packet.timestampNs;
+    if (packetDeltaNs <= 0)
+    {
+        packetDeltaNs = current.receiveTimeNs - previous.receiveTimeNs;
+    }
+
+    float dtSeconds = static_cast<float>(packetDeltaNs) / 1.0e9f;
+    glm::vec3 headLinVel = LoadVec3(current.packet.headLinearVelocity);
+    glm::vec3 headAngVel = LoadVec3(current.packet.headAngularVelocity);
+    float headAngularSpeed = glm::length(headAngVel);
+    bool hasHeadAngularVelocity = headAngularSpeed > 0.001f;
+
+    float totalHorizonSeconds = horizonMs / 1000.0f;
+    float headRotationHorizonSeconds = hasHeadAngularVelocity
+        ? totalHorizonSeconds
+        : totalHorizonSeconds * 0.5f;
+    float controllerRotationHorizonSeconds = totalHorizonSeconds;
+    float positionHorizonSeconds = totalHorizonSeconds * 0.5f;
+
+    // Issue: "look-down-moves-forward" (rotation -> translation coupling).
+    // The client-reported head linear velocity during a head rotation is the
+    // tangential velocity of the eye pivoting about the neck (~0.1-0.15m lever arm).
+    // Linearly extrapolating along that tangent overshoots the genuine (arc) eye
+    // motion, so the scene appears to translate when the user only rotates. Scale the
+    // HEAD position-prediction horizon down as angular speed rises: full horizon for
+    // near-pure translation, ramping to a small floor during brisk head turns. This
+    // tames the overshoot without disabling prediction (no added latency/judder) and
+    // leaves genuine walking translation unaffected.
+    constexpr float kCouplingRampLoRadPerSec = 0.5f;  // below this: no reduction
+    constexpr float kCouplingRampHiRadPerSec = 4.0f;  // at/above this: full reduction
+    constexpr float kCouplingMinHorizonScale = 0.15f; // floor on the position horizon
+    float couplingT = std::clamp(
+        (headAngularSpeed - kCouplingRampLoRadPerSec) /
+            (kCouplingRampHiRadPerSec - kCouplingRampLoRadPerSec),
+        0.0f, 1.0f);
+    float couplingScale = 1.0f - (1.0f - kCouplingMinHorizonScale) * couplingT;
+    float headPositionHorizonSeconds = positionHorizonSeconds * couplingScale;
+
+    float headReportedSpeed = glm::length(headLinVel);
+
+    int64_t nowNs = SteadyClockNowNs();
+    int64_t lastLogNs = lastPredictionDiagnosticNs_.load();
+    if (nowNs - lastLogNs >= 5LL * 1000LL * 1000LL * 1000LL &&
+        lastPredictionDiagnosticNs_.compare_exchange_strong(lastLogNs, nowNs))
+    {
+        // Diagnostic evidence for the coupling fix: reported linear/angular speed,
+        // the scaled head position horizon, and the resulting predicted forward
+        // displacement (what previously overshot as "world moves when I look").
+        spdlog::info("TrackingReceiver: prediction horizon={:.1f}ms head_ang_vel={} "
+                     "ang_speed={:.2f}rad/s lin_speed={:.3f}m/s pos_horizon={:.2f}ms "
+                     "(scale={:.2f}) predicted_disp={:.1f}mm reordered_dropped={}",
+                     horizonMs, hasHeadAngularVelocity ? "yes" : "no", headAngularSpeed,
+                     headReportedSpeed, headPositionHorizonSeconds * 1000.0f, couplingScale,
+                     std::min(headReportedSpeed, 3.0f) * headPositionHorizonSeconds * 1000.0f,
+                     reorderedDropCount_.load());
+    }
+
+    StoreVec3(outPacket.headPosition,
+              PredictPosition(LoadVec3(previous.packet.headPosition),
+                              LoadVec3(current.packet.headPosition),
+                              dtSeconds, headPositionHorizonSeconds, 3.0f, headLinVel));
+
+    if (hasHeadAngularVelocity)
+    {
+        StoreQuat(outPacket.headOrientation,
+                  PredictOrientationFromVelocity(LoadQuat(current.packet.headOrientation),
+                                                  headAngVel, headRotationHorizonSeconds,
+                                                  glm::radians(35.0f)));
+    }
+    else
+    {
+        StoreQuat(outPacket.headOrientation,
+                  PredictOrientation(LoadQuat(previous.packet.headOrientation),
+                                     LoadQuat(current.packet.headOrientation),
+                                     dtSeconds, headRotationHorizonSeconds,
+                                     glm::radians(35.0f)));
+    }
+
+    const bool previousLeftControllerActive =
+        (previous.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE) != 0;
+    const bool currentLeftControllerActive =
+        (current.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE) != 0;
+    if (previousLeftControllerActive && currentLeftControllerActive)
+    {
+        StoreVec3(outPacket.leftControllerPos,
+                  PredictPosition(LoadVec3(previous.packet.leftControllerPos),
+                                  LoadVec3(current.packet.leftControllerPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.leftControllerRot,
+                  PredictOrientation(LoadQuat(previous.packet.leftControllerRot),
+                                     LoadQuat(current.packet.leftControllerRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
+    const bool previousRightControllerActive =
+        (previous.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) != 0;
+    const bool currentRightControllerActive =
+        (current.packet.trackingFlags &
+         oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) != 0;
+    if (previousRightControllerActive && currentRightControllerActive)
+    {
+        StoreVec3(outPacket.rightControllerPos,
+                  PredictPosition(LoadVec3(previous.packet.rightControllerPos),
+                                  LoadVec3(current.packet.rightControllerPos),
+                                  dtSeconds, positionHorizonSeconds, 6.0f));
+        StoreQuat(outPacket.rightControllerRot,
+                  PredictOrientation(LoadQuat(previous.packet.rightControllerRot),
+                                     LoadQuat(current.packet.rightControllerRot),
+                                     dtSeconds, controllerRotationHorizonSeconds,
+                                     glm::radians(45.0f)));
+    }
+
+    return true;
+}
+
+void TrackingReceiver::SetPredictionHorizonMs(float predictionHorizonMs)
+{
+    predictionHorizonMs_.store(std::max(predictionHorizonMs, 0.0f));
+}
+
+void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, int64_t receiveTimeNs)
+{
+    oxr::protocol::TrackingPacket normalizedPacket = packet;
+
+    {
+        std::lock_guard<std::mutex> lock(poseMutex_);
+
+        // Drop out-of-order / duplicate tracking packets. UDP reorders packets freely over Wi-Fi,
+        // and the client stamps each sample with a monotonically increasing timestamp. If a packet
+        // arrives with a timestamp at or before the latest stored one, accepting it would put a
+        // backward sample at the head of the history; finite-difference prediction would then read
+        // a reversed delta over a tiny receive-time gap and emit a large bogus angular velocity.
+        // That is the cause of per-frame render-pose jumps (the head-rotation jitter): the runtime
+        // renders the app from a pose that jumps several degrees while the real head moved a
+        // fraction of a degree. Ordering by client timestamp keeps the history strictly forward in
+        // time. Packets without a timestamp (0) cannot be ordered, so they are always accepted.
+        if (hasData_.load() && packet.timestampNs > 0 && latestPacket_.timestampNs > 0 &&
+            packet.timestampNs <= latestPacket_.timestampNs)
+        {
+            reorderedDropCount_.fetch_add(1);
+            return;
+        }
+
+        const glm::quat* headReference = nullptr;
+        const glm::quat* leftControllerReference = nullptr;
+        const glm::quat* rightControllerReference = nullptr;
+
+        glm::quat latestHeadQuat;
+        glm::quat latestLeftControllerQuat;
+        glm::quat latestRightControllerQuat;
+        if (hasData_.load())
+        {
+            latestHeadQuat = LoadQuat(latestPacket_.headOrientation);
+            latestLeftControllerQuat = LoadQuat(latestPacket_.leftControllerRot);
+            latestRightControllerQuat = LoadQuat(latestPacket_.rightControllerRot);
+            headReference = &latestHeadQuat;
+            leftControllerReference = &latestLeftControllerQuat;
+            rightControllerReference = &latestRightControllerQuat;
+        }
+
+        StoreQuat(normalizedPacket.headOrientation,
+                  CanonicalizeQuat(LoadQuat(packet.headOrientation), headReference));
+        StoreQuat(normalizedPacket.leftControllerRot,
+                  CanonicalizeQuat(LoadQuat(packet.leftControllerRot), leftControllerReference));
+        StoreQuat(normalizedPacket.rightControllerRot,
+                  CanonicalizeQuat(LoadQuat(packet.rightControllerRot), rightControllerReference));
+
+        latestPacket_ = normalizedPacket;
+        history_.push_back({normalizedPacket, receiveTimeNs});
+        while (history_.size() > MaxHistorySamples)
+        {
+            history_.pop_front();
+        }
+    }
+
+    hasData_.store(true);
+    packetCount_.fetch_add(1);
+}

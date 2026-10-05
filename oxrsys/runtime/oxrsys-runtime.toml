@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MPL-2.0
+
+# OXRSys Runtime Configuration
+# Preferred location:
+#   macOS: ~/Library/Application Support/OXRSys/oxrsys-runtime.toml
+#   Linux: ${XDG_CONFIG_HOME:-~/.config}/oxrsys/oxrsys-runtime.toml
+# Fallback location: next to liboxrsys-runtime.dylib / liboxrsys-runtime.so
+
+[general]
+# Enable or disable this runtime without unregistering the manifest.
+# When false, xrCreateInstance returns XR_ERROR_RUNTIME_UNAVAILABLE.
+runtime_enabled = true
+
+[streaming]
+# PyroWave encoding bitrate in Mbps; each frame is held to bitrate_mbps / refresh_rate_hz bytes. Lower = less latency but more artifacts.
+# Try 20-30 for lower latency, 50+ for quality.
+bitrate_mbps = 50
+
+# Preferred headset display refresh rate. Supported values: 60, 72, 80, 90, 120.
+refresh_rate_hz = 72
+
+# Resolution multiplier (0.25 to 1.0). Lower = faster encode, less bandwidth, more blur.
+# 0.5 = half resolution (recommended for WiFi), 1.0 = native resolution.
+resolution_scale = 0.75
+
+# Lowest encode scale that ABR "full" may request when a reliable USB TCP
+# headset client supports live stream reconfiguration. The OpenXR app's own
+# swapchain/render resolution is unchanged.
+dynamic_resolution_min_scale = 0.50
+
+# Encoder speed preset: "quality", "balanced", "speed"
+# speed  = lowest latency, fastest encode, lower quality
+# balanced = default, good mix
+# quality  = best visual quality, slightly higher latency
+encoder_preset = "balanced"
+
+# Streaming transport: "auto" tries USB ADB reverse and WiFi, "wifi" disables USB TCP
+# listeners, and "usb_adb" disables WiFi discovery fallback.
+transport = "auto"
+
+# Server-side foveated video encoding preset: "off", "light", "medium", or "high".
+# This compresses frame edges before video encoding and asks compatible clients
+# to re-expand the image after decode.
+foveated_encoding_preset = "off"
+
+# Headset client foveation override: "auto", "off", "light", "medium", or "high".
+# "auto" leaves the headset client unmanaged by Home/runtime config.
+client_foveation_preset = "auto"
+
+# Enable Quest shader upscaling after video decode.
+client_upscaling = false
+
+# Quest client reprojection for short decode/network gaps: "off", "pose", or "pose_warp".
+client_reprojection = "pose"
+
+# Adaptive bitrate mode: "off", "bitrate", or "full".
+# "full" may select live streaming resolution profiles on reliable USB TCP.
+abr_mode = "bitrate"
+
+# Enable headset passthrough as a runtime feature. Apps still choose opaque or
+# alpha blend through OpenXR environment blend modes.
+passthrough_enabled = false
+
+# Occlusion mode: "off", "scene_mesh", or "environment_depth".
+# Occlusion is enabled only when a compatible depth or scene source is available.
+occlusion_mode = "off"
+
+# Reserved for headset speaker audio. The runtime does not advertise audio until
+# a platform capture/playback path is attached.
+headset_audio = false
+
+[spatial]
+# Spatial features are off by default until a headset client reports support.
+enabled = false
+anchors = false
+scene = false
+persistence = false
+
+[logging]
+# Write server logs to the platform state directory.
+#   macOS: ~/Library/Application Support/OXRSys/oxrsys-runtime.log
+#   Linux: ${XDG_STATE_HOME:-~/.local/state}/oxrsys/oxrsys-runtime.log
+file_logging = true
+
+# Capture Quest/headset logcat to the platform state directory.
+# Requires adb in PATH and a connected device.
+quest_logcat = false
