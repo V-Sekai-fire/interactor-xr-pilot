@@ -25,6 +25,7 @@ public:
     bool ok() const { return tray_ != nullptr; }
     // Follows the runtime's status file and finished background actions; call every couple of seconds.
     void poll();
+    static Uint32 showPilotEvent();
 
 private:
     struct Choice
@@ -69,4 +70,5 @@ private:
     std::string messageText_;
     bool messageChanged_ = false;
     bool busy_ = false;
+    void* instance_ = nullptr;
 };

@@ -20,7 +20,7 @@ $required = @(
     'licenses\LICENSE-MPL-2.0'
 )
 $root = Join-Path $env:LOCALAPPDATA 'Programs\XR Pilot'
-$shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\XR Pilot.lnk'
+$shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\OXRSys Tray.lnk'
 
 function Get-Missing([string]$base) {
     $required | Where-Object { -not (Test-Path -PathType Leaf (Join-Path $base $_)) }
