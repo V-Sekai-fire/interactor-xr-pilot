@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
-# Builds xr-pilot and the Lean MCP server and runs their tests. The live path needs a GPU and an
-# OXRSys runtime, which runners lack.
+# Builds xr-pilot and the Lean MCP server and runs their tests; windows-msix builds OXRSys. The live
+# path needs a GPU and an OXRSys runtime, which runners lack.
 name: ci
 
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Build
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DXRPILOT_BUILD_OXRSYS=OFF
           cmake --build build
       - name: Core tests
         run: ctest --test-dir build --output-on-failure

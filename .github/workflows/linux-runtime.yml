@@ -11,13 +11,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: linux-runtime-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: oxrsys
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -26,7 +29,7 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends ninja-build pkg-config \
             libvulkan-dev uuid-dev libx11-dev libx11-xcb-dev libxcb1-dev libxrandr-dev patchelf
       - name: Configure
-        run: cmake --preset linux-native -DOXRSYS_BUILD_QT_FRONTENDS=OFF
+        run: cmake --preset linux-native
       - name: Build
         run: cmake --build build/linux-native --target oxrsys_runtime oxrsys_pyrowave_tests
       - name: PyroWave round trip, unchecked without a GPU
@@ -54,4 +57,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: oxrsys-runtime-linux-packages
-          path: packages/
+          path: oxrsys/packages/

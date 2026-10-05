@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: android-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: clients/Android/android-vr
+        working-directory: oxrsys/clients/Android/android-vr
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
