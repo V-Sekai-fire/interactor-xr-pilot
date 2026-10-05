@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: MPL-2.0
+
+set(OXRSYS_RUNTIME_SOURCES
+    src/Config.cpp
+    src/ControllerLayout.cpp
+    src/EntryPoint.cpp
+    src/Runtime.cpp
+    src/RuntimeStatus.cpp
+    src/RuntimePlatform.cpp
+    src/RuntimeSockets.cpp
+    src/StreamingFrameQueue.cpp
+    src/Instance.cpp
+    src/Session.cpp
+    src/Space.cpp
+    src/ActionSet.cpp
+    src/InputManager.cpp
+    src/HandTracker.cpp
+    src/StreamingServer.cpp
+    src/BodyOverlay.cpp
+    src/TrackingReceiver.cpp
+    src/VulkanDispatch.cpp
+)
+
+if(APPLE)
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/Swapchain.mm
+        src/VideoEncoder.mm
+    )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/SwapchainVulkan.cpp
+        src/PyroWaveVideoEncoderLinux.cpp
+    )
+elseif(WIN32)
+    # Vulkan on Windows goes through shared D3D11 textures, after VirtualDesktop-OpenXR.
+    list(APPEND OXRSYS_RUNTIME_SOURCES
+        src/SwapchainVulkan.cpp
+        src/D3D11Interop.cpp
+        src/PyroWaveVideoEncoder.cpp
+    )
+else()
+    message(FATAL_ERROR
+        "The ${CMAKE_SYSTEM_NAME} runtime backend is scaffold-only in this pass. "
+        "Use macOS, Linux or Windows for runtime builds."
+    )
+endif()
+
+add_library(oxrsys_runtime SHARED
+    ${OXRSYS_RUNTIME_SOURCES}
+)
+
+find_package(Vulkan REQUIRED)
+
+set(OXRSYS_RUNTIME_LINK_LIBRARIES
+    spdlog::spdlog
+    glm::glm
+    ${CMAKE_DL_LIBS}
+)
+
+list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES
+    oxrsys_pyrowave
+)
+
+target_include_directories(oxrsys_runtime PRIVATE
+    src
+    ${PROJECT_SOURCE_DIR}/common/protocol/include
+    ${openxr_SOURCE_DIR}/include
+    ${openxr_SOURCE_DIR}/src/common
+    ${Vulkan_INCLUDE_DIRS}
+)
+
+target_compile_definitions(oxrsys_runtime PRIVATE
+    XR_USE_GRAPHICS_API_VULKAN
+    OXRSYS_VERSION_MAJOR=${OXRSYS_VERSION_MAJOR}
+    OXRSYS_VERSION_MINOR=${OXRSYS_VERSION_MINOR}
+    OXRSYS_VERSION_PATCH=${OXRSYS_VERSION_PATCH}
+)
+
+if(APPLE)
+    target_compile_definitions(oxrsys_runtime PRIVATE
+        XR_USE_GRAPHICS_API_METAL
+    )
+endif()
+
+if(WIN32)
+    target_compile_definitions(oxrsys_runtime PRIVATE
+        XR_USE_GRAPHICS_API_D3D11
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _CRT_SECURE_NO_WARNINGS
+    )
+    if(MSVC)
+        target_compile_options(oxrsys_runtime PRIVATE /utf-8)
+    endif()
+    list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES ws2_32 d3d11 dxgi d3dcompiler)
+endif()
+
+# NOTE: We intentionally do NOT link against Vulkan::Vulkan.
+# Linking the Vulkan loader would load the system MoltenVK ICD, which conflicts
+# with app-embedded MoltenVK (e.g. Godot). Instead, all Vulkan functions are
+# resolved dynamically through the app's pfnGetInstanceProcAddr.
+target_link_libraries(oxrsys_runtime PRIVATE
+    ${OXRSYS_RUNTIME_LINK_LIBRARIES}
+)
+
+if(APPLE)
+    target_link_libraries(oxrsys_runtime PRIVATE
+        "-framework Metal"
+        "-framework MetalPerformanceShaders"
+        "-framework Foundation"
+        "-framework QuartzCore"
+        "-framework AppKit"
+        "-framework VideoToolbox"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+    )
+endif()
+
+# Only export the negotiation entry point
+set_target_properties(oxrsys_runtime PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    OUTPUT_NAME oxrsys-runtime
+    PREFIX "lib"
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Keep the static libraries' symbols (PyroWave, Granite) out of the runtime's exports, so a
+    # host that loads its own copy does not bind to ours.
+    target_link_options(oxrsys_runtime PRIVATE "LINKER:--exclude-libs,ALL")
+endif()
+
+if(APPLE)
+    set_target_properties(oxrsys_runtime PROPERTIES
+        OBJCXX_VISIBILITY_PRESET hidden
+        SUFFIX ".dylib"
+    )
+endif()
+
+set(OXRSYS_RUNTIME_LIBRARY_FILENAME "$<TARGET_FILE_NAME:oxrsys_runtime>")
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/oxrsys-runtime.json.in
+    ${CMAKE_CURRENT_BINARY_DIR}/oxrsys-runtime.json.in.configured
+    @ONLY
+)
+
+# Copy manifest JSON next to the dylib
+file(GENERATE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys-runtime.json
+    INPUT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys-runtime.json.in.configured
+)
+
+# Copy default config file next to the dylib (if not already present)
+add_custom_command(TARGET oxrsys_runtime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/oxrsys-runtime.toml
+        ${CMAKE_CURRENT_BINARY_DIR}/oxrsys-runtime.toml
+    COMMENT "Copying oxrsys-runtime.toml to build directory"
+)

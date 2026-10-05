@@ -11,8 +11,14 @@ date-released: "2026-10-04"
 references:
   - type: software
     title: "OXRSys"
+    abstract: "The OpenXR runtime, PC VR driver and headset clients in oxrsys/, MPL-2.0, forked from demonixis/oxrsys and merged here with their history."
     repository-code: "https://github.com/V-Sekai-fire/interactor-oxrsys"
-    commit: "eb9295ebd2e60a5c9ada006bb9b982873cadab2d"
+    commit: "0d68fe672b1499677e7022c89a751d123773a7c2"
+    license: MPL-2.0
+  - type: software
+    title: "OXRSys, upstream"
+    abstract: "The project oxrsys/ is forked from."
+    repository-code: "https://github.com/demonixis/oxrsys"
     license: MPL-2.0
   - type: software
     title: "PyroWave"

@@ -294,13 +294,11 @@ fs::path packageRoot()
     return base != nullptr ? fs::path(base).parent_path().parent_path() : fs::path();
 }
 
-// An OXRSys build when the pilot is not packaged: the workspace's oxrsys checkout beside this one,
-// as windows_build.ps1 leaves it.
+// An unpackaged pilot installs the runtime and driver built beside it, in its build's oxrsys folder.
 fs::path oxrsysBuild()
 {
     const char* base = SDL_GetBasePath();
-    return base != nullptr ? fs::path(base).parent_path().parent_path().parent_path() / "oxrsys" / "build" / "windows"
-                           : fs::path();
+    return base != nullptr ? fs::path(base) / "oxrsys" : fs::path();
 }
 
 // Windows will not load a packaged DLL into another app's process, so a package's runtime and driver

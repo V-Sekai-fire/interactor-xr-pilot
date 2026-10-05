@@ -1,0 +1,416 @@
+# SPDX-License-Identifier: MPL-2.0
+
+cmake_minimum_required(VERSION 3.24)
+
+set(OXRSYS_VERSION_CONFIG_FILE "${CMAKE_CURRENT_SOURCE_DIR}/config/OXRSysVersion.xcconfig")
+file(STRINGS "${OXRSYS_VERSION_CONFIG_FILE}" OXRSYS_VERSION_CONFIG_LINES)
+foreach(oxrsys_version_config_line IN LISTS OXRSYS_VERSION_CONFIG_LINES)
+    string(REGEX REPLACE "//.*$" "" oxrsys_version_config_line "${oxrsys_version_config_line}")
+    string(STRIP "${oxrsys_version_config_line}" oxrsys_version_config_line)
+    if(oxrsys_version_config_line MATCHES "^([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*)$")
+        set("${CMAKE_MATCH_1}" "${CMAKE_MATCH_2}")
+    endif()
+endforeach()
+
+if(NOT "${OXRSYS_VERSION}" MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+    message(FATAL_ERROR "OXRSYS_VERSION must use MAJOR.MINOR.PATCH in ${OXRSYS_VERSION_CONFIG_FILE}")
+endif()
+set(OXRSYS_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(OXRSYS_VERSION_MINOR "${CMAKE_MATCH_2}")
+set(OXRSYS_VERSION_PATCH "${CMAKE_MATCH_3}")
+
+if(NOT "${OXRSYS_BUILD}" MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "OXRSYS_BUILD must be an integer in ${OXRSYS_VERSION_CONFIG_FILE}")
+endif()
+
+project(OXRSys VERSION "${OXRSYS_VERSION}" LANGUAGES C CXX)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+enable_testing()
+
+if(PROJECT_IS_TOP_LEVEL)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            ${CMAKE_SOURCE_DIR}/compile_commands.json
+        RESULT_VARIABLE oxrsys_runtime_compile_commands_symlink_result
+    )
+    if(NOT oxrsys_runtime_compile_commands_symlink_result EQUAL 0)
+        message(STATUS "Failed to create compile_commands.json symlink during configure. The build sync step will retry.")
+    endif()
+endif()
+
+# --- FetchContent dependencies ---
+include(FetchContent)
+
+# spdlog
+FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG v1.15.3
+    GIT_SHALLOW ON
+)
+set(SPDLOG_BUILD_PIC ON CACHE BOOL "Build spdlog with position independent code" FORCE)
+
+# glm
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG 1.0.1
+    GIT_SHALLOW ON
+)
+
+FetchContent_MakeAvailable(spdlog glm)
+
+# Catch2 for tests
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+    GIT_SHALLOW ON
+)
+FetchContent_MakeAvailable(Catch2)
+
+# OpenXR SDK (loader + headers)
+FetchContent_Declare(
+    OpenXR
+    GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+    GIT_TAG release-1.1.57
+    GIT_SHALLOW ON
+)
+FetchContent_MakeAvailable(OpenXR)
+
+# PyroWave (MIT): the macOS runtime's optional intra-only streaming codec, from its
+# Metal port. A sibling pyrowave-upstream checkout (the goal manifest's layout) is used
+# in place of the fetch when present; FETCHCONTENT_SOURCE_DIR_PYROWAVE overrides both.
+if(APPLE)
+    if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_PYROWAVE AND EXISTS "${CMAKE_SOURCE_DIR}/../pyrowave-upstream/metal/pyrowave_metal.h")
+        set(FETCHCONTENT_SOURCE_DIR_PYROWAVE "${CMAKE_SOURCE_DIR}/../pyrowave-upstream" CACHE PATH "PyroWave checkout")
+    endif()
+    FetchContent_Declare(
+        pyrowave
+        GIT_REPOSITORY https://github.com/V-Sekai-fire/pyrowave.git
+        GIT_TAG 89f7e47d4abbf650c91fae766728af866c5e32a0
+        SOURCE_SUBDIR none # the root build needs Granite; only metal/ is compiled, below
+    )
+    FetchContent_MakeAvailable(pyrowave)
+    set(PYROWAVE_METAL_DIR ${pyrowave_SOURCE_DIR}/metal)
+    add_library(oxrsys_pyrowave STATIC
+        ${PYROWAVE_METAL_DIR}/pyrowave_common.mm
+        ${PYROWAVE_METAL_DIR}/pyrowave_decoder.mm
+        ${PYROWAVE_METAL_DIR}/pyrowave_encoder.mm
+        ${PYROWAVE_METAL_DIR}/pyrowave_bitstream.cpp
+    )
+    target_include_directories(oxrsys_pyrowave PUBLIC ${PYROWAVE_METAL_DIR})
+    target_compile_options(oxrsys_pyrowave PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    set_target_properties(oxrsys_pyrowave PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CXX_VISIBILITY_PRESET hidden
+        OBJCXX_VISIBILITY_PRESET hidden
+    )
+    target_link_libraries(oxrsys_pyrowave PUBLIC "-framework Metal" "-framework IOSurface" "-framework Foundation")
+endif()
+
+# PyroWave's C API (MIT) on Windows and Linux: the only streaming codec there, linked
+# statically with the Granite subset its checkout_granite.sh pins.
+if(NOT APPLE)
+    if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_PYROWAVE AND EXISTS "${CMAKE_SOURCE_DIR}/../pyrowave-upstream/pyrowave_c.cpp")
+        set(FETCHCONTENT_SOURCE_DIR_PYROWAVE "${CMAKE_SOURCE_DIR}/../pyrowave-upstream" CACHE PATH "PyroWave checkout")
+    endif()
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PyroWave.cmake)
+endif()
+
+# --- Our runtime ---
+add_subdirectory(runtime)
+if(WIN32)
+    add_subdirectory(driver)
+endif()
+
+find_package(Vulkan REQUIRED)
+
+# --- Tests ---
+set(OXRSYS_TEST_ENV_ROOT "${CMAKE_BINARY_DIR}/test-env")
+set(OXRSYS_TEST_HOME "${OXRSYS_TEST_ENV_ROOT}/home")
+set(OXRSYS_TEST_XDG_CONFIG_HOME "${OXRSYS_TEST_ENV_ROOT}/xdg-config")
+set(OXRSYS_TEST_XDG_STATE_HOME "${OXRSYS_TEST_ENV_ROOT}/xdg-state")
+set(OXRSYS_TEST_APPDATA "${OXRSYS_TEST_ENV_ROOT}/appdata")
+file(MAKE_DIRECTORY
+    "${OXRSYS_TEST_HOME}"
+    "${OXRSYS_TEST_XDG_CONFIG_HOME}"
+    "${OXRSYS_TEST_XDG_STATE_HOME}"
+    "${OXRSYS_TEST_APPDATA}"
+)
+set(OXRSYS_ISOLATED_TEST_ENV
+    "HOME=${OXRSYS_TEST_HOME}"
+    "XDG_CONFIG_HOME=${OXRSYS_TEST_XDG_CONFIG_HOME}"
+    "XDG_STATE_HOME=${OXRSYS_TEST_XDG_STATE_HOME}"
+    "APPDATA=${OXRSYS_TEST_APPDATA}"
+)
+
+set(OXRSYS_LOGCAT_TEST_HOME "${OXRSYS_TEST_ENV_ROOT}/home-logcat")
+set(OXRSYS_LOGCAT_TEST_CONFIG_DIR
+    "${OXRSYS_LOGCAT_TEST_HOME}/Library/Application Support/OXRSys"
+)
+set(OXRSYS_FAKE_ADB "${OXRSYS_TEST_ENV_ROOT}/fake-adb")
+file(MAKE_DIRECTORY "${OXRSYS_LOGCAT_TEST_CONFIG_DIR}")
+file(WRITE "${OXRSYS_LOGCAT_TEST_CONFIG_DIR}/oxrsys-runtime.toml"
+    "[logging]\n"
+    "file_logging = false\n"
+    "quest_logcat = true\n"
+)
+file(WRITE "${OXRSYS_FAKE_ADB}"
+    "#!/bin/sh\n"
+    "exec sleep 30\n"
+)
+file(CHMOD "${OXRSYS_FAKE_ADB}"
+    PERMISSIONS
+        OWNER_READ OWNER_WRITE OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE
+)
+set(OXRSYS_LOGCAT_TEST_ENV
+    "HOME=${OXRSYS_LOGCAT_TEST_HOME}"
+    "XDG_CONFIG_HOME=${OXRSYS_TEST_XDG_CONFIG_HOME}"
+    "XDG_STATE_HOME=${OXRSYS_TEST_XDG_STATE_HOME}"
+    "APPDATA=${OXRSYS_TEST_APPDATA}"
+    "OXRSYS_ADB_PATH=${OXRSYS_FAKE_ADB}"
+)
+
+add_executable(oxrsys_runtime_tests
+    tests/TestConfig.cpp
+    tests/TestInputManager.cpp
+    tests/TestRuntimePlatform.cpp
+    tests/TestStreamingAbr.cpp
+    tests/TestStreamingFrameQueue.cpp
+    tests/TestBodyOverlay.cpp
+    tests/TestControllerLayout.cpp
+    tests/TestStreamingReconfigure.cpp
+    tests/TestVulkanDispatch.cpp
+    tests/TestCompositionLayerAlpha.cpp
+    tests/TestProtocolLayout.cpp
+    tests/TestQuestPassthroughAlphaPolicy.cpp
+    tests/TestQuestShellInteraction.cpp
+    clients/Android/android-vr/app/src/main/cpp/QuestPassthroughAlphaPolicy.cpp
+    clients/Android/android-vr/app/src/main/cpp/QuestShellInteraction.cpp
+    runtime/src/InputManager.cpp
+    runtime/src/TrackingReceiver.cpp
+    runtime/src/Config.cpp
+    runtime/src/RuntimePlatform.cpp
+    runtime/src/RuntimeSockets.cpp
+    runtime/src/StreamingFrameQueue.cpp
+    runtime/src/BodyOverlay.cpp
+    runtime/src/ControllerLayout.cpp
+    runtime/src/VulkanDispatch.cpp
+)
+target_include_directories(oxrsys_runtime_tests PRIVATE
+    runtime/src
+    clients/Android/android-vr/app/src/main/cpp
+    common/protocol/include
+    ${openxr_SOURCE_DIR}/include
+    ${Vulkan_INCLUDE_DIRS}
+)
+target_link_libraries(oxrsys_runtime_tests PRIVATE
+    Catch2::Catch2WithMain
+    glm::glm
+    spdlog::spdlog
+    ${CMAKE_DL_LIBS}
+)
+if(WIN32)
+    target_link_libraries(oxrsys_runtime_tests PRIVATE ws2_32)
+    target_compile_definitions(oxrsys_runtime_tests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
+if(APPLE)
+    target_compile_definitions(oxrsys_runtime_tests PRIVATE
+        XR_USE_GRAPHICS_API_METAL
+    )
+endif()
+target_compile_definitions(oxrsys_runtime_tests PRIVATE
+    XR_USE_GRAPHICS_API_VULKAN
+)
+add_test(NAME oxrsys_runtime_tests COMMAND oxrsys_runtime_tests)
+set_tests_properties(oxrsys_runtime_tests PROPERTIES
+    ENVIRONMENT "${OXRSYS_ISOLATED_TEST_ENV}"
+    TIMEOUT 120
+)
+# The fake adb is a /bin/sh script, and Quest logcat is disabled on Windows.
+if(NOT WIN32)
+    add_test(NAME oxrsys_runtime_logcat_timeout
+        COMMAND oxrsys_runtime_tests "Config singleton initializes with bounded Quest logcat clear"
+    )
+    set_tests_properties(oxrsys_runtime_logcat_timeout PROPERTIES
+        ENVIRONMENT "${OXRSYS_LOGCAT_TEST_ENV}"
+        TIMEOUT 10
+    )
+endif()
+
+add_executable(oxrsys_runtime_status_tests
+    tests/TestRuntimeStatus.cpp
+    runtime/src/RuntimeStatus.cpp
+    runtime/src/Config.cpp
+    runtime/src/RuntimePlatform.cpp
+)
+target_include_directories(oxrsys_runtime_status_tests PRIVATE
+    runtime/src
+    common/protocol/include
+)
+target_link_libraries(oxrsys_runtime_status_tests PRIVATE
+    Catch2::Catch2WithMain
+    spdlog::spdlog
+    ${CMAKE_DL_LIBS}
+)
+add_test(NAME oxrsys_runtime_status_tests COMMAND oxrsys_runtime_status_tests)
+set_tests_properties(oxrsys_runtime_status_tests PROPERTIES
+    ENVIRONMENT "${OXRSYS_ISOLATED_TEST_ENV}"
+    TIMEOUT 120
+)
+
+set(OXRSYS_RUNTIME_TEST_TARGETS
+    oxrsys_runtime
+    oxrsys_runtime_tests
+    oxrsys_runtime_status_tests
+)
+
+if(NOT APPLE)
+    add_executable(oxrsys_pyrowave_tests tests/TestPyroWaveCApiRoundTrip.cpp)
+    target_link_libraries(oxrsys_pyrowave_tests PRIVATE Catch2::Catch2WithMain oxrsys_pyrowave)
+    add_test(NAME oxrsys_pyrowave_tests COMMAND oxrsys_pyrowave_tests)
+    set_tests_properties(oxrsys_pyrowave_tests PROPERTIES TIMEOUT 120)
+    list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_pyrowave_tests)
+endif()
+
+if(WIN32)
+    add_executable(oxrsys_runtime_d3d11_tests tests/TestRuntimeApiD3D11.cpp)
+    target_include_directories(oxrsys_runtime_d3d11_tests PRIVATE ${openxr_SOURCE_DIR}/include)
+    target_link_libraries(oxrsys_runtime_d3d11_tests PRIVATE
+        Catch2::Catch2WithMain
+        OpenXR::openxr_loader
+        d3d11
+        dxgi
+    )
+    target_compile_definitions(oxrsys_runtime_d3d11_tests PRIVATE
+        XR_USE_GRAPHICS_API_D3D11
+        NOMINMAX
+        _CRT_SECURE_NO_WARNINGS
+    )
+    add_dependencies(oxrsys_runtime_d3d11_tests oxrsys_runtime)
+    add_test(NAME oxrsys_runtime_d3d11_tests COMMAND oxrsys_runtime_d3d11_tests)
+    set_tests_properties(oxrsys_runtime_d3d11_tests PROPERTIES
+        ENVIRONMENT
+            "APPDATA=${OXRSYS_TEST_APPDATA};XR_RUNTIME_JSON=$<TARGET_FILE_DIR:oxrsys_runtime>/oxrsys-runtime.json"
+        TIMEOUT 120
+    )
+    list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_runtime_d3d11_tests)
+endif()
+
+if(APPLE)
+    add_executable(oxrsys_pyrowave_tests
+        tests/TestPyroWaveRoundTrip.mm
+    )
+    target_compile_options(oxrsys_pyrowave_tests PRIVATE -fobjc-arc)
+    target_link_libraries(oxrsys_pyrowave_tests PRIVATE
+        Catch2::Catch2WithMain
+        oxrsys_pyrowave
+    )
+    add_test(NAME oxrsys_pyrowave_tests COMMAND oxrsys_pyrowave_tests)
+    list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_pyrowave_tests)
+
+    add_executable(oxrsys_runtime_api_tests
+        tests/TestRuntimeApi.cpp
+        tests/TestMetalSupport.mm
+    )
+    target_include_directories(oxrsys_runtime_api_tests PRIVATE
+        runtime/src
+        ${openxr_SOURCE_DIR}/include
+    )
+    target_link_libraries(oxrsys_runtime_api_tests PRIVATE
+        Catch2::Catch2WithMain
+        OpenXR::openxr_loader
+        "-framework Metal"
+        "-framework Foundation"
+    )
+    target_compile_definitions(oxrsys_runtime_api_tests PRIVATE
+        XR_USE_GRAPHICS_API_METAL
+        OXRSYS_VERSION_MAJOR=${OXRSYS_VERSION_MAJOR}
+        OXRSYS_VERSION_MINOR=${OXRSYS_VERSION_MINOR}
+        OXRSYS_VERSION_PATCH=${OXRSYS_VERSION_PATCH}
+    )
+    add_dependencies(oxrsys_runtime_api_tests oxrsys_runtime)
+    add_test(NAME oxrsys_runtime_api_tests COMMAND oxrsys_runtime_api_tests)
+    set_tests_properties(oxrsys_runtime_api_tests PROPERTIES
+        ENVIRONMENT
+            "HOME=${OXRSYS_TEST_HOME};XDG_CONFIG_HOME=${OXRSYS_TEST_XDG_CONFIG_HOME};XDG_STATE_HOME=${OXRSYS_TEST_XDG_STATE_HOME};APPDATA=${OXRSYS_TEST_APPDATA};XR_RUNTIME_JSON=$<TARGET_FILE_DIR:oxrsys_runtime>/oxrsys-runtime.json"
+        TIMEOUT 120
+    )
+    list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_runtime_api_tests)
+endif()
+
+if(PROJECT_IS_TOP_LEVEL)
+    add_custom_target(oxrsys_runtime_sync_compile_commands ALL
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT_FILE=${CMAKE_BINARY_DIR}/compile_commands.json
+            -DOUTPUT_FILE=${CMAKE_SOURCE_DIR}/compile_commands.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SyncCompileCommands.cmake
+        COMMENT "Syncing compile_commands.json to the project root"
+    )
+    add_dependencies(oxrsys_runtime_sync_compile_commands
+        ${OXRSYS_RUNTIME_TEST_TARGETS}
+    )
+endif()
+
+option(OXRSYS_ENABLE_CTS "Fetch and wire an opt-in OpenXR CTS lane" OFF)
+
+if(APPLE)
+    add_custom_target(oxrsys_runtime_set_default_runtime
+        COMMAND /bin/zsh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/oxrsys_runtime_default.sh set $<TARGET_FILE_DIR:oxrsys_runtime>/oxrsys-runtime.json
+        DEPENDS oxrsys_runtime
+        USES_TERMINAL
+        COMMENT "Registering the generated OpenXR manifest as the default runtime for this user"
+    )
+endif()
+
+if(OXRSYS_ENABLE_CTS)
+    include(ExternalProject)
+
+    set(OXRSYS_CTS_TAG "openxr-cts-1.1.57.0" CACHE STRING "Pinned OpenXR CTS tag")
+    set(OXRSYS_CTS_GRAPHICS_PLUGIN "metal" CACHE STRING "Graphics plugin to use for the CTS baseline")
+    set(OXRSYS_CTS_FILTER "exclude:[interactive]" CACHE STRING "Catch2 filter used for the CTS baseline")
+    set(OXRSYS_CTS_PREFIX_DIR "${CMAKE_BINARY_DIR}/thirdparty/OpenXR-CTS")
+    set(OXRSYS_CTS_SOURCE_DIR "${OXRSYS_CTS_PREFIX_DIR}/source")
+    set(OXRSYS_CTS_BINARY_DIR "${OXRSYS_CTS_PREFIX_DIR}/build")
+    set(OXRSYS_CTS_REPORT_DIR "${CMAKE_BINARY_DIR}/reports/openxr-cts")
+
+    ExternalProject_Add(openxr_cts
+        GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-CTS.git
+        GIT_TAG ${OXRSYS_CTS_TAG}
+        GIT_SHALLOW ON
+        PREFIX "${OXRSYS_CTS_PREFIX_DIR}"
+        SOURCE_DIR "${OXRSYS_CTS_SOURCE_DIR}"
+        BINARY_DIR "${OXRSYS_CTS_BINARY_DIR}"
+        CMAKE_ARGS
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        UPDATE_DISCONNECTED ON
+        INSTALL_COMMAND ""
+        EXCLUDE_FROM_ALL ON
+    )
+
+    add_custom_target(openxr_cts_run
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${OXRSYS_CTS_REPORT_DIR}"
+        COMMAND ${CMAKE_COMMAND}
+            -DCTS_BINARY_DIR=${OXRSYS_CTS_BINARY_DIR}
+            -DREPORT_DIR=${OXRSYS_CTS_REPORT_DIR}
+            -DRUNTIME_JSON=$<TARGET_FILE_DIR:oxrsys_runtime>/oxrsys-runtime.json
+            -DCTS_GRAPHICS_PLUGIN=${OXRSYS_CTS_GRAPHICS_PLUGIN}
+            -DCTS_FILTER=${OXRSYS_CTS_FILTER}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunOpenXRCTS.cmake
+        DEPENDS openxr_cts oxrsys_runtime
+        USES_TERMINAL
+        COMMENT "Running the pinned OpenXR CTS baseline against the OXRSys runtime"
+    )
+endif()

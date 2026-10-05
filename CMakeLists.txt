@@ -8,31 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(XRPILOT_BUILD_APP "Build the xr-pilot window (needs a display and Vulkan)" ON)
 
-include(FetchContent)
+option(XRPILOT_BUILD_OXRSYS "Build the OXRSys runtime and SteamVR driver in oxrsys/ (needs Vulkan)" ${XRPILOT_BUILD_APP})
 
-# The OXRSys wire protocol and the Lean-authored yuv420_to_rgbx kernel, read from oxrsys at a pinned commit.
-FetchContent_Declare(
-    oxrsys
-    GIT_REPOSITORY https://github.com/V-Sekai-fire/interactor-oxrsys.git
-    GIT_TAG 7e325940e6ba3be7de65b3dbb5d52006350b4994
-    SOURCE_SUBDIR none
-)
-# PyroWave's C API (MIT) and the Granite subset it pins, at the commits oxrsys uses.
-FetchContent_Declare(
-    pyrowave
-    GIT_REPOSITORY https://github.com/V-Sekai-fire/pyrowave.git
-    GIT_TAG 89f7e47d4abbf650c91fae766728af866c5e32a0
-    SOURCE_SUBDIR none
-)
-FetchContent_Declare(
-    granite
-    GIT_REPOSITORY https://github.com/Themaister/Granite.git
-    GIT_TAG 1b2d1801d2910fb09ebcded2f0bb3a3a781103b5
-    GIT_SUBMODULES third_party/volk third_party/khronos/vulkan-headers
-    SOURCE_SUBDIR none
-)
-FetchContent_MakeAvailable(oxrsys)
-set(XRPILOT_PROTOCOL_INCLUDE ${oxrsys_SOURCE_DIR}/common/protocol/include)
+# The OXRSys wire protocol and the Lean-authored yuv420_to_rgbx kernel.
+set(XRPILOT_OXRSYS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/oxrsys)
+set(XRPILOT_PROTOCOL_INCLUDE ${XRPILOT_OXRSYS_DIR}/common/protocol/include)
 
 add_library(xrpilot_core STATIC
     core/src/Agent.cpp
@@ -97,38 +77,20 @@ foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-no
     add_test(NAME ${name} COMMAND xrpilot-human-tests ${name})
 endforeach()
 
+if(XRPILOT_BUILD_OXRSYS)
+    add_subdirectory(oxrsys)
+endif()
+
 if(NOT XRPILOT_BUILD_APP)
     return()
 endif()
 
-FetchContent_MakeAvailable(pyrowave granite)
-set(GRANITE_VULKAN_SHADER_MANAGER_RUNTIME_COMPILER OFF CACHE BOOL "" FORCE)
-set(GRANITE_SHADER_COMPILER_OPTIMIZE OFF CACHE BOOL "" FORCE)
-set(GRANITE_POSITION_INDEPENDENT ON CACHE BOOL "" FORCE)
-set(GRANITE_SHIPPING ON CACHE BOOL "" FORCE)
-set(GRANITE_VULKAN_SPIRV_CROSS OFF CACHE BOOL "" FORCE)
-set(GRANITE_VULKAN_SYSTEM_HANDLES OFF CACHE BOOL "" FORCE)
-set(GRANITE_RENDERER OFF CACHE BOOL "" FORCE)
-set(GRANITE_VULKAN_FOSSILIZE OFF CACHE BOOL "" FORCE)
-set(GRANITE_PLATFORM "null" CACHE STRING "" FORCE)
-add_subdirectory(${granite_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/granite-build EXCLUDE_FROM_ALL)
-
-add_library(xrpilot_pyrowave STATIC
-    ${pyrowave_SOURCE_DIR}/pyrowave_encoder.cpp
-    ${pyrowave_SOURCE_DIR}/pyrowave_decoder.cpp
-    ${pyrowave_SOURCE_DIR}/pyrowave_common.cpp
-    ${pyrowave_SOURCE_DIR}/pyrowave_c.cpp
-    ${granite_SOURCE_DIR}/video/scaler.cpp
-)
-target_include_directories(xrpilot_pyrowave
-    PUBLIC ${pyrowave_SOURCE_DIR}
-    PRIVATE ${pyrowave_SOURCE_DIR}/shaders ${granite_SOURCE_DIR}/video
-)
-target_link_libraries(xrpilot_pyrowave PUBLIC granite-vulkan granite-math)
-target_compile_definitions(xrpilot_pyrowave PRIVATE PYROWAVE_PRECISION=1)
-if(MSVC)
-    target_compile_options(xrpilot_pyrowave PRIVATE /D_CRT_SECURE_NO_WARNINGS /wd4267 /wd4244 /wd4309 /wd4005)
+# The app shares the runtime's PyroWave (MIT) and Granite subset.
+if(NOT TARGET oxrsys_pyrowave)
+    include(${XRPILOT_OXRSYS_DIR}/cmake/PyroWave.cmake)
 endif()
+include(FetchContent)
+FetchContent_GetProperties(granite)
 
 # panelspun (SDL3 + ThorVG), subtreed; one copy of the Vulkan headers for every target.
 set(PANELSPUN_VULKAN_HEADERS_DIR ${granite_SOURCE_DIR}/third_party/khronos/vulkan-headers/include CACHE PATH "" FORCE)
@@ -138,8 +100,8 @@ set(PANELSPUN_SDL_TRAY ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/panelspun)
 
 add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
-target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${oxrsys_SOURCE_DIR}/kernels/simulator/spirv)
-target_link_libraries(xrpilot_gpu PUBLIC xrpilot_pyrowave)
+target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
+target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
 
 # A kept trace frame through scene-linear RGB (for OpenEXR) and back into PyroWave.
 add_executable(trace_roundtrip tools/trace_roundtrip.cpp)

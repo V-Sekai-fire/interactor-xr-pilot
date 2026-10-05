@@ -1,0 +1,10 @@
+[workspace]
+name = "xr-pilot-windows"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+
+[dependencies]
+cmake = ">=3.28"
+ninja = "*"
+libvulkan-headers = ">=1.4.357.0,<2"
+libvulkan-loader = ">=1.4.357.0,<2"

@@ -36,6 +36,18 @@ Pixel arguments refer to the last screenshot, so `point_at` and `click` refuse u
 On Windows run CMake from a Visual Studio 2022 x64 developer prompt. `-DXRPILOT_BUILD_APP=OFF`
 builds and tests only the core, without a display or Vulkan.
 
+The same build compiles the OXRSys runtime and PC VR driver from `oxrsys/` into `build/oxrsys/`,
+which is where the tray installs them from; `-DXRPILOT_BUILD_OXRSYS=OFF` leaves them out.
+`scripts/windows_build.ps1` does the whole Windows build with CMake, Ninja and the Vulkan loader from
+`pixi.toml`, and `scripts/windows_package_msix.ps1` packs XR Pilot, the runtime and the driver into
+one MSIX.
+
+## OXRSys
+
+`oxrsys/` is the OXRSys OpenXR runtime, its PC VR driver and its Android and Apple headset clients,
+brought in with its history from `V-Sekai-fire/interactor-oxrsys`, which this repository replaces. `oxrsys/README.md` and `oxrsys/docs/` describe it. XR Pilot's tray replaces the
+Qt Home app, which is gone with the rest of the Qt clients.
+
 ## Run
 
 Start an OpenXR app on OXRSys, then register the MCP server with your agent:
@@ -47,6 +59,8 @@ runtime at a time, so close the OXRSys simulator or headset client first.
 
 ## Licence
 
-Apache-2.0 OR MIT. `core/src/FrameAssembler.cpp`, `core/src/GpuDecoder.cpp` and their headers are
-ported from OXRSys and stay under MPL-2.0, file by file. `third_party/panelspun` carries its own
-licences.
+Apache-2.0 OR MIT. `oxrsys/` is MPL-2.0 (`oxrsys/LICENSE`), forked from `demonixis/oxrsys`, unless
+a file there states otherwise; the Windows build and packaging scripts and `packaging/msix` came
+from it and stay MPL-2.0. `core/src/FrameAssembler.cpp`, `core/src/GpuDecoder.cpp`, the tray and their
+headers are ported from OXRSys and stay under MPL-2.0, file by file. `third_party/panelspun` carries
+its own licences.

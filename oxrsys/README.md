@@ -1,0 +1,88 @@
+# OXRSys Runtime
+
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
+
+## Project
+
+OXRSys Runtime is an unofficial OpenXR runtime that started on macOS and is being moved toward a measured cross-platform shape. The repository includes the shared runtime, Apple frontends, and an Android VR streaming client for Quest/Pico-class headsets.
+
+OXRSys is independent software. It is not affiliated with, endorsed by, sponsored by, or approved by The Khronos Group, Meta, Apple, LunarG, or the owners of the platforms, SDKs, runtimes, and trademarks referenced by this project.
+
+### Android VR Client
+
+The Android VR client can be used over WiFi or USB. The USB path is the best way to experiment with the runtime because it gives the lowest latency. The macOS SwiftUI Home app can configure USB reverse directly through the headset USB ADB interface, so Android Studio and the Android SDK are not required for normal USB setup; a running local ADB server or external `adb` executable remains a fallback.
+
+### Home Apps
+
+OXRSys Home is a native Apple app and owns the macOS direct-distribution workflow. On Windows and Linux, XR Pilot, in the repository root above this folder, is the desktop client and carries the OXRSys tray that replaced the Qt Home app and the Qt simulator.
+The macOS package helper builds the runtime and Home app into one local folder; the distribution helper signs that package and can submit the archive for notarization.
+
+### Agents
+
+[XR Pilot](https://github.com/V-Sekai-fire/interactor-xr-pilot) lets an AI agent see and drive an OpenXR app running on OXRSys over MCP, connecting as a headset client does.
+
+## Disclaimer
+
+**Current Status**: This project is in early development and is not yet production-ready.
+
+### Technical Limitations
+
+- macOS Support: Due to non-standard OpenXR implementation on macOS, specific workarounds are required. OXRSys Home can launch configured apps with `XR_RUNTIME_JSON`; command-line launches remain useful for debugging. Unity projects should use the `net.demonixis.oxrsys-unity` Package Manager package under `scripts/unity/`.
+- Meta Quest Integration: The headset client now shows a local status shell with reset and passthrough/3D controls while waiting for video.
+
+### Stability & Contributions
+
+Expect frequent crashes and bugs. Contributions are welcome through bug reports, feature requests, and pull requests.
+
+### AI Disclosure
+
+This project uses AI-generated code and documentation. We appreciate professional cooperation regarding this approach.
+
+## Dependencies
+
+- macOS 13 or later for Apple frontends and the Metal runtime path
+- Linux with Vulkan and libuuid for the Linux runtime; PyroWave and the Granite subset it builds with are fetched with FetchContent and linked statically
+- C++20
+- CMake with FetchContent
+- Ninja
+- OpenXR SDK headers and loader
+- Metal
+- Vulkan headers for interop paths
+- Android SDK, Android NDK, and Java 17 for the Android client
+
+## Status
+
+- macOS: Metal rendering, release-time Metal streaming snapshots, PyroWave streaming through its Metal port, core runtime flow, Vulkan interop, typed graphics/frame plumbing, and loader-backed runtime tests are in place.
+- Linux: Vulkan runtime scaffolding and a PyroWave encoder are wired; the encoder sends a black frame until it reads the app's swapchain images.
+- Windows: Vulkan apps render into shared D3D11 textures and Direct3D 11 apps (`XR_KHR_D3D11_enable`) into the same textures opened on their own device, and the runtime streams them with PyroWave through its Vulkan C API (`scripts/windows_build.ps1`); XR Pilot decodes and presents the stream on the GPU.
+- `XR_EXT_conformance_automation`, `XR_EXT_hand_tracking`, `XR_EXT_hand_interaction`, and `XR_EXT_debug_utils` are implemented.
+- The Android VR client feeds real Quest/PICO hand joints into the runtime, gates controller poses and actions with explicit active flags, keeps hand-interaction bindings available alongside active controllers with controller-first priority, supports WiFi UDP and reconnecting USB ADB reverse TCP streaming, keeps a reserved optional spatial channel for anchors/scene data, shows a local status shell with controller lasers plus hand laser/pinch controls before video arrives, matches per-frame render poses for smoother headset reprojection, reprojects short decode/network gaps with a configurable Quest client mode, applies server-selected refresh requests, supports optional server-announced `XR_FB_foveation` overrides for the headset viewer, supports negotiated Quest passthrough during MR streaming, supports USB TCP dynamic encoded-resolution reconfiguration in ABR full mode, supports the Quest shader path for foveated-encoding decompression and edge-aware upscaling, recovers when an initial video stream never arrives, reports frame age/reprojection/passthrough readiness telemetry for runtime status, and keeps decoder output draining off the XR frame loop.
+- The visionOS viewer decodes the PyroWave stream on the GPU, uses a minimal floating search window, then enters immersive VR automatically once the stream connects and sends head pose, hand joints, and first-pass tracked accessory controller data back to the runtime when available.
+- OXRSys Home is now a direct-distribution launcher and runtime selector for compatible apps such as Godot and Unity, with a first-launch registration prompt, main-window runtime activity summary, autosaved streaming settings up to the shared 200 Mbps runtime cap, refresh/encoder/foveated-encoding/ABR/dynamic-resolution/passthrough/spatial controls, a separate Headset Client section for client foveation, reprojection, upscaling, and reserved audio, bounded Quest logcat capture setup, runtime log reveal actions, transport readiness controls, one-step USB reverse setup, native ADB-server protocol support with external `adb` fallback, per-app custom ADB path selection, and optional Developer simulator workflows. Qt Home keeps the same shared streaming controls and keeps slow WiFi/ADB readiness work off the UI thread. The Apple simulator and XR Pilot own their FOV locally and send eye-FOV tracking metadata.
+- As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is green locally: 63 passed, 36 skipped, 0 failed.
+
+## Documentation
+
+- [Install](docs/install.md)
+- [Changes](CHANGES.md)
+- [Build and versioning](docs/build.md)
+- [Architecture](docs/architecture.md)
+- [Protocol](docs/protocol.md)
+- [Simulator](docs/simulator.md)
+- [Quest](docs/platforms/quest.md)
+- [macOS Home](docs/platforms/macos-home.md)
+- [iOS Viewer](docs/platforms/ios-viewer.md)
+- [Vision OS](docs/platforms/visionos.md)
+- [Testing And Conformance](docs/testing-and-conformance.md)
+- [Licensing](docs/licensing.md)
+- [Scripts](scripts/README.md)
+
+## Contributing
+
+Contributions from humans and LLM-assisted workflows are welcome. Keep changes small, tested, and documented: if behavior, architecture, build steps, or platform support changes, update the relevant files in `docs/` and `AGENTS.md` in the same patch.
+
+Before considering a change ready, run the build and tests for the affected platform. If you touch the Android client, also run the Android build. If you touch runtime API or conformance-sensitive behavior, run the CTS lane when practical.
+
+## License
+
+The project is licensed under [MPL-2.0](LICENSE). Third-party SDKs, tools, platform runtimes, and OpenXR/Khronos components keep their own licenses and terms; see [Licensing](docs/licensing.md).
