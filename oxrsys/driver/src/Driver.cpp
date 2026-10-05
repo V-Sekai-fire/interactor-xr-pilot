@@ -76,6 +76,40 @@ void Log(const char* format, ...)
         gLog->Log(buffer);
 }
 
+void StartTray()
+{
+    HANDLE running = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\OXRSysTray");
+    if (running != nullptr)
+    {
+        CloseHandle(running);
+        return;
+    }
+    wchar_t path[MAX_PATH] = {};
+    DWORD size = sizeof(path);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\OXRSys\\HomeQt\\tray", L"pilotPath", RRF_RT_REG_SZ, nullptr, path,
+                     &size) != ERROR_SUCCESS ||
+        GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+    {
+        Log("oxrsys: no tray to start; run xr-pilot once to record it");
+        return;
+    }
+    std::wstring commandLine = L"\"" + std::wstring(path) + L"\"";
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process = {};
+    const DWORD flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    if (!CreateProcessW(path, commandLine.data(), nullptr, nullptr, FALSE, flags | CREATE_BREAKAWAY_FROM_JOB, nullptr,
+                        nullptr, &startup, &process) &&
+        !CreateProcessW(path, commandLine.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &startup, &process))
+    {
+        Log("oxrsys: the tray did not start (error %lu)", GetLastError());
+        return;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    Log("oxrsys: started the tray");
+}
+
 // Logs the first call of each implemented slot, which the live-load check counts.
 #define OXRSYS_HIT(name)                                                                           \
     do                                                                                             \
@@ -935,6 +969,7 @@ public:
             !gHost->TrackedDeviceAdded("OXRSYS-RIGHT-0", TrackedDeviceClass_Controller, right_.get()))
             Log("oxrsys: the controllers were not added");
         hmd_->SetHands(left_.get(), right_.get());
+        StartTray();
         Log("oxrsys: provider initialised");
         return VRInitError_None;
     }

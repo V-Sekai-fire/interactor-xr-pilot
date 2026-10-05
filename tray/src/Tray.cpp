@@ -251,6 +251,21 @@ bool runElevatedPowerShell(const std::string& script)
     return exitCode == 0;
 }
 
+void* holdTrayMutex() { return CreateMutexW(nullptr, FALSE, L"Local\\OXRSysTray"); }
+void releaseTrayMutex(void* handle)
+{
+    if (handle != nullptr)
+        CloseHandle(handle);
+}
+
+void recordPilotPath()
+{
+    wchar_t path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (length > 0 && length < MAX_PATH)
+        RegSetKeyValueW(HKEY_CURRENT_USER, SettingsKey, L"pilotPath", REG_SZ, path, DWORD((length + 1) * sizeof(wchar_t)));
+}
+
 #else
 
 std::string environment(const char* name)
@@ -269,6 +284,9 @@ std::vector<std::string> availableRuntimes() { return {}; }
 bool processRunning(int64_t) { return true; }
 void reveal(const std::string& folder) { SDL_OpenURL(("file://" + folder).c_str()); }
 bool runElevatedPowerShell(const std::string&) { return false; }
+void* holdTrayMutex() { return nullptr; }
+void releaseTrayMutex(void*) {}
+void recordPilotPath() {}
 
 #endif
 
@@ -493,8 +511,10 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 
 Tray::Tray(bool setUpDesk)
 {
+    instance_ = holdTrayMutex();
     if (setUpDesk)
     {
+        recordPilotPath();
         installPackagedFiles();
         registerSteamVrDriver();
     }
@@ -539,6 +559,7 @@ Tray::Tray(bool setUpDesk)
 
 Tray::~Tray()
 {
+    releaseTrayMutex(instance_);
     if (tray_ != nullptr)
         SDL_DestroyTray(tray_);
     SDL_DestroySurface(idleIcon_);

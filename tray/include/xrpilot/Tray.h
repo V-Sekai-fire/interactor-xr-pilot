@@ -70,4 +70,5 @@ private:
     std::string messageText_;
     bool messageChanged_ = false;
     bool busy_ = false;
+    void* instance_ = nullptr;
 };
