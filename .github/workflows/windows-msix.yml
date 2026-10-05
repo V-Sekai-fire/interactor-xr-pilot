@@ -32,10 +32,12 @@ jobs:
       - name: Runtime, driver and pilot tests
         shell: pwsh
         run: |
-          pixi run ctest --test-dir build/windows --output-on-failure -E '^oxrsys_pyrowave_tests$'
+          pixi run ctest --test-dir build/windows --output-on-failure -E '^(oxrsys_pyrowave_tests|oxrsys_runtime_d3d11_tests)$'
           if ($LASTEXITCODE) { exit 1 }
       - name: PyroWave round trip, unchecked without a GPU
         run: echo "UNCHECKED 1 - oxrsys_pyrowave_tests needs a Vulkan GPU, which this runner lacks; it runs on the Windows desk"
+      - name: D3D11 loader test, unchecked when elevated
+        run: echo "UNCHECKED 1 - oxrsys_runtime_d3d11_tests selects the runtime through XR_RUNTIME_JSON, which the OpenXR loader ignores in this runner's elevated context; it runs on the Windows desk"
       - name: Pack and test-sign the MSIX
         shell: pwsh
         run: scripts/windows_package_msix.ps1 -OutDir dist
