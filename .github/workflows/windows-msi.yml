@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Builds XR Pilot with the OXRSys runtime and driver under MSVC and pixi's Vulkan loader, then packs
-# and test-signs one MSIX and checks its contents.
-name: windows-msix
+# Builds XR Pilot with the OXRSys runtime and driver under MSVC and pixi's Vulkan loader, packs one
+# per-user MSI with CPack and WiX v4, and installs, checks and uninstalls it without elevation.
+name: windows-msi
 
 on:
   push:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  msix:
+  msi:
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
@@ -38,27 +38,28 @@ jobs:
         run: echo "UNCHECKED 1 - oxrsys_pyrowave_tests needs a Vulkan GPU, which this runner lacks; it runs on the Windows desk"
       - name: D3D11 loader test, unchecked when elevated
         run: echo "UNCHECKED 1 - oxrsys_runtime_d3d11_tests selects the runtime through XR_RUNTIME_JSON, which the OpenXR loader ignores in this runner's elevated context; it runs on the Windows desk"
-      - name: Pack and test-sign the MSIX
-        shell: pwsh
-        run: scripts/windows_package_msix.ps1 -OutDir dist
-      - name: Check the MSIX
-        shell: pwsh
-        run: Get-ChildItem dist/*.msix | ForEach-Object { scripts/windows_check_msix.ps1 $_.FullName; if ($LASTEXITCODE) { exit 1 } }
-      - name: Check control, a package without the runtime fails
+      - name: WiX Toolset
         shell: pwsh
         run: |
-          $msix = (Get-ChildItem dist/*.msix)[0].FullName
-          Copy-Item $msix control.zip
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = [System.IO.Compression.ZipFile]::Open((Resolve-Path control.zip), 'Update')
-          $zip.GetEntry('runtime/liboxrsys-runtime.dll').Delete()
-          $zip.Dispose()
-          scripts/windows_check_msix.ps1 control.zip
-          if ($LASTEXITCODE -eq 0) { Write-Host "control passed but must fail"; exit 1 }
-          exit 0
+          dotnet tool install --global wix --version 4.0.6
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & "$env:USERPROFILE\.dotnet\tools\wix.exe" extension add -g WixToolset.UI.wixext/4.0.6
+          if ($LASTEXITCODE) { exit 1 }
+      - name: Pack the MSI
+        shell: pwsh
+        working-directory: build/windows
+        run: |
+          pixi run cpack -G WIX -C Release -B ../../dist
+          if ($LASTEXITCODE) { exit 1 }
+      - name: Check control, an empty folder fails
+        shell: pwsh
+        run: scripts/windows_check_msi.ps1 -SelfTest
+      - name: Install per-user, check and uninstall the MSI
+        shell: pwsh
+        run: Get-ChildItem dist/*.msi | ForEach-Object { scripts/windows_check_msi.ps1 $_.FullName; if ($LASTEXITCODE) { exit 1 } }
+      - name: Per-user install unelevated, unchecked
+        run: echo "UNCHECKED 1 - this runner's shell is elevated, so the install proves the per-user scope but not the absence of a UAC prompt; that runs on the Windows desk"
       - uses: actions/upload-artifact@v4
         with:
-          name: xr-pilot-windows-msix
-          path: |
-            dist/*.msix
-            dist/*.cer
+          name: xr-pilot-windows-msi
+          path: dist/*.msi

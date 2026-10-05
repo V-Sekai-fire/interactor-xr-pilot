@@ -16,6 +16,10 @@ from `V-Sekai-fire/interactor-oxrsys`, which this repository replaces.
     ctest --test-dir build --output-on-failure
 
 On Windows, `scripts/windows_build.ps1` builds with the toolchain from `pixi.toml`.
+`cpack -G WIX` in that build tree packs a per-user MSI with WiX Toolset v4 (4.0.6, plus
+`WixToolset.UI.wixext`): it installs under `%LOCALAPPDATA%\Programs\XR Pilot` with no UAC prompt.
+The OpenXR loader reads `ActiveRuntime` from `HKEY_LOCAL_MACHINE` only, so making OXRSys the
+default runtime stays a tray action with one UAC prompt; `XR_RUNTIME_JSON` selects it per process.
 
 ## Run
 

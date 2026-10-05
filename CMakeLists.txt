@@ -129,3 +129,48 @@ add_executable(xr-pilot WIN32 app/main.cpp)
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
 add_custom_command(TARGET xr-pilot POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tray/resources $<TARGET_FILE_DIR:xr-pilot>/resources)
+
+# The Windows MSI: `cpack -G WIX` in the build tree, per-user, laid out as the tray expects (bin\, runtime\,
+# driver\oxrsys\ under the install root). Only this component is packed, not the subprojects' install rules.
+if(WIN32 AND XRPILOT_BUILD_OXRSYS)
+    set(XRPILOT_DRIVER_ROOT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys/driver/oxrsys)
+    install(TARGETS xr-pilot RUNTIME DESTINATION bin COMPONENT xrpilot)
+    install(DIRECTORY tray/resources/ DESTINATION bin/resources COMPONENT xrpilot)
+    install(FILES $<TARGET_FILE:oxrsys_runtime> DESTINATION runtime COMPONENT xrpilot)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/package/oxrsys-runtime.json
+        "{\"file_format_version\": \"1.0.0\", \"runtime\": {\"name\": \"OXRSys Runtime\", \"library_path\": \".\\liboxrsys-runtime.dll\"}}")
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/package/oxrsys-runtime.json DESTINATION runtime COMPONENT xrpilot)
+    install(FILES $<TARGET_FILE:driver_oxrsys> DESTINATION driver/oxrsys/bin/win64 COMPONENT xrpilot)
+    install(FILES ${XRPILOT_DRIVER_ROOT}/driver.vrdrivermanifest DESTINATION driver/oxrsys COMPONENT xrpilot)
+    install(DIRECTORY ${XRPILOT_DRIVER_ROOT}/resources DESTINATION driver/oxrsys COMPONENT xrpilot)
+
+    file(READ LICENSE-APACHE XRPILOT_LICENSE_APACHE)
+    file(READ LICENSE-MIT XRPILOT_LICENSE_MIT)
+    file(READ oxrsys/LICENSE XRPILOT_LICENSE_MPL)
+    file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/package/LICENSE.txt
+        "XR Pilot is Apache-2.0 OR MIT. oxrsys/ (the runtime, the driver and the tray) is MPL-2.0.\n\n"
+        "${XRPILOT_LICENSE_APACHE}\n\n${XRPILOT_LICENSE_MIT}\n\n${XRPILOT_LICENSE_MPL}")
+    install(FILES LICENSE-APACHE LICENSE-MIT DESTINATION licenses COMPONENT xrpilot)
+    install(FILES oxrsys/LICENSE DESTINATION licenses RENAME LICENSE-MPL-2.0 COMPONENT xrpilot)
+    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "XR Pilot")
+
+    file(STRINGS oxrsys/config/OXRSysVersion.xcconfig XRPILOT_OXRSYS_VERSION REGEX "^OXRSYS_VERSION *=")
+    string(REGEX REPLACE "^OXRSYS_VERSION *= *" "" XRPILOT_OXRSYS_VERSION "${XRPILOT_OXRSYS_VERSION}")
+    set(CPACK_GENERATOR WIX)
+    set(CPACK_COMPONENTS_ALL xrpilot)
+    set(CPACK_COMPONENTS_ALL_IN_ONE_PACKAGE ON)
+    set(CPACK_PACKAGE_NAME "XR Pilot")
+    set(CPACK_PACKAGE_VENDOR "V-Sekai")
+    set(CPACK_PACKAGE_VERSION ${XRPILOT_OXRSYS_VERSION})
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Install OXRSys, pick the OpenXR runtime, and see and drive what an app shows")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "Programs/XR Pilot")
+    set(CPACK_PACKAGE_FILE_NAME "xr-pilot-${XRPILOT_OXRSYS_VERSION}-x64")
+    set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_CURRENT_BINARY_DIR}/package/LICENSE.txt)
+    set(CPACK_WIX_VERSION 4)
+    set(CPACK_WIX_ARCHITECTURE x64)
+    set(CPACK_WIX_INSTALL_SCOPE perUser)
+    set(CPACK_WIX_UPGRADE_GUID "562DAE0D-E212-40C9-9AEA-684B142610A5")
+    set(CPACK_WIX_PROGRAM_MENU_FOLDER .)
+    set(CPACK_WIX_COMPONENT_KEYS_REGISTRY_PATH "Software/V-Sekai/XR Pilot/Components")
+    include(CPack)
+endif()
