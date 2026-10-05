@@ -811,6 +811,12 @@ void Tray::onFileChosen(void* userdata, const char* const* files, int)
     self->shownRuntimes_.clear();
 }
 
+Uint32 Tray::showPilotEvent()
+{
+    static const Uint32 type = SDL_RegisterEvents(1);
+    return type;
+}
+
 void Tray::onRuntime(void* userdata, SDL_TrayEntry*)
 {
     const Choice* choice = static_cast<const Choice*>(userdata);
@@ -836,6 +842,12 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
     {
         int count = 0;
         SDL_Window** windows = SDL_GetWindows(&count);
+        if (count == 0)
+        {
+            SDL_Event show{};
+            show.type = showPilotEvent();
+            SDL_PushEvent(&show);
+        }
         for (int i = 0; i < count; ++i)
         {
             SDL_RestoreWindow(windows[i]);

@@ -123,7 +123,7 @@ add_library(xrpilot_tray STATIC tray/src/Tray.cpp)
 target_include_directories(xrpilot_tray PUBLIC tray/include)
 target_link_libraries(xrpilot_tray PUBLIC xrpilot_install panelspun)
 
-# A GUI program, so a launch from the shell or the tray opens the pilot window and no console; the
+# A GUI program, so a launch from the shell or a shortcut starts the tray and no console; the
 # MCP server still talks to it over the stdin and stdout pipes it hands over.
 add_executable(xr-pilot WIN32 app/main.cpp)
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
@@ -152,7 +152,7 @@ if(WIN32 AND XRPILOT_BUILD_OXRSYS)
         "${XRPILOT_LICENSE_APACHE}\n\n${XRPILOT_LICENSE_MIT}\n\n${XRPILOT_LICENSE_MPL}")
     install(FILES LICENSE-APACHE LICENSE-MIT DESTINATION licenses COMPONENT xrpilot)
     install(FILES oxrsys/LICENSE DESTINATION licenses RENAME LICENSE-MPL-2.0 COMPONENT xrpilot)
-    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "XR Pilot")
+    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "OXRSys Tray")
 
     file(STRINGS oxrsys/config/OXRSysVersion.xcconfig XRPILOT_OXRSYS_VERSION REGEX "^OXRSYS_VERSION *=")
     string(REGEX REPLACE "^OXRSYS_VERSION *= *" "" XRPILOT_OXRSYS_VERSION "${XRPILOT_OXRSYS_VERSION}")

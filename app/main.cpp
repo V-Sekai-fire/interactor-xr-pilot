@@ -640,50 +640,8 @@ private:
     int64_t lastTrayNs_ = 0;
 };
 
-} // namespace
-
-int main(int argc, char** argv)
+int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool readCommands)
 {
-    Shared shared;
-    bool autoConnect = true;
-    bool agent = false;
-    std::string tracePath;
-    for (int i = 1; i < argc; ++i)
-    {
-        if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
-            shared.snapshotPath = argv[++i];
-        else if (!std::strcmp(argv[i], "--no-autoconnect"))
-            autoConnect = false;
-        else if (!std::strcmp(argv[i], "--agent"))
-            agent = true;
-        else if (!std::strcmp(argv[i], "--traces") && i + 1 < argc)
-            tracePath = argv[++i];
-        else
-        {
-            std::fprintf(stderr,
-                         "usage: xr-pilot [--agent] [--snapshot out.png] [--no-autoconnect] [--traces db.sqlite]\n");
-            return 2;
-        }
-    }
-
-    if (tracePath.empty())
-    {
-        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
-        tracePath = std::string(pref != nullptr ? pref : "") + "traces.sqlite";
-        SDL_free(pref);
-    }
-    {
-        std::string traceError;
-        const int64_t wallMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
-            std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
-        else
-            std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
-                         (long long)shared.traces.session());
-    }
-
     Window* windowPtr = nullptr;
     Client client([&windowPtr] {
         if (windowPtr != nullptr)
@@ -715,11 +673,7 @@ int main(int argc, char** argv)
     }
     windowPtr = window.get();
     window->setPanel("eye", std::make_unique<EyePanel>(client, shared, *window));
-    // Every pilot carries the OXRSys tray; one an agent starts leaves the desk's install alone at start.
-    std::unique_ptr<Tray> tray = std::make_unique<Tray>(!agent);
-    if (!tray->ok())
-        std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
-    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, tray.get()));
+    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, &tray));
     window->setPanel("stats", std::make_unique<StatsPanel>(client, shared));
     window->setPanel("trace", std::make_unique<TracePanel>(shared));
 
@@ -729,6 +683,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    if (!readCommands)
+    {
+        const int rc = window->run();
+        client.stop();
+        return rc;
+    }
     std::thread commands([&] {
         std::string line;
         while (std::getline(std::cin, line))
@@ -792,7 +752,89 @@ int main(int argc, char** argv)
     client.stop();
     windowPtr = nullptr;
     window.reset();
-    tray.reset();
+    return rc;
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    Shared shared;
+    bool autoConnect = true;
+    bool agent = false;
+    bool window = false;
+    std::string tracePath;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
+            shared.snapshotPath = argv[++i];
+        else if (!std::strcmp(argv[i], "--no-autoconnect"))
+            autoConnect = false;
+        else if (!std::strcmp(argv[i], "--agent"))
+            agent = true;
+        else if (!std::strcmp(argv[i], "--window"))
+            window = true;
+        else if (!std::strcmp(argv[i], "--traces") && i + 1 < argc)
+            tracePath = argv[++i];
+        else
+        {
+            std::fprintf(stderr,
+                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--no-autoconnect] [--traces db.sqlite]\n"
+                         "With none of --window, --agent or --snapshot it runs as the OXRSys tray alone.\n");
+            return 2;
+        }
+    }
+
+    if (tracePath.empty())
+    {
+        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
+        tracePath = std::string(pref != nullptr ? pref : "") + "traces.sqlite";
+        SDL_free(pref);
+    }
+    {
+        std::string traceError;
+        const int64_t wallMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
+            std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
+        else
+            std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
+                         (long long)shared.traces.session());
+    }
+
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
+        std::fprintf(stderr, "xr-pilot: %s\n", SDL_GetError());
+        return 1;
+    }
+    // An agent's pilot leaves the desk's install alone at start.
+    Tray tray(!agent);
+    if (!tray.ok())
+        std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
+
+    int rc = 0;
+    if (window || agent || !shared.snapshotPath.empty())
+        rc = runPilot(shared, autoConnect, agent, tray, true);
+    else
+    {
+        SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+        bool quitting = false;
+        SDL_AddEventWatch(
+            [](void* flag, SDL_Event* e) {
+                if (e->type == SDL_EVENT_QUIT)
+                    *static_cast<bool*>(flag) = true;
+                return true;
+            },
+            &quitting);
+        while (!quitting)
+        {
+            SDL_Event e;
+            if (SDL_WaitEventTimeout(&e, 2000) && e.type == Tray::showPilotEvent())
+                rc = runPilot(shared, autoConnect, false, tray, false);
+            tray.poll();
+        }
+    }
     shared.traces.close();
     SDL_Quit();
     std::fflush(stdout);
