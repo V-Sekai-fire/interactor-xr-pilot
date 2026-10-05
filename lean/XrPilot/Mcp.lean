@@ -75,6 +75,10 @@ private def handProp : Json :=
   Json.mkObj [("type", "string"), ("enum", Json.arr #["left", "right"]),
               ("description", "Which controller; right by default")]
 
+private def positionProp : Json :=
+  Json.mkObj [("type", "array"), ("minItems", 3), ("maxItems", 3), ("items", Json.mkObj [("type", "number")]),
+              ("description", "A world position [x, y, z] in metres")]
+
 def tools : Array Json := #[
   Json.mkObj [("name", "screenshot"),
     ("description", "The left eye of the OpenXR app as a PNG, with the head pose. Pixel arguments of point_at and click refer to this image."),
@@ -139,7 +143,58 @@ def tools : Array Json := #[
                             ("todo_list", Json.mkObj [("type", "array"), ("description", "Tasks to run in order, e.g. [[\"open_door\"], [\"click\", {\"x\": 568, \"y\": 632}]]")]),
                             ("capabilities", Json.mkObj [("type", "array"), ("items", Json.mkObj [("type", "string")]),
                               ("description", "The tools this plan may use; any other is refused. All tools when absent")]),
-                            ("max_steps", prop "integer" "Most actions to run; 256 by default")] ["todo_list"])]
+                            ("max_steps", prop "integer" "Most actions to run; 256 by default")] ["todo_list"])],
+  Json.mkObj [("name", "set_fov"),
+    ("description", "Sets the vertical field of view the pilot submits, in degrees (30 to 170); the horizontal follows the eye aspect."),
+    ("inputSchema", schema [("degrees", prop "number" "Vertical field of view in degrees, 30 to 170")] ["degrees"])],
+  Json.mkObj [("name", "move_to"),
+    ("description", "Places the head at an absolute world position in metres, keeping its current rotation. move walks relative to the gaze; this sets the position outright."),
+    ("inputSchema", schema [("position", positionProp)] ["position"])],
+  Json.mkObj [("name", "look_at"),
+    ("description", "Turns the head so a screenshot pixel is at the centre of the view, aiming the gaze along the ray from the eye through that pixel."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row")] ["x", "y"])],
+  Json.mkObj [("name", "set_hand"),
+    ("description", "Places a hand at an absolute world position with a rotation given as exactly one of a 3x3 matrix (canonical), Euler angles, or a quaternion."),
+    ("inputSchema", schema [("position", positionProp), ("rotation", rotationProp), ("euler", eulerProp),
+                            ("quaternion", quaternionProp), ("hand", handProp)] ["position"])],
+  Json.mkObj [("name", "gesture"),
+    ("description", "Shapes a hand by setting its trigger and grip to a named pose: open (both released), fist (both closed), point (grip closed, trigger open), or pinch (trigger closed, grip open)."),
+    ("inputSchema", schema [("pose", Json.mkObj [("type", "string"), ("enum", Json.arr #["open", "fist", "point", "pinch"])]),
+                            ("hand", handProp)] ["pose"])],
+  Json.mkObj [("name", "hover"),
+    ("description", "Aims a controller through a screenshot pixel and holds it there without pressing, so a hovered control can show its state."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row"), ("hand", handProp),
+                            ("hover_ms", prop "integer" "How long to hold the aim; 300 by default")] ["x", "y"])],
+  Json.mkObj [("name", "double_click"),
+    ("description", "point_at a pixel, then two trigger presses in quick succession: a double click on what the pixel shows."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row"), ("hand", handProp),
+                            ("gap_ms", prop "integer" "Milliseconds between the two clicks; 120 by default")] ["x", "y"])],
+  Json.mkObj [("name", "drag"),
+    ("description", "Points at one pixel, presses the trigger, points at a second pixel, and releases: a drag from the first to the second."),
+    ("inputSchema", schema [("x", prop "number" "Start pixel column"), ("y", prop "number" "Start pixel row"),
+                            ("x2", prop "number" "End pixel column"), ("y2", prop "number" "End pixel row"),
+                            ("hand", handProp)] ["x", "y", "x2", "y2"])],
+  Json.mkObj [("name", "scroll"),
+    ("description", "Aims at a pixel, holds the trigger, pushes a thumbstick to scroll the surface it hit, then releases."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row"),
+                            ("dx", prop "number" "Stick x, left -1 to right 1"), ("dy", prop "number" "Stick y, down -1 to up 1"),
+                            ("hand", handProp), ("duration_ms", prop "integer" "How long the stick is held; 400 by default")] ["x", "y"])],
+  Json.mkObj [("name", "probe"),
+    ("description", "Reports the world ray a screenshot pixel points along, from the eye, without moving a hand: its origin, direction and rotation. A read-only point_at for planning."),
+    ("inputSchema", schema [("x", prop "number" "Pixel column"), ("y", prop "number" "Pixel row")] ["x", "y"])],
+  Json.mkObj [("name", "health"),
+    ("description", "Whether the pilot is connected to a running app, the server it streams from, and the assembled, decoded and dropped frame counts with the dropped fraction."),
+    ("inputSchema", schema [] [])],
+  Json.mkObj [("name", "wait_for"),
+    ("description", "Waits, taking state between checks, until a get_state pointer equals a value or a timeout passes; the reply says whether it was met and how long it waited, and a timeout is an error."),
+    ("inputSchema", schema [("pointer", prop "string" "A JSON pointer into get_state, e.g. /connected"),
+                            ("equals", Json.mkObj [("description", "The value the pointer must reach")]),
+                            ("timeout_ms", prop "integer" "How long to wait at most; 5000 by default"),
+                            ("interval_ms", prop "integer" "How long between checks; 250 by default")] ["pointer", "equals"])],
+  Json.mkObj [("name", "record"),
+    ("description", "Captures a short clip as a sequence of PyroWave-decoded left-eye frames, returned as images a vision model reads in order; each frame's head pose comes back alongside them."),
+    ("inputSchema", schema [("frames", prop "integer" "How many frames to capture, 1 to 32; 8 by default"),
+                            ("interval_ms", prop "integer" "Milliseconds between frames; 200 by default")] [])]
 ]
 
 private def text (s : String) : Json := Json.mkObj [("type", "text"), ("text", s)]
@@ -367,6 +422,140 @@ private def runTool (b : Backend) (name : String) (args : Json) (call : String �
       | some image => #[text reply.compress, image]
       | none => #[text reply.compress]
     return toolResult content trace.failure.isSome
+  | "set_fov" =>
+    let r ← b.send s!"fov {fmt (num args "degrees" 0.0)}"
+    return toolResult #[text r.compress] (!ok? r)
+  | "move_to" =>
+    let state ← b.send "state"
+    if !ok? state then return refused state
+    let p := args.getObjValD "position"
+    let r ← b.send s!"head {fmt (arrNum p 0)} {fmt (arrNum p 1)} {fmt (arrNum p 2)} {(headRotation state).args}"
+    return toolResult #[text r.compress] (!ok? r)
+  | "look_at" =>
+    if (← b.lastShot.get).1 <= 0.0 then
+      return refused (Json.mkObj [("ok", false), ("error", "take a screenshot first: pixel coordinates refer to it")])
+    let state ← b.send "state"
+    if !ok? state then return refused state
+    let aim := aimThroughPixel (viewFrom state (← b.lastShot.get)) (num args "x" 0.0) (num args "y" 0.0)
+    let pos := (state.getObjValD "head").getObjValD "position"
+    let r ← b.send s!"head {fmt (arrNum pos 0)} {fmt (arrNum pos 1)} {fmt (arrNum pos 2)} {aim.rotation.args}"
+    if !ok? r then return refused r
+    return toolResult #[text (Json.mkObj [("ok", true), ("rotation", aim.rotation.toJson)]).compress]
+  | "set_hand" =>
+    let hand := str args "hand" "right"
+    let p := args.getObjValD "position"
+    match rotationInput args with
+    | .error e => return refused (Json.mkObj [("ok", false), ("error", e)])
+    | .ok r =>
+      let reply ← b.send s!"hand {hand} {fmt (arrNum p 0)} {fmt (arrNum p 1)} {fmt (arrNum p 2)} {r.args}"
+      return toolResult #[text reply.compress] (!ok? reply)
+  | "gesture" =>
+    let hand := str args "hand" "right"
+    let pose := str args "pose" ""
+    let grips := match pose with
+      | "fist" => some ("1", "1") | "point" => some ("0", "1") | "pinch" => some ("1", "0") | "open" => some ("0", "0")
+      | _ => none
+    match grips with
+    | none => return refused (Json.mkObj [("ok", false), ("error", "pose must be open, fist, point or pinch")])
+    | some (t, g) =>
+      if let some r ← sendAll b [s!"trigger {hand} {t}", s!"grip {hand} {g}"] then return refused r
+      return toolResult #[text s!"hand {hand} gesture {pose}"]
+  | "hover" =>
+    match ← pointCommand b args with
+    | .error r => return refused r
+    | .ok (cmd, _) =>
+      if let some r ← sendAll b [cmd] then return refused r
+      b.sleepMs (num args "hover_ms" 300.0).toUInt64.toNat
+      return toolResult #[text s!"hovering {str args "hand" "right"}"]
+  | "double_click" =>
+    match ← pointCommand b args with
+    | .error r => return refused r
+    | .ok (cmd, _) =>
+      let hand := str args "hand" "right"
+      if let some r ← sendAll b [cmd] then return refused r
+      b.sleepMs 150
+      for _ in [0:2] do
+        if let some r ← sendAll b [s!"trigger {hand} 1"] then return refused r
+        b.sleepMs 60
+        if let some r ← sendAll b [s!"trigger {hand} 0"] then return refused r
+        b.sleepMs (num args "gap_ms" 120.0).toUInt64.toNat
+      return toolResult #[text s!"double clicked with {hand}"]
+  | "drag" =>
+    match ← pointCommand b args with
+    | .error r => return refused r
+    | .ok (startCmd, _) =>
+      let hand := str args "hand" "right"
+      let endArgs := Json.mkObj [("x", args.getObjValD "x2"), ("y", args.getObjValD "y2"), ("hand", Json.str hand)]
+      match ← pointCommand b endArgs with
+      | .error r => return refused r
+      | .ok (endCmd, _) =>
+        if let some r ← sendAll b [startCmd, s!"trigger {hand} 1"] then return refused r
+        b.sleepMs 150
+        if let some r ← sendAll b [endCmd] then return refused r
+        b.sleepMs 150
+        if let some r ← sendAll b [s!"trigger {hand} 0"] then return refused r
+        return toolResult #[text s!"dragged with {hand}"]
+  | "scroll" =>
+    match ← pointCommand b args with
+    | .error r => return refused r
+    | .ok (cmd, _) =>
+      let hand := str args "hand" "right"
+      if let some r ← sendAll b [cmd, s!"trigger {hand} 1", s!"stick {hand} {fmt (num args "dx" 0.0)} {fmt (num args "dy" 0.0)}"] then
+        return refused r
+      b.sleepMs (num args "duration_ms" 400.0).toUInt64.toNat
+      if let some r ← sendAll b [s!"stick {hand} 0 0", s!"trigger {hand} 0"] then return refused r
+      return toolResult #[text s!"scrolled with {hand}"]
+  | "probe" =>
+    if (← b.lastShot.get).1 <= 0.0 then
+      return refused (Json.mkObj [("ok", false), ("error", "take a screenshot first: pixel coordinates refer to it")])
+    let state ← b.send "state"
+    if !ok? state then return refused state
+    let aim := aimThroughPixel (viewFrom state (← b.lastShot.get)) (num args "x" 0.0) (num args "y" 0.0)
+    let body := s!"\{\"ok\":true,\"origin\":[{fmt aim.origin.x},{fmt aim.origin.y},{fmt aim.origin.z}],\"direction\":[{fmt aim.direction.x},{fmt aim.direction.y},{fmt aim.direction.z}],\"rotation\":{aim.rotation.toJson.compress}}"
+    return toolResult #[text body]
+  | "health" =>
+    let s ← b.send "state"
+    if !ok? s then return toolResult #[text s.compress] true
+    let frames := s.getObjValD "frames"
+    let assembled := num frames "assembled" 0.0
+    let dropped := num frames "dropped" 0.0
+    let denom := assembled + dropped
+    let frac := if denom > 0.0 then dropped / denom else 0.0
+    let body := s!"\{\"ok\":true,\"connected\":{bool s "connected" false},\"server\":{(Json.str (str s "server" "")).compress},\"server_name\":{(Json.str (str s "server_name" "")).compress},\"frames\":\{\"assembled\":{fmt assembled},\"decoded\":{fmt (num frames "decoded" 0.0)},\"dropped\":{fmt dropped}},\"dropped_fraction\":{fmt frac}}"
+    return toolResult #[text body]
+  | "wait_for" =>
+    let pointer := str args "pointer" ""
+    let want := args.getObjValD "equals"
+    let timeout := (num args "timeout_ms" 5000.0).toUInt64.toNat
+    let interval := max 1 (num args "interval_ms" 250.0).toUInt64.toNat
+    let same := fun (a c : Json) => a == c || (match a.getNum?, c.getNum? with | .ok x, .ok y => x.toFloat == y.toFloat | _, _ => false)
+    let start ← IO.monoMsNow
+    let mut met := false
+    for _ in [0:timeout / interval + 1] do
+      let state ← b.send "state"
+      if same (jsonPointer state pointer) want then
+        met := true
+        break
+      if (← IO.monoMsNow) - start ≥ timeout then break
+      b.sleepMs interval
+    let waited := (← IO.monoMsNow) - start
+    return toolResult #[text s!"\{\"ok\":{met},\"met\":{met},\"waited_ms\":{waited}}"] (!met)
+  | "record" =>
+    let n := min 32 (max 1 (num args "frames" 8.0).toUInt64.toNat)
+    let interval := (num args "interval_ms" 200.0).toUInt64.toNat
+    let mut images : Array Json := #[]
+    let mut poses : Array Json := #[]
+    let mut size : Float × Float := (0.0, 0.0)
+    for i in [0:n] do
+      let r ← b.send s!"screenshot {b.screenshotPath}"
+      if !ok? r then return refused r
+      size := (num r "width" 0.0, num r "height" 0.0)
+      images := images.push (Json.mkObj [("type", "image"), ("data", base64 (← b.readFile b.screenshotPath)), ("mimeType", "image/png")])
+      poses := poses.push ((← b.send "state").getObjValD "head")
+      if i + 1 < n then b.sleepMs interval
+    b.lastShot.set size
+    let summary := text s!"\{\"count\":{n},\"interval_ms\":{interval},\"heads\":{(Json.arr poses).compress}}"
+    return toolResult (#[summary] ++ images)
   | other => throw (IO.userError s!"unknown tool: {other}")
 
 /-- Runs a tool inside a span, so the pilot's trace shows the call, its commands, its time and its outcome. -/

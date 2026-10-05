@@ -81,6 +81,16 @@ if(XRPILOT_BUILD_OXRSYS)
     add_subdirectory(oxrsys)
 endif()
 
+# Plausible-witness-dag property and falsification tests over the pure maths; witness-cpp is header-only.
+add_executable(xrpilot-witness-tests core/tests/test_witness.cpp)
+target_link_libraries(xrpilot-witness-tests PRIVATE xrpilot_core)
+target_include_directories(xrpilot-witness-tests PRIVATE third_party/witness-cpp/include)
+foreach(name IN ITEMS witness.unit-concrete-witnesses witness.euler-orthonormal witness.quaternion-orthonormal
+                      witness.euler-round-trip witness.quaternion-round-trip witness.multiply-closed
+                      witness.reach-lands witness.reach-clamped witnessdag.ablation-coverage)
+    add_test(NAME ${name} COMMAND xrpilot-witness-tests ${name})
+endforeach()
+
 if(NOT XRPILOT_BUILD_APP)
     return()
 endif()

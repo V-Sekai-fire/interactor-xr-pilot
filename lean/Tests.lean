@@ -127,8 +127,11 @@ def main : IO UInt32 := do
   let names := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
     | .ok ts => ts.map (fun (t : Json) => match (t.getObjValD "name").getStr? with | .ok s => s | .error _ => "")
     | .error _ => #[]
-  c (names.size == 15 && names.contains "reach" && names.contains "grab" && names.contains "locomote")
-    s!"tools/list lists 15 tools, got {names}"
+  c (names.size == 28 && names.contains "reach" && names.contains "grab" && names.contains "locomote")
+    s!"tools/list lists 28 tools, got {names}"
+  c (["set_fov", "move_to", "look_at", "set_hand", "gesture", "hover", "double_click", "drag", "scroll",
+      "probe", "health", "wait_for", "record"].all names.contains)
+    s!"tools/list lists the added tools, got {names}"
   -- A client sends only the properties a tool declares, so every field plan reads must be in its schema.
   let planSchema := match ((listed.getObjValD "result").getObjValD "tools").getArr? with
     | .ok ts => (ts.find? (fun (t : Json) => (t.getObjValD "name").getStr?.toOption == some "plan")).getD Json.null
@@ -235,6 +238,86 @@ def main : IO UInt32 := do
   c (!isError hop && (← f.sent.get) == #["stick left 0 1", "stick left 0 0"]) "a teleport pushes the left stick and releases it"
   let badMode ← call "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"locomote\",\"arguments\":{\"mode\":\"fly\"}}}"
   c (isError badMode) "control: an unknown locomotion mode is refused"
+
+  -- The added tools compose the same line protocol: unexposed commands, aims, and real decoded frames.
+  let firstText (reply : Json) : String :=
+    (((((reply.getObjValD "result").getObjValD "content").getArrVal? 0).toOption.getD Json.null).getObjValD "text").getStr?.toOption.getD ""
+
+  f.sent.set #[]
+  let _ ← call "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"set_fov\",\"arguments\":{\"degrees\":90}}}"
+  c ((← f.sent.get) == #[s!"fov {(90.0 : Float)}"]) s!"set_fov sends the fov command, sent {← f.sent.get}"
+
+  f.sent.set #[]
+  let dbl ← call "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"double_click\",\"arguments\":{\"x\":568,\"y\":632}}}"
+  let d ← f.sent.get
+  c (!isError dbl && d.size == 6 && d[0]! == "state" && (d[1]!).startsWith "hand right" &&
+      d[2]! == "trigger right 1" && d[3]! == "trigger right 0" && d[4]! == "trigger right 1" && d[5]! == "trigger right 0")
+    s!"double_click aims then presses the trigger twice, sent {d}"
+
+  f.sent.set #[]
+  let dragged ← call "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"drag\",\"arguments\":{\"x\":100,\"y\":100,\"x2\":500,\"y2\":500}}}"
+  let dr := (← f.sent.get).filter (· != "state")
+  c (!isError dragged && dr.size == 4 && (dr[0]!).startsWith "hand right" && dr[1]! == "trigger right 1" &&
+      (dr[2]!).startsWith "hand right" && dr[3]! == "trigger right 0" && dr[0]! != dr[2]!)
+    s!"drag aims, presses, aims elsewhere, releases, sent {dr}"
+
+  f.sent.set #[]
+  let hovered ← call "{\"jsonrpc\":\"2.0\",\"id\":35,\"method\":\"tools/call\",\"params\":{\"name\":\"hover\",\"arguments\":{\"x\":300,\"y\":300}}}"
+  let hv := (← f.sent.get).filter (· != "state")
+  c (!isError hovered && hv.size == 1 && (hv[0]!).startsWith "hand right" && (hv.filter (·.startsWith "trigger")).isEmpty)
+    s!"hover aims and presses nothing, sent {hv}"
+
+  f.sent.set #[]
+  let scrolled ← call "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"scroll\",\"arguments\":{\"x\":200,\"y\":200,\"dy\":-1}}}"
+  let sc := (← f.sent.get).filter (· != "state")
+  c (!isError scrolled && sc.size == 5 && (sc[0]!).startsWith "hand right" && sc[1]! == "trigger right 1" &&
+      sc[2]! == s!"stick right {(0.0 : Float)} {(-1.0 : Float)}" && sc[3]! == "stick right 0 0" && sc[4]! == "trigger right 0")
+    s!"scroll aims, holds the trigger, pushes and centres the stick, releases, sent {sc}"
+
+  f.sent.set #[]
+  let _ ← call "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"gesture\",\"arguments\":{\"pose\":\"point\"}}}"
+  c ((← f.sent.get) == #["trigger right 0", "grip right 1"]) s!"a point gesture opens the trigger and closes the grip, sent {← f.sent.get}"
+  let badPose ← call "{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"tools/call\",\"params\":{\"name\":\"gesture\",\"arguments\":{\"pose\":\"wave\"}}}"
+  c (isError badPose) "control: an unknown gesture pose is refused"
+
+  f.sent.set #[]
+  let movedTo ← call "{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"tools/call\",\"params\":{\"name\":\"move_to\",\"arguments\":{\"position\":[1,2,3]}}}"
+  let mv := (← f.sent.get).filter (· != "state")
+  c (!isError movedTo && mv.size == 1 && (mv[0]!).startsWith s!"head {(1.0 : Float)} {(2.0 : Float)} {(3.0 : Float)} ")
+    s!"move_to sets the head position outright, sent {mv}"
+
+  f.sent.set #[]
+  let lookedAt ← call "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"tools/call\",\"params\":{\"name\":\"look_at\",\"arguments\":{\"x\":568,\"y\":632}}}"
+  let la := (← f.sent.get).filter (· != "state")
+  c (!isError lookedAt && la.size == 1 && (la[0]!).startsWith "head ") "look_at turns the head toward a pixel"
+
+  f.sent.set #[]
+  let setHand ← call "{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"tools/call\",\"params\":{\"name\":\"set_hand\",\"arguments\":{\"position\":[0.1,1.2,-0.3],\"rotation\":[[1,0,0],[0,1,0],[0,0,1]]}}}"
+  let sh := (← f.sent.get).filter (· != "state")
+  c (!isError setHand && sh.size == 1 && (sh[0]!).startsWith "hand right ") "set_hand places a hand at a world pose"
+  let noRot ← call "{\"jsonrpc\":\"2.0\",\"id\":29,\"method\":\"tools/call\",\"params\":{\"name\":\"set_hand\",\"arguments\":{\"position\":[0,1,0]}}}"
+  c (isError noRot) "control: set_hand with no rotation is refused"
+
+  f.sent.set #[]
+  let probed ← call "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"probe\",\"arguments\":{\"x\":568,\"y\":632}}}"
+  c (!isError probed && ((← f.sent.get).all (· == "state")) && ((firstText probed).splitOn "direction").length > 1)
+    s!"probe reports the ray and moves no hand, sent {← f.sent.get}"
+
+  let healthR ← call "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"health\",\"arguments\":{}}}"
+  c (!isError healthR && ((firstText healthR).splitOn "dropped_fraction").length > 1)
+    s!"health reports a dropped fraction, got {firstText healthR}"
+
+  f.sent.set #[]
+  let waited ← call "{\"jsonrpc\":\"2.0\",\"id\":32,\"method\":\"tools/call\",\"params\":{\"name\":\"wait_for\",\"arguments\":{\"pointer\":\"/connected\",\"equals\":true}}}"
+  c (!isError waited && ((← f.sent.get).all (· == "state"))) s!"wait_for returns when the pointer matches, sent {← f.sent.get}"
+  let timedOut ← call "{\"jsonrpc\":\"2.0\",\"id\":33,\"method\":\"tools/call\",\"params\":{\"name\":\"wait_for\",\"arguments\":{\"pointer\":\"/connected\",\"equals\":false,\"timeout_ms\":0,\"interval_ms\":1}}}"
+  c (isError timedOut) "control: wait_for that never matches times out as an error"
+
+  let recorded ← call "{\"jsonrpc\":\"2.0\",\"id\":34,\"method\":\"tools/call\",\"params\":{\"name\":\"record\",\"arguments\":{\"frames\":3,\"interval_ms\":0}}}"
+  let content := match (((recorded.getObjValD "result").getObjValD "content").getArr?) with | .ok a => a | .error _ => #[]
+  let imageCount := (content.filter (fun it => (it.getObjValD "type").getStr?.toOption == some "image")).size
+  c (!isError recorded && content.size == 4 && imageCount == 3)
+    s!"record returns a summary and one image per captured frame, got {content.size} items"
 
   f.backend.lastShot.set (0.0, 0.0)
   f.sent.set #[]
