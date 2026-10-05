@@ -203,7 +203,7 @@ size_t deliverAllBut(VideoFrameAssembler& a, const std::vector<std::vector<uint8
                      std::vector<uint16_t> skip, bool withParity, std::vector<uint8_t>* nal)
 {
     size_t delivered = 0;
-    auto take = [&](std::vector<AssembledVideoFrame> frames) {
+    const std::function<void(std::vector<AssembledVideoFrame>)> take = [&](std::vector<AssembledVideoFrame> frames) {
         for (AssembledVideoFrame& f : frames)
         {
             ++delivered;
@@ -215,7 +215,7 @@ size_t deliverAllBut(VideoFrameAssembler& a, const std::vector<std::vector<uint8
     {
         if (std::find(skip.begin(), skip.end(), i) != skip.end())
             continue;
-        const auto h = header(7, i, total, uint16_t(data[i].size()));
+        const oxr::protocol::VideoPacketHeader h = header(7, i, total, uint16_t(data[i].size()));
         take(a.addPacket(h, reinterpret_cast<const char*>(data[i].data()), std::ptrdiff_t(data[i].size()), 1));
     }
     if (withParity)
@@ -223,7 +223,7 @@ size_t deliverAllBut(VideoFrameAssembler& a, const std::vector<std::vector<uint8
         for (uint32_t g = 0; g < oxr::fec::GroupCount(total); ++g)
         {
             const std::vector<uint8_t> p = parity(data, g, total);
-            auto h = header(7, uint16_t(g), total, uint16_t(p.size()), true);
+            oxr::protocol::VideoPacketHeader h = header(7, uint16_t(g), total, uint16_t(p.size()), true);
             h.fecGroupLastPacketPayloadSize = uint16_t(oxr::protocol::MAX_PACKET_PAYLOAD);
             take(a.addPacket(h, reinterpret_cast<const char*>(p.data()), std::ptrdiff_t(p.size()), 1));
         }
