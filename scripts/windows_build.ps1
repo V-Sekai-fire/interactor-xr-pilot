@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Build the Windows runtime, driver and Qt Home with MSVC, taking CMake, Ninja and Qt 6
-# from the pixi environment in pixi.toml. Video is PyroWave, linked statically into the
-# runtime; no FFmpeg.
+# Build XR Pilot with the OXRSys runtime and driver under MSVC, taking CMake, Ninja and the Vulkan
+# loader from the pixi environment in pixi.toml. Video is PyroWave, linked statically; no FFmpeg.
 # -Register makes the installed runtime the machine's active OpenXR runtime; without it, point
-# XR_RUNTIME_JSON at build/windows/runtime/oxrsys-runtime.json per process.
+# XR_RUNTIME_JSON at build/windows/oxrsys/runtime/oxrsys-runtime.json per process.
 param(
     [string]$BuildType = "RelWithDebInfo",
     [switch]$Test,
@@ -35,42 +34,10 @@ Push-Location $root
 try {
     pixi run cmake -S . -B $build -G Ninja `
         "-DCMAKE_BUILD_TYPE=$BuildType" `
-        -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
-        -DOXRSYS_BUILD_QT_FRONTENDS=ON
+        -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
     if ($LASTEXITCODE -ne 0) { throw "configure failed" }
     pixi run cmake --build $build
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
-    # Deploy Qt Home: windeployqt, then any other pixi-env DLL they pull in.
-    # The runtime DLL needs nothing beside it (PyroWave is linked in).
-    $envBin = (pixi run cmd /c "echo %CONDA_PREFIX%" | Select-Object -Last 1).Trim() + '\Library\bin'
-    $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
-    function Copy-Dependencies([string]$binary) {
-        $dir = Split-Path -Parent $binary
-        $queue = [System.Collections.Generic.Queue[string]]::new()
-        $queue.Enqueue($binary)
-        $seen = @{}
-        while ($queue.Count -gt 0) {
-            $current = $queue.Dequeue()
-            foreach ($line in (& $dumpbin.FullName /nologo /dependents $current)) {
-                $name = $line.Trim()
-                if ($name -notmatch '\.dll$' -or $seen.ContainsKey($name)) { continue }
-                # The system provides the CRT and API sets; never ship conda's copies.
-                if ($name -match '^(api-ms-win-|ucrtbase|msvcp140|vcruntime140|concrt140)') { continue }
-                $seen[$name] = $true
-                $source = Join-Path $envBin $name
-                if (Test-Path $source) {
-                    Copy-Item $source $dir -Force
-                    $queue.Enqueue($source)
-                }
-            }
-        }
-    }
-    foreach ($exe in @('clients\Qt\oxrsys-home\oxrsys-home.exe')) {
-        $path = Join-Path $build $exe
-        pixi run windeployqt6 --qtpaths (Join-Path $envBin 'qtpaths6.exe') --no-translations --no-system-d3d-compiler --no-opengl-sw $path | Out-Null
-        Copy-Dependencies $path
-    }
-
     if ($Test) {
         pixi run ctest --test-dir $build --output-on-failure
         if ($LASTEXITCODE -ne 0) { throw "tests failed" }
@@ -81,15 +48,15 @@ try {
     if ($Install -or $Register) {
         $runtimeDir = Join-Path $env:LOCALAPPDATA 'OXRSys\runtime'
         New-Item -ItemType Directory -Force $runtimeDir | Out-Null
-        Copy-Item -Force (Join-Path $build 'runtime\liboxrsys-runtime.dll') $runtimeDir
+        Copy-Item -Force (Join-Path $build 'oxrsys\runtime\liboxrsys-runtime.dll') $runtimeDir
         $manifest = '{"file_format_version": "1.0.0", "runtime": {"name": "OXRSys Runtime", "library_path": ".\\liboxrsys-runtime.dll"}}'
         [System.IO.File]::WriteAllText((Join-Path $runtimeDir 'oxrsys-runtime.json'), $manifest)
 
         $driverDir = Join-Path $env:LOCALAPPDATA 'OXRSys\driver\oxrsys'
         New-Item -ItemType Directory -Force (Join-Path $driverDir 'bin\win64') | Out-Null
-        Copy-Item -Force (Join-Path $build 'driver\oxrsys\driver.vrdrivermanifest') $driverDir
-        Copy-Item -Force (Join-Path $build 'driver\oxrsys\bin\win64\driver_oxrsys.dll') (Join-Path $driverDir 'bin\win64')
-        Copy-Item -Force -Recurse (Join-Path $build 'driver\oxrsys\resources') $driverDir
+        Copy-Item -Force (Join-Path $build 'oxrsys\driver\oxrsys\driver.vrdrivermanifest') $driverDir
+        Copy-Item -Force (Join-Path $build 'oxrsys\driver\oxrsys\bin\win64\driver_oxrsys.dll') (Join-Path $driverDir 'bin\win64')
+        Copy-Item -Force -Recurse (Join-Path $build 'oxrsys\driver\oxrsys\resources') $driverDir
     }
     if ($Register) {
         # The driver is registered through the PC VR runtime's own vrpathreg, found from its paths file;

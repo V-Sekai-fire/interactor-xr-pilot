@@ -28,7 +28,9 @@ set(GRANITE_VULKAN_SYSTEM_HANDLES OFF CACHE BOOL "" FORCE)
 set(GRANITE_RENDERER OFF CACHE BOOL "" FORCE)
 set(GRANITE_VULKAN_FOSSILIZE OFF CACHE BOOL "" FORCE)
 set(GRANITE_PLATFORM "null" CACHE STRING "" FORCE)
-add_subdirectory(${granite_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/granite-build EXCLUDE_FROM_ALL)
+if(NOT TARGET granite-vulkan)
+    add_subdirectory(${granite_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_deps/granite-build EXCLUDE_FROM_ALL)
+endif()
 
 add_library(oxrsys_pyrowave STATIC
     ${pyrowave_SOURCE_DIR}/pyrowave_encoder.cpp

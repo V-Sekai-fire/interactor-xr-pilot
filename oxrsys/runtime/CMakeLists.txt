@@ -63,7 +63,7 @@ list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES
 
 target_include_directories(oxrsys_runtime PRIVATE
     src
-    ${CMAKE_SOURCE_DIR}/common/protocol/include
+    ${PROJECT_SOURCE_DIR}/common/protocol/include
     ${openxr_SOURCE_DIR}/include
     ${openxr_SOURCE_DIR}/src/common
     ${Vulkan_INCLUDE_DIRS}

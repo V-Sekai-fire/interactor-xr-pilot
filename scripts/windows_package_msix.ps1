@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Packs a built tree (scripts/windows_build.ps1) into one signed MSIX: OXRSys Home as the
-# Start-menu app, plus the runtime and the PC VR driver as files. Without -PfxPath it
+# Packs a built tree (scripts/windows_build.ps1) into one signed MSIX: XR Pilot, which carries the
+# OXRSys tray, as the Start-menu app, plus the runtime and the PC VR driver as files. Without -PfxPath it
 # signs with a self-signed test certificate, installable only once that certificate is trusted.
 #   scripts/windows_package_msix.ps1 [-Version 1.2.0.0] [-OutDir dist] [-PfxPath x.pfx -PfxPassword p]
 param(
@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'build\windows'
 if (-not $Version) {
-    $v = (Select-String -Path (Join-Path $root 'config\OXRSysVersion.xcconfig') -Pattern '^OXRSYS_VERSION *= *(.+)$').Matches[0].Groups[1].Value.Trim()
+    $v = (Select-String -Path (Join-Path $root 'oxrsys\config\OXRSysVersion.xcconfig') -Pattern '^OXRSYS_VERSION *= *(.+)$').Matches[0].Groups[1].Value.Trim()
     $Version = "$v.0"
 }
 
@@ -27,20 +27,17 @@ $signtool = "$($sdk.FullName)\x64\signtool.exe"
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ('oxrsys-msix-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Force "$stage\runtime", "$stage\assets" | Out-Null
-foreach ($app in @('home')) {
-    $from = Join-Path $build "clients\Qt\oxrsys-$app"
-    New-Item -ItemType Directory -Force "$stage\$app" | Out-Null
-    # The deployed app folder, without CMake's build bookkeeping.
-    Get-ChildItem $from | Where-Object { $_.Name -notmatch '^(CMakeFiles|.*_autogen|\.qt|cmake_install\.cmake|.*\.(ilk|pdb|lib|exp))$' -and $_.Name -notlike '*-tests*' } |
-        Copy-Item -Destination "$stage\$app" -Recurse
-}
-Copy-Item (Join-Path $build 'runtime\liboxrsys-runtime.dll') "$stage\runtime"
+# The tray looks for the runtime and driver one folder above its own, so the app sits in bin\.
+New-Item -ItemType Directory -Force "$stage\bin" | Out-Null
+Copy-Item (Join-Path $build 'xr-pilot.exe') "$stage\bin"
+Copy-Item -Recurse (Join-Path $build 'resources') "$stage\bin"
+Copy-Item (Join-Path $build 'oxrsys\runtime\liboxrsys-runtime.dll') "$stage\runtime"
 [System.IO.File]::WriteAllText("$stage\runtime\oxrsys-runtime.json",
     '{"file_format_version": "1.0.0", "runtime": {"name": "OXRSys Runtime", "library_path": ".\\liboxrsys-runtime.dll"}}')
 New-Item -ItemType Directory -Force "$stage\driver\oxrsys\bin\win64" | Out-Null
-Copy-Item (Join-Path $build 'driver\oxrsys\driver.vrdrivermanifest') "$stage\driver\oxrsys"
-Copy-Item (Join-Path $build 'driver\oxrsys\bin\win64\driver_oxrsys.dll') "$stage\driver\oxrsys\bin\win64"
-Copy-Item -Recurse (Join-Path $build 'driver\oxrsys\resources') "$stage\driver\oxrsys"
+Copy-Item (Join-Path $build 'oxrsys\driver\oxrsys\driver.vrdrivermanifest') "$stage\driver\oxrsys"
+Copy-Item (Join-Path $build 'oxrsys\driver\oxrsys\bin\win64\driver_oxrsys.dll') "$stage\driver\oxrsys\bin\win64"
+Copy-Item -Recurse (Join-Path $build 'oxrsys\driver\oxrsys\resources') "$stage\driver\oxrsys"
 Copy-Item (Join-Path $root 'packaging\msix\assets\*') "$stage\assets"
 
 [xml]$manifest = Get-Content (Join-Path $root 'packaging\msix\AppxManifest.xml')

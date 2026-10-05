@@ -35,15 +35,16 @@ if(APPLE)
 endif()
 enable_testing()
 
-execute_process(
-    COMMAND ${CMAKE_COMMAND} -E create_symlink
-        ${CMAKE_BINARY_DIR}/compile_commands.json
-        ${CMAKE_SOURCE_DIR}/compile_commands.json
-    RESULT_VARIABLE oxrsys_runtime_compile_commands_symlink_result
-)
-
-if(NOT oxrsys_runtime_compile_commands_symlink_result EQUAL 0)
-    message(STATUS "Failed to create compile_commands.json symlink during configure. The build sync step will retry.")
+if(PROJECT_IS_TOP_LEVEL)
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            ${CMAKE_SOURCE_DIR}/compile_commands.json
+        RESULT_VARIABLE oxrsys_runtime_compile_commands_symlink_result
+    )
+    if(NOT oxrsys_runtime_compile_commands_symlink_result EQUAL 0)
+        message(STATUS "Failed to create compile_commands.json symlink during configure. The build sync step will retry.")
+    endif()
 endif()
 
 # --- FetchContent dependencies ---
@@ -133,14 +134,6 @@ if(WIN32)
 endif()
 
 find_package(Vulkan REQUIRED)
-
-add_custom_target(oxrsys_runtime_sync_compile_commands ALL
-    COMMAND ${CMAKE_COMMAND}
-        -DINPUT_FILE=${CMAKE_BINARY_DIR}/compile_commands.json
-        -DOUTPUT_FILE=${CMAKE_SOURCE_DIR}/compile_commands.json
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SyncCompileCommands.cmake
-    COMMENT "Syncing compile_commands.json to the project root"
-)
 
 # --- Tests ---
 set(OXRSYS_TEST_ENV_ROOT "${CMAKE_BINARY_DIR}/test-env")
@@ -358,45 +351,20 @@ if(APPLE)
     list(APPEND OXRSYS_RUNTIME_TEST_TARGETS oxrsys_runtime_api_tests)
 endif()
 
-add_dependencies(oxrsys_runtime_sync_compile_commands
-    ${OXRSYS_RUNTIME_TEST_TARGETS}
-)
+if(PROJECT_IS_TOP_LEVEL)
+    add_custom_target(oxrsys_runtime_sync_compile_commands ALL
+        COMMAND ${CMAKE_COMMAND}
+            -DINPUT_FILE=${CMAKE_BINARY_DIR}/compile_commands.json
+            -DOUTPUT_FILE=${CMAKE_SOURCE_DIR}/compile_commands.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SyncCompileCommands.cmake
+        COMMENT "Syncing compile_commands.json to the project root"
+    )
+    add_dependencies(oxrsys_runtime_sync_compile_commands
+        ${OXRSYS_RUNTIME_TEST_TARGETS}
+    )
+endif()
 
 option(OXRSYS_ENABLE_CTS "Fetch and wire an opt-in OpenXR CTS lane" OFF)
-
-set(OXRSYS_BUILD_QT_FRONTENDS "AUTO" CACHE STRING "Build Qt frontends: AUTO, ON, or OFF")
-set_property(CACHE OXRSYS_BUILD_QT_FRONTENDS PROPERTY STRINGS AUTO ON OFF)
-string(TOUPPER "${OXRSYS_BUILD_QT_FRONTENDS}" OXRSYS_BUILD_QT_FRONTENDS_NORMALIZED)
-if(NOT OXRSYS_BUILD_QT_FRONTENDS_NORMALIZED MATCHES "^(AUTO|ON|OFF)$")
-    message(FATAL_ERROR "OXRSYS_BUILD_QT_FRONTENDS must be AUTO, ON, or OFF")
-endif()
-
-# The Qt frontends decode with PyroWave's Vulkan C API, which Apple builds do not compile.
-if(APPLE AND OXRSYS_BUILD_QT_FRONTENDS_NORMALIZED STREQUAL "ON")
-    message(FATAL_ERROR "OXRSYS_BUILD_QT_FRONTENDS=ON is not supported on Apple platforms: "
-        "the Qt frontends decode PyroWave through its Vulkan C API, which is built only on "
-        "Windows and Linux. Use the SwiftUI Home and simulator apps under clients/Apple.")
-endif()
-
-set(OXRSYS_QT_FRONTENDS_ENABLED OFF)
-if(OXRSYS_BUILD_QT_FRONTENDS_NORMALIZED STREQUAL "ON")
-    set(OXRSYS_QT_FRONTENDS_ENABLED ON)
-elseif(OXRSYS_BUILD_QT_FRONTENDS_NORMALIZED STREQUAL "AUTO" AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32))
-    include(${CMAKE_CURRENT_SOURCE_DIR}/clients/Qt/cmake/DetectQt6.cmake)
-    find_package(Qt6 QUIET COMPONENTS Core Widgets Network)
-    if(Qt6_FOUND)
-        set(OXRSYS_QT_FRONTENDS_ENABLED ON)
-    else()
-        message(STATUS "Qt6 was not found; skipping Qt frontends in AUTO mode")
-    endif()
-endif()
-
-if(OXRSYS_QT_FRONTENDS_ENABLED)
-    include(${CMAKE_CURRENT_SOURCE_DIR}/clients/Qt/cmake/DetectQt6.cmake)
-    find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
-    set(OXRSYS_PROTOCOL_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/protocol/include")
-    add_subdirectory(clients/Qt)
-endif()
 
 if(APPLE)
     add_custom_target(oxrsys_runtime_set_default_runtime

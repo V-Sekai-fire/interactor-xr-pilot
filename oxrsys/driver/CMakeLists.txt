@@ -5,7 +5,7 @@
 
 set(OXRSYS_DRIVER_ROOT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys)
 find_package(Vulkan REQUIRED)
-set(OXRSYS_RUNTIME_SRC ${CMAKE_SOURCE_DIR}/runtime/src)
+set(OXRSYS_RUNTIME_SRC ${PROJECT_SOURCE_DIR}/runtime/src)
 
 add_library(driver_oxrsys SHARED
     src/Driver.cpp
@@ -25,7 +25,7 @@ add_library(driver_oxrsys SHARED
 target_include_directories(driver_oxrsys PRIVATE
     abi
     ${OXRSYS_RUNTIME_SRC}
-    ${CMAKE_SOURCE_DIR}/common/protocol/include
+    ${PROJECT_SOURCE_DIR}/common/protocol/include
     ${openxr_SOURCE_DIR}/include
     ${Vulkan_INCLUDE_DIRS}
 )

@@ -14,8 +14,8 @@
     <DisplayName>OXRSys</DisplayName>
     <PublisherDisplayName>V-Sekai</PublisherDisplayName>
     <Logo>assets\StoreLogo.png</Logo>
-    <Description>OpenXR runtime that streams OpenXR apps to headsets over PyroWave, with its Home app and desktop simulator.</Description>
-    <!-- Home copies the runtime to %LOCALAPPDATA%\OXRSys and keeps settings other apps read, so writes are not virtualized. -->
+    <Description>OpenXR runtime that streams OpenXR apps to headsets over PyroWave, with XR Pilot and its tray.</Description>
+    <!-- The tray copies the runtime to %LOCALAPPDATA%\OXRSys and keeps settings other apps read, so writes are not virtualized. -->
     <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
     <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
   </Properties>
@@ -34,8 +34,8 @@
   </Capabilities>
 
   <Applications>
-    <Application Id="Home" Executable="home\oxrsys-home.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="OXRSys Home" Description="Pick the OpenXR runtime, launch apps, and watch the stream"
+    <Application Id="XrPilot" Executable="bin\xr-pilot.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="XR Pilot" Description="Install OXRSys, pick the OpenXR runtime, and see and drive what an app shows"
         BackgroundColor="transparent" Square150x150Logo="assets\Square150x150Logo.png" Square44x44Logo="assets\Square44x44Logo.png" />
     </Application>
   </Applications>
