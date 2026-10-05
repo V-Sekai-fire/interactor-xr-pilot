@@ -702,6 +702,9 @@ public:
                 else
                     gInput->CreateBooleanComponent(c, inputs[i].path.c_str(), &handles_[i]);
             }
+            // The headset button toggles the dashboard from the right hand while controllers are held.
+            if (!left_)
+                gInput->CreateBooleanComponent(c, "/input/system/click", &systemClick_);
         }
         return VRInitError_None;
     }
@@ -750,6 +753,9 @@ public:
                 else
                     gInput->UpdateBooleanComponent(handles_[i], value != 0.0f, 0.0);
             }
+            if (systemClick_ != 0)
+                gInput->UpdateBooleanComponent(
+                    systemClick_, present && (packet.buttonState & oxr::protocol::BUTTON_HEADSET_SYSTEM) != 0, 0.0);
         }
     }
 
@@ -758,6 +764,7 @@ private:
     bool left_;
     const ControllerLayout& layout_;
     uint32_t id_ = kInvalidId;
+    VRInputComponentHandle_t systemClick_ = 0;
     DriverPose_t pose_ = {};
     std::vector<VRInputComponentHandle_t> handles_;
 };
@@ -897,7 +904,11 @@ private:
             gHost->TrackedDevicePoseUpdated(id_, pose, sizeof(pose));
             gHost->VsyncEvent(0.0);
             if (gInput != nullptr)
-                gInput->UpdateBooleanComponent(systemClick_, (packet.buttonState & oxr::protocol::BUTTON_HEADSET_SYSTEM) != 0, 0.0);
+                gInput->UpdateBooleanComponent(
+                    systemClick_,
+                    (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) == 0 &&
+                        (packet.buttonState & oxr::protocol::BUTTON_HEADSET_SYSTEM) != 0,
+                    0.0);
             for (Controller* hand : hands_)
                 if (hand != nullptr)
                     hand->Update(packet);
