@@ -11,16 +11,33 @@ to it as a headset would, so neither the runtime nor the app needs changing.
 | Tool | What it does |
 |---|---|
 | `screenshot` | The left eye as a PNG, with the head pose and field of view |
+| `record` | A short clip as a sequence of PyroWave-decoded left-eye frames, returned as images a vision model reads in order, each with its head pose |
 | `get_state` | Connection, eye size and field of view, head and hand poses, held inputs, frame counts |
+| `health` | Connection, the server streamed from, and the assembled, decoded and dropped frame counts with the dropped fraction |
 | `look` | Turns the head to exactly one of a 3x3 rotation matrix, Euler angles in a named Tait-Bryan order, or a quaternion; absolute or relative to the head |
+| `look_at` | Turns the head so a screenshot pixel is at the centre of the view |
+| `set_fov` | Sets the vertical field of view the pilot submits, in degrees |
 | `move` | Walks the head forward, right and up, in metres |
+| `move_to` | Places the head at an absolute world position, keeping its rotation |
 | `point_at` | Aims a controller through a screenshot pixel, from the eye, so its ray hits what the pixel shows |
+| `probe` | Reports the world ray a screenshot pixel points along, without moving a hand |
 | `click` | `point_at`, a 150 ms hover, then a trigger press and release |
+| `double_click` | `point_at`, then two trigger presses in quick succession |
+| `hover` | Aims through a pixel and holds there without pressing |
+| `drag` | Points at one pixel, presses the trigger, points at a second, releases |
+| `scroll` | Aims at a pixel, holds the trigger, pushes a thumbstick to scroll, releases |
 | `press` | A button, trigger or grip, held for `hold_ms` (0 holds until `release_all`) |
 | `thumbstick` | Pushes a thumbstick for `duration_ms` |
+| `reach` | The body's arm reaches for what a pixel shows, a depth from the eye |
+| `grab` | Reaches in, grips and lifts what a pixel shows |
+| `set_hand` | Places a hand at an absolute world pose |
+| `gesture` | Shapes a hand into `open`, `fist`, `point` or `pinch` |
 | `set_controllers` | Whether the app sees controllers |
 | `release_all` | Lets go of every input; the head stays where it is |
+| `locomote` | Smooth movement, snap turns or teleport, the ways the locomotion research names |
 | `wait` | Waits so the app can react |
+| `wait_for` | Waits until a `get_state` pointer reaches a value, or times out |
+| `plan` | Runs a taskweft task network over the other tools in one call |
 
 Every rotation the tools report, and every one the pilot's line protocol carries, is a row-major 3x3 matrix taking head- or hand-local vectors to world space; its columns are the local +X, +Y and +Z axes. Euler angles (`XYZ`, `XZY`, `YXZ`, `YZX`, `ZXY`, `ZYX`, intrinsic, degrees) and quaternions (`[x, y, z, w]`) are inputs to `look`, converted to the matrix and never reported back. A matrix that is not orthonormal with determinant +1 is refused.
 
@@ -63,4 +80,5 @@ Apache-2.0 OR MIT. `oxrsys/` is MPL-2.0 (`oxrsys/LICENSE`), forked from `demonix
 a file there states otherwise; the Windows build and packaging scripts and `packaging/msix` came
 from it and stay MPL-2.0. `core/src/FrameAssembler.cpp`, `core/src/GpuDecoder.cpp`, the tray and their
 headers are ported from OXRSys and stay under MPL-2.0, file by file. `third_party/panelspun` carries
-its own licences.
+its own licences. `third_party/witness-cpp` is the header-only property-testing ladder
+(MIT, `V-Sekai-fire/plausible-witness-dag`'s C++ shape), used only by the tests.

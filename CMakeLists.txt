@@ -50,7 +50,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
-                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-maskscore-rows traces.rectgtn-time traces.null-check-control body.reach-within-the-arm body.reach-past-the-arm-is-clamped rotation.euler-orders-match-axis-products
+                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-maskscore-rows traces.rectgtn-time traces.null-check-control body.reach-within-the-arm body.reach-past-the-arm-is-clamped body.feet-planted-in-the-world body.feet-unplanted-slide rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
@@ -80,6 +80,16 @@ endforeach()
 if(XRPILOT_BUILD_OXRSYS)
     add_subdirectory(oxrsys)
 endif()
+
+# Plausible-witness-dag property and falsification tests over the pure maths; witness-cpp is header-only.
+add_executable(xrpilot-witness-tests core/tests/test_witness.cpp)
+target_link_libraries(xrpilot-witness-tests PRIVATE xrpilot_core)
+target_include_directories(xrpilot-witness-tests PRIVATE third_party/witness-cpp/include)
+foreach(name IN ITEMS witness.unit-concrete-witnesses witness.euler-orthonormal witness.quaternion-orthonormal
+                      witness.euler-round-trip witness.quaternion-round-trip witness.multiply-closed
+                      witness.reach-lands witness.reach-clamped witnessdag.ablation-coverage)
+    add_test(NAME ${name} COMMAND xrpilot-witness-tests ${name})
+endforeach()
 
 if(NOT XRPILOT_BUILD_APP)
     return()

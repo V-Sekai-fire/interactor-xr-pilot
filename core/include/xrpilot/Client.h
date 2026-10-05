@@ -6,6 +6,7 @@
 #pragma once
 
 #include "xrpilot/Agent.h"
+#include "xrpilot/Body.h"
 #include "xrpilot/FrameAssembler.h"
 
 #include <atomic>
@@ -35,7 +36,14 @@ struct ClientStatus
     uint64_t framesAssembled = 0;
     uint64_t framesDropped = 0;
     uint64_t fecRecoveries = 0;
+    uint64_t motionFrames = 0; // MotionBricks frames from the motion host
+    uint64_t bodySent = 0;
 };
+
+// The motion host (meshing-pen's tools/motion_host.gd) on loopback, and the speed the game's smooth
+// locomotion carries the player at, which the simulated legs walk at.
+constexpr uint16_t MotionHostPort = 47830;
+constexpr float SmoothLocomotionSpeed = 1.5f;
 
 class Client final
 {
@@ -73,6 +81,8 @@ private:
     void discoveryLoop();
     void videoLoop();
     void trackingLoop();
+    void motionLoop();
+    void sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address);
     void connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& announce);
 
     std::function<void()> onFrame_;
@@ -80,9 +90,11 @@ private:
     std::thread discovery_;
     std::thread video_;
     std::thread tracking_;
+    std::thread motion_;
     intptr_t discoverySocket_ = -1;
     intptr_t videoSocket_ = -1;
     intptr_t sendSocket_ = -1;
+    intptr_t motionSocket_ = -1;
 
     std::mutex mutex_;
     AgentState agent_;
@@ -95,6 +107,12 @@ private:
     int64_t lastVideoNs_ = 0;
     int64_t lastKeyframeRequestNs_ = 0;
     VideoFrameAssembler assembler_;
+    // The newest MotionBricks frame, and the body composed from it on the tracking thread.
+    float g1_[g1::Joints * 3] = {};
+    int64_t g1AtNs_ = 0;
+    LegState legs_;
+    float locomotion_[3] = {0.0f, 0.0f, 0.0f};
+    uint32_t steerTick_ = 0;
 };
 
 int64_t monotonicNowNs();
