@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Builds the Android headset client's debug APK.
+# Builds the Android headset client's debug APK, attached to the release on a version tag.
 name: android
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -17,6 +18,8 @@ jobs:
   apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: oxrsys/clients/Android/android-vr
@@ -30,3 +33,10 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug
       - name: Headset run, unchecked
         run: echo "UNCHECKED 1 - the APK is built, not run; nothing here exercises it on a headset"
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk "oxrsys-android-$GITHUB_REF_NAME-debug.apk"
+          gh release upload "$GITHUB_REF_NAME" "oxrsys-android-$GITHUB_REF_NAME-debug.apk" --clobber
