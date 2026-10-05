@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MPL-2.0
 #
 # Builds the macOS runtime and runs its tests, builds and tests the Apple Swift packages,
-# and builds the Apple client apps unsigned. Platforms the runner cannot build are echoed
-# as UNCHECKED rather than dropped.
+# and builds the Apple client apps unsigned into a disk image, attached to the release on a
+# version tag. Platforms the runner cannot build are echoed as UNCHECKED rather than dropped.
 name: macos
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -73,6 +74,8 @@ jobs:
   apps:
     runs-on: macos-26
     timeout-minutes: 45
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: oxrsys
@@ -84,13 +87,13 @@ jobs:
         run: |
           xcodebuild -project "clients/Apple/oxrsys-home/OXRSys Home.xcodeproj" \
             -scheme "OXRSys Home" -configuration Debug \
-            -destination 'generic/platform=macOS' \
+            -destination 'generic/platform=macOS' -derivedDataPath build/xcode \
             CODE_SIGNING_ALLOWED=NO build
       - name: Simulator
         run: |
           xcodebuild -project "clients/Apple/oxrsys-simulator/OXRSys Simulator.xcodeproj" \
             -scheme "OXRSys Simulator" -configuration Debug \
-            -destination 'generic/platform=macOS' \
+            -destination 'generic/platform=macOS' -derivedDataPath build/xcode \
             CODE_SIGNING_ALLOWED=NO build
       - name: visionOS
         run: |
@@ -102,3 +105,18 @@ jobs:
           else
             echo "UNCHECKED 1 - the visionOS simulator SDK is not installed on this runner; OXRSys visionOS is not built"
           fi
+      - name: Disk image
+        run: |
+          mkdir -p build/dmg dist
+          cp -R build/xcode/Build/Products/Debug/*.app build/dmg/
+          ls build/dmg
+          hdiutil create -volname OXRSys -srcfolder build/dmg -format UDRO dist/oxrsys-macos-apps-unsigned.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxrsys-macos-apps
+          path: oxrsys/dist/*.dmg
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.dmg --clobber
