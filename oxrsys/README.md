@@ -4,7 +4,7 @@
 
 ## Project
 
-OXRSys Runtime is an unofficial OpenXR runtime that started on macOS and is being moved toward a measured cross-platform shape. The repository includes the shared runtime, Apple frontends, Qt frontends, and an Android VR streaming client for Quest/Pico-class headsets.
+OXRSys Runtime is an unofficial OpenXR runtime that started on macOS and is being moved toward a measured cross-platform shape. The repository includes the shared runtime, Apple frontends, and an Android VR streaming client for Quest/Pico-class headsets.
 
 OXRSys is independent software. It is not affiliated with, endorsed by, sponsored by, or approved by The Khronos Group, Meta, Apple, LunarG, or the owners of the platforms, SDKs, runtimes, and trademarks referenced by this project.
 
@@ -14,7 +14,7 @@ The Android VR client can be used over WiFi or USB. The USB path is the best way
 
 ### Home Apps
 
-OXRSys Home exists as a native Apple app and a Qt app. The Apple app owns the macOS direct-distribution workflow. The Qt app is Linux-first and also builds on Windows; on macOS the Apple app takes its place. The Windows and Linux desktop client is XR Pilot (`V-Sekai-fire/interactor-xr-pilot`), which replaced the Qt simulator.
+OXRSys Home is a native Apple app and owns the macOS direct-distribution workflow. On Windows and Linux, XR Pilot, in the repository root above this folder, is the desktop client and carries the OXRSys tray that replaced the Qt Home app and the Qt simulator.
 The macOS package helper builds the runtime and Home app into one local folder; the distribution helper signs that package and can submit the archive for notarization.
 
 ### Agents
@@ -41,7 +41,7 @@ This project uses AI-generated code and documentation. We appreciate professiona
 ## Dependencies
 
 - macOS 13 or later for Apple frontends and the Metal runtime path
-- Linux with Vulkan, libuuid, and Qt 6 for the Linux runtime and Qt frontends; PyroWave and the Granite subset it builds with are fetched with FetchContent and linked statically
+- Linux with Vulkan and libuuid for the Linux runtime; PyroWave and the Granite subset it builds with are fetched with FetchContent and linked statically
 - C++20
 - CMake with FetchContent
 - Ninja
@@ -71,7 +71,6 @@ This project uses AI-generated code and documentation. We appreciate professiona
 - [Simulator](docs/simulator.md)
 - [Quest](docs/platforms/quest.md)
 - [macOS Home](docs/platforms/macos-home.md)
-- [Qt Home](docs/platforms/qt-home.md)
 - [iOS Viewer](docs/platforms/ios-viewer.md)
 - [Vision OS](docs/platforms/visionos.md)
 - [Testing And Conformance](docs/testing-and-conformance.md)

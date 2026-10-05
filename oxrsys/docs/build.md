@@ -20,7 +20,6 @@ This document is the entry point for build workflows. Installation steps live in
   - [Simulator](simulator.md)
   - [Vision OS](platforms/visionos.md)
   - [macOS Home](platforms/macos-home.md)
-  - [Qt Home](platforms/qt-home.md)
 
 ## Build The Runtime
 
@@ -67,7 +66,7 @@ Key outputs in the selected build directory. With the default build these are un
 All third-party C++ dependencies are fetched through CMake `FetchContent`.
 Linux additionally requires system/toolchain packages for Vulkan headers, libuuid, and pkg-config. The Linux runtime encodes its stream with PyroWave, which FetchContent builds with its Granite subset as a static library; `scripts/linux_check_runtime_linkage.sh <liboxrsys-runtime.so> --self-test` checks that the runtime links no FFmpeg library. `scripts/linux_package_runtime.sh <liboxrsys-runtime.so> <out-dir>` packages it as `.deb` and `.rpm` with nFPM (`packaging/nfpm.yaml`) under `/opt/oxrsys`, without making it the active runtime; CI uploads both.
 
-Windows builds with MSVC through `scripts/windows_build.ps1`. Vulkan and Direct3D 11 apps render into shared D3D11 textures and the runtime streams them with PyroWave, linked statically.
+Windows builds with MSVC through XR Pilot's `scripts/windows_build.ps1`, which builds the runtime and driver from this folder. Vulkan and Direct3D 11 apps render into shared D3D11 textures and the runtime streams them with PyroWave, linked statically.
 
 The same build produces a head-mounted display driver for the PC VR runtime's driver interface at
 `build/windows/driver/oxrsys` (`driver.vrdrivermanifest`, `bin/win64/driver_oxrsys.dll`). Register it
@@ -236,20 +235,6 @@ See [visionos.md](platforms/visionos.md) for the current workflow and limits.
 For TestFlight, archive with `-destination 'generic/platform=visionOS'`. The visionOS target does
 not use macOS-only `LSApplicationCategoryType` or App Sandbox settings.
 
-### Qt Frontends
-
-The Qt apps live under `clients/Qt/`. They build automatically on Linux when Qt6 is found. On macOS or Windows, enable them explicitly:
-
-```bash
-cmake -B build-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOXRSYS_BUILD_QT_FRONTENDS=ON
-cmake --build build-qt
-ctest --test-dir build-qt --output-on-failure
-```
-
-The Qt target is `oxrsys-home`; it is not built on macOS, where the SwiftUI Home takes its place.
-The Windows and Linux desktop client that decodes the stream is XR Pilot (`V-Sekai-fire/interactor-xr-pilot`). See
-[qt-home.md](platforms/qt-home.md) for Linux registration/install behavior.
-
 ### Unity Editor And macOS Player Helpers
 
 If you want to force the runtime only inside a Unity project, add the Unity Package Manager package
@@ -281,7 +266,6 @@ selection through `XR_RUNTIME_JSON`, OXRSys Home, or `scripts/oxrsys_runtime_def
 - iOS `StereoView` workflow: [ios-viewer.md](platforms/ios-viewer.md)
 - visionOS viewer: [visionos.md](platforms/visionos.md)
 - macOS Home app: [macos-home.md](platforms/macos-home.md)
-- Qt Home app: [qt-home.md](platforms/qt-home.md)
 
 ## Troubleshooting
 

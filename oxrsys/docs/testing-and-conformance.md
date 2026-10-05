@@ -38,8 +38,6 @@ swiftc -parse-as-library \
   -o /tmp/oxrsys_home_launcher_tests && /tmp/oxrsys_home_launcher_tests
 ```
 
-The Qt Home core tests are part of the top-level CTest run when `OXRSYS_BUILD_QT_FRONTENDS` is enabled and Qt6 is available.
-
 ## CTS Lane
 
 Enable and run the optional OpenXR-CTS lane with:
@@ -67,7 +65,7 @@ As of March 17, 2026, the pinned non-interactive baseline is:
 Before considering a change ready:
 
 - run the macOS build and tests
-- run the Linux/Qt build on a Linux host when touching Linux runtime or Qt frontend code
+- run the Linux build on a Linux host when touching Linux runtime code
 - run the Home Swift test runner when changing the Home launcher, preferences, or server config helpers
 - run the Android build if Android code changed
 - run the CTS lane when runtime API, extension behavior, swapchain handling, action handling, or conformance-sensitive behavior changed

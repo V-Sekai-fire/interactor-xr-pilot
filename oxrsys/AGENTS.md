@@ -3,8 +3,8 @@
 OpenXR runtime that started on macOS and is now being moved toward a measured cross-platform
 runtime shape. The project currently combines the shared runtime, a unified macOS/iOS viewer with
 `Simulator` and `StereoView` modes, a first-pass visionOS viewer, a Quest/Pico-oriented Android VR
-client, and Linux-first Qt frontends.
-The repository also includes a native SwiftUI macOS Home app and a Qt Home app for compatible app
+client. On Windows and Linux the desktop client is XR Pilot, in the repository root above this folder.
+The repository also includes a native SwiftUI macOS Home app for compatible app
 launching, runtime selection, runtime configuration, and runtime registration workflows.
 
 **Current state:** Metal/core runtime, Vulkan interop, Linux Vulkan/PyroWave scaffolding,
@@ -48,8 +48,8 @@ clients can send `ClientConnect.maxBitrateMbps = 0` to use the server-configured
 adding a client-side cap.
 The Home app can enable a Developer tab from its Settings tab, open the macOS simulator in a
 same-process window backed by the shared `OXRSysSimulator` Swift package, and show live runtime
-streaming statistics from the existing telemetry path. The Qt Home Developer tab shows the runtime
-statistics; the Windows and Linux desktop client is XR Pilot (`V-Sekai-fire/interactor-xr-pilot`), which replaced the Qt simulator.
+streaming statistics from the existing telemetry path. The Windows and Linux desktop client is XR Pilot, whose tray replaced
+the Qt Home app and the Qt simulator.
 The macOS package helper builds the runtime dylib and Home app into one local folder with a complete
 `runtime/` directory; the distribution helper signs that package, creates a combined archive, and can
 submit that archive for notarization with Apple Developer account credentials.
@@ -63,7 +63,7 @@ As of March 17, 2026, the pinned non-interactive OpenXR-CTS baseline is fully gr
 
 - **Always build and verify before declaring success** — run the macOS build + tests and/or Android build as appropriate before saying everything works
 - **Always update `README.md`, `AGENTS.md`, and the relevant files in `docs/` when making significant project changes**
-- Keep SwiftUI Home and Qt Home companion behavior in sync when changing shared Home workflows; only diverge for frontend-specific changes or when the user explicitly asks for a feature to be limited to one frontend.
+- Keep the SwiftUI Home and the XR Pilot tray in sync when changing shared Home workflows; only diverge for frontend-specific changes or when the user explicitly asks for a feature to be limited to one frontend.
 - Core C++ dependencies, including PyroWave's C API and its Granite subset, which the Windows and Linux runtimes stream with, and PyroWave's Metal port the macOS runtime encodes with, are fetched via CMake FetchContent (the Apple simulator's `CPyroWave` target is a copy of the PyroWave decoder at the same commit, since Swift packages cannot fetch it); Qt, Vulkan SDKs, and platform SDKs are system/toolchain dependencies. Nothing links FFmpeg.
 - Product versions are centralized in `config/OXRSysVersion.xcconfig`; do not hardcode
   marketing versions or build numbers in CMake, Xcode, Gradle, or native client code.
@@ -121,7 +121,6 @@ Avoid duplicating the same guidance in multiple files. If commands, platform sta
   macOS `~/Library/Application Support/OXRSys/oxrsys-runtime.toml`,
   Linux `${XDG_CONFIG_HOME:-~/.config}/oxrsys/oxrsys-runtime.toml`,
   Windows `%APPDATA%/OXRSys/oxrsys-runtime.toml`.
-- Qt Home transport readiness and USB ADB reverse configuration run asynchronously on a worker; keep slow process calls off the UI thread and ignore stale worker results after path, serial, or transport changes.
 
 ## Project Layout
 
@@ -143,9 +142,6 @@ oxrsys_runtime/
 │   │   ├── oxrsys-home/
 │   │   ├── oxrsys-simulator/
 │   │   └── oxrsys-visionos/
-│   └── Qt/
-│       ├── apps/
-│       └── libs/
 ├── common/
 │   └── protocol/include/oxrsys/protocol/
 ├── scripts/
@@ -200,10 +196,6 @@ xcodebuild -project "clients/Apple/oxrsys-visionos/OXRSys visionOS.xcodeproj" \
   build
 
 cd clients/Android/android-vr && ./gradlew assembleDebug
-
-cmake -B build-qt -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOXRSYS_BUILD_QT_FRONTENDS=ON
-cmake --build build-qt
-ctest --test-dir build-qt --output-on-failure
 ```
 
 Optional CTS lane:

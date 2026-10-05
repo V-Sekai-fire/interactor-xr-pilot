@@ -10,7 +10,7 @@ OXRSys Runtime is a cross-platform OpenXR runtime in progress. macOS is the matu
 - `common/protocol/include/oxrsys/protocol/`: canonical C++ protocol and FEC wire layout.
 - `clients/Android/android-vr/`: Quest/Pico-oriented Android VR client for decode, display, and tracking return.
 - `clients/Apple/`: Xcode workspace, native SwiftUI Home app, unified Apple simulator/viewer, visionOS viewer, and shared Swift packages.
-- `clients/Qt/`: Qt Home app. The Windows and Linux desktop client is XR Pilot (`V-Sekai-fire/interactor-xr-pilot`).
+- The Windows and Linux desktop client is XR Pilot, in the repository root above this folder.
 - `tests/`: unit-style and loader-backed runtime tests.
 - `cmake/`: CMake helpers, including the OpenXR-CTS lane.
 - `docs/`: focused project documentation.
@@ -98,6 +98,6 @@ Runtime status and logs are written to the platform state directory. On Linux th
 
 For terminal-launched applications, use `XR_RUNTIME_JSON`. On macOS, `scripts/oxrsys_runtime_default.sh` can register `build/runtime/oxrsys-runtime.json` as the user default runtime and restore `XR_RUNTIME_JSON` through a LaunchAgent.
 
-The native Home app in `clients/Apple/oxrsys-home/` manages the macOS workflow. The Qt Home app in `clients/Qt/oxrsys-home/` owns Linux runtime registration and can manually launch apps with the user-selected `XR_RUNTIME_JSON` on other desktop platforms.
+The native Home app in `clients/Apple/oxrsys-home/` manages the macOS workflow. On Windows the XR Pilot tray installs and registers the runtime and the PC VR driver.
 
 The runtime reloads config changes opportunistically when the file timestamp changes. `runtime_enabled` is enforced on subsequent `xrCreateInstance` calls, dynamic streaming values update without a full process restart, while initialization-time resources such as the file logger sink still require a restart. Headset and simulator clients own their eye FOV and send it through tracking metadata; the runtime config only keeps an internal fallback for clients that omit it.

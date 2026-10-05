@@ -19,12 +19,8 @@ ADB authentication, and configure reverse mappings itself. External `adb` remain
 diagnostics, logcat, manual server startup, and fallback workflows. Install `adb-enhanced` or
 Android Platform Tools only when you need those command-line tools. If `adb` is installed outside
 the automatic search paths, both Home apps can store a custom ADB executable path from the Quest USB
-ADB panel. The SwiftUI Home and Qt Home preferences are intentionally separate; clear the custom
+ADB panel. Clear the custom
 path to return to automatic native/server/Homebrew/PATH detection.
-
-Qt frontends need Qt 6 Core, Widgets, and Network. On macOS, the build helper checks Homebrew,
-MacPorts, `QTDIR`, `Qt6_DIR`, and Qt Online Installer layouts under `~/Qt/<version>/<kit>`, such as
-`~/Qt/6.10.2/macos`.
 
 For the Swift/Xcode applications and Swift package Metal shaders, install the full Xcode app, not only the Command Line Tools. Finish first-launch setup after installing or updating Xcode:
 
@@ -36,13 +32,12 @@ xcodebuild -downloadComponent MetalToolchain
 
 If simulator builds report that `CoreSimulator` is older than the selected SDK, update Xcode and the simulator runtime components so their versions match.
 
-Linux runtime and Qt frontend builds need equivalent distro packages for:
+Linux runtime builds need equivalent distro packages for:
 
 - CMake, Ninja, and a C++20 compiler
 - Vulkan headers
 - libuuid development files
 - pkg-config
-- Qt 6 Core, Widgets, and Network
 - adb / Android Platform Tools for starting an ADB server, logcat, and USB fallback setup
 
 On Fedora:

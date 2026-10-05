@@ -10,8 +10,8 @@ The reusable SwiftUI simulator implementation lives in
 `clients/Apple/common/OXRSysSimulator/` and exposes `OXRSysSimulatorView`. The standalone Apple app in
 `clients/Apple/oxrsys-simulator/` is a thin wrapper around that shared view.
 
-On Windows and Linux the desktop client is XR Pilot (`V-Sekai-fire/interactor-xr-pilot`), which replaced the Qt
-simulator. It decodes the stream on the GPU, takes mouse and keyboard input, and carries an MCP
+On Windows and Linux the desktop client is XR Pilot, in the repository root above this folder, which
+replaced the Qt simulator. It decodes the stream on the GPU, takes mouse and keyboard input, and carries an MCP
 server so an agent can drive it; see its README for the controls and tools.
 
 The Apple viewer exposes two viewing modes:

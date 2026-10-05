@@ -6,6 +6,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Removed
 
+- Removed the Qt Home app and the rest of `clients/Qt/` with `OXRSYS_BUILD_QT_FRONTENDS`. OXRSys now lives in `oxrsys/` of XR Pilot (`V-Sekai-fire/interactor-xr-pilot`), whose tray installs the runtime and the PC VR driver and replaces Qt Home; the Windows MSIX ships XR Pilot in its place.
 - Removed `streaming.keyframe_interval_sec`, its slider in both Home apps, and `VideoEncoder::ForceKeyframe()`. PyroWave is intra-only, so every frame was already a keyframe and none of them changed the stream; a config file that still sets the key keeps loading.
 - Removed the Qt simulator (`clients/Qt/oxrsys-simulator` and `oxrsys-simulator-shared`), its Qt Home Developer tab button and tray entry, and its MSIX app. XR Pilot (`V-Sekai-fire/interactor-xr-pilot`) is the Windows and Linux desktop client; `kernels/simulator` stays, since XR Pilot builds against it.
 

@@ -26,8 +26,6 @@ install_manifest.txt
 !cmake/GenerateStrings.cmake
 !cmake/RunOpenXRCTS.cmake
 !cmake/SyncCompileCommands.cmake
-!clients/Qt/cmake/
-!clients/Qt/cmake/DetectQt6.cmake
 
 # --- IDE & Editors ---
 # VSCode
