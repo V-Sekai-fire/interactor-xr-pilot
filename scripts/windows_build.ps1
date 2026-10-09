@@ -11,7 +11,9 @@ param(
     [switch]$Register,
     [switch]$Unregister,
     # A CineForm SDK checkout also builds frames2cfhd and pyro2cfhd.
-    [string]$CineForm = ""
+    [string]$CineForm = "",
+    # Compile jobs; on a shared desk keep it below the core count so VR keeps its share.
+    [int]$Jobs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,7 +47,9 @@ try {
         "-DCMAKE_BUILD_TYPE=$BuildType" `
         -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl @extra
     if ($LASTEXITCODE -ne 0) { throw "configure failed" }
-    pixi run cmake --build $build
+    $parallel = @()
+    if ($Jobs -gt 0) { $parallel = @('--parallel', "$Jobs") }
+    pixi run cmake --build $build @parallel
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
     if ($Test) {
         pixi run ctest --test-dir $build --output-on-failure
