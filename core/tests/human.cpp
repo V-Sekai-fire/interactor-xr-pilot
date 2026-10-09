@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 using namespace xrpilot;
 using namespace oxr::protocol;
@@ -38,7 +39,56 @@ TrackingPacket packetOf(const AgentState& s)
     return p;
 }
 
+// Head z after each packet of one second at senderHz, W held, with the window at 60 Hz. onSender walks
+// on the sender; otherwise the window walks and the sender sends the latest pose, as before.
+std::vector<float> walkTrace(int senderHz, bool onSender)
+{
+    AgentState s;
+    s.keys = {key::W};
+    std::vector<float> z;
+    const int64_t window = 1'000'000'000 / 60, sender = 1'000'000'000 / senderHz;
+    int64_t nextWindow = 0;
+    for (int64_t t = 0; t < 1'000'000'000; t += sender)
+    {
+        while (nextWindow <= t)
+        {
+            advanceHuman(s, 0.0f, 0.0f, onSender ? 0.0f : float(window) * 1e-9f);
+            nextWindow += window;
+        }
+        if (onSender)
+            advanceHuman(s, 0.0f, 0.0f, float(sender) * 1e-9f);
+        z.push_back(s.head.position[2]);
+    }
+    return z;
+}
+
+int repeats(const std::vector<float>& z)
+{
+    int n = 0;
+    for (size_t i = 1; i < z.size(); ++i)
+        n += z[i] == z[i - 1];
+    return n;
+}
+
 const std::map<std::string, std::function<void()>> cases = {
+    {"human.tracking-period-follows-refresh",
+     [] {
+         check(trackingPeriodNs(144) == 6'944'444, "144 Hz is 6.94 ms");
+         check(trackingPeriodNs(0) == 11'111'111, "no announced rate is 90 Hz");
+         check(trackingPeriodNs(30) == 16'666'666 && trackingPeriodNs(240) == 6'944'444, "the rate stays within 60 to 144 Hz");
+     }},
+    {"human.walk-on-sender-never-repeats",
+     [] {
+         for (int hz : {60, 72, 90, 120, 144})
+         {
+             const std::vector<float> z = walkTrace(hz, true);
+             check(repeats(z) == 0, "walking on the sender gives every packet a new pose");
+             check(std::fabs(z.back() + 2.0f) < 0.05f, "and covers 2 m in a second at any rate");
+         }
+         // Control: walking in a 60 Hz window repeats poses on a faster sender, so the gate can fail.
+         check(repeats(walkTrace(90, false)) >= 25, "control: a 60 Hz window repeats a third of 90 Hz packets");
+         check(repeats(walkTrace(144, false)) >= 75, "control: and over half of 144 Hz packets");
+     }},
     {"human.wheel-sets-walk-speed",
      [] {
          AgentState s;

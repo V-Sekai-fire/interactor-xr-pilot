@@ -28,6 +28,9 @@ constexpr int TriggerMouse = -1004;
 // Shift moves a hand, and the trigger, H or M raise the pointing hand.
 void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTime);
 
+// The tracking period for the refresh rate the runtime announced: 60 to 144 Hz, 90 when it names none.
+int64_t trackingPeriodNs(uint32_t refreshHz);
+
 // Walking speed bounds, and the factor one wheel notch scales it by.
 constexpr float MinMoveSpeed = 0.25f, MaxMoveSpeed = 8.0f, WheelSpeedStep = 1.25f;
 // How far one wheel notch pushes a Shift-held hand along the look direction, and its reach.

@@ -233,15 +233,13 @@ private:
 
     void applyHumanInput()
     {
-        const int64_t now = nowNs();
-        const float dt = lastTickNs_ == 0 ? 0.0f : std::clamp(float(now - lastTickNs_) / 1e9f, 0.0f, 0.05f);
-        lastTickNs_ = now;
         const std::set<int> keys = keys_;
         const float dx = mouseDx_, dy = mouseDy_, wheel = wheel_;
         mouseDx_ = mouseDy_ = wheel_ = 0.0f;
         client_.updateAgent([&](AgentState& s) {
             s.keys = keys;
-            advanceHuman(s, dx, dy, dt);
+            // Mouse look lands now; held keys walk on the client's tracking thread.
+            advanceHuman(s, dx, dy, 0.0f);
             applyWheel(s, wheel);
         });
         pressedThisTick_.clear();
@@ -313,7 +311,6 @@ private:
     float wheel_ = 0.0f;
     bool dragging_ = false;
     float dragDistance_ = 0.0f;
-    int64_t lastTickNs_ = 0;
     uint64_t lastDropped_ = 0;
     int consecutiveErrors_ = 0;
 };

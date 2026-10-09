@@ -163,6 +163,12 @@ void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTi
     head.position[2] += moveZ * step;
 }
 
+int64_t trackingPeriodNs(uint32_t refreshHz)
+{
+    const uint32_t hz = std::clamp<uint32_t>(refreshHz == 0 ? 90u : refreshHz, 60u, 144u);
+    return int64_t(1'000'000'000) / int64_t(hz);
+}
+
 void applyWheel(AgentState& state, float notches)
 {
     if (notches == 0.0f || !std::isfinite(notches))
