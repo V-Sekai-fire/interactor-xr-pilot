@@ -17,7 +17,9 @@
 #include "xrpilot/SpanLog.h"
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
+#include "xrpilot/HeadGizmo.h"
 #include "xrpilot/Sparkline.h"
+#include "xrpilot/StreamRecord.h"
 #include "xrpilot/Tray.h"
 
 #include <algorithm>
@@ -55,6 +57,7 @@ struct Shared
     SpanLog spans;
     TraceStore traces; // every span, kept in SQLite
     std::string snapshotPath; // --snapshot: the 90th decoded frame
+    StreamRecordWriter stream; // --record-stream: every frame as it arrived, before decode
 };
 
 int64_t nowNs()
@@ -177,6 +180,8 @@ public:
         lastDropped_ = status.framesDropped;
         if (std::optional<AssembledVideoFrame> next = client_.takeFrame())
         {
+            if (shared_.stream.isOpen())
+                shared_.stream.write({next->presentationTimeNs, next->receiveTimeNs, next->frameIndex, next->nalUnit});
             const int64_t start = nowNs();
             if (decoder_.decode(next->nalUnit.data(), next->nalUnit.size()))
             {
@@ -233,24 +238,14 @@ private:
 
     void applyHumanInput()
     {
-        const int64_t now = nowNs();
-        const float dt = lastTickNs_ == 0 ? 0.0f : std::clamp(float(now - lastTickNs_) / 1e9f, 0.0f, 0.05f);
-        lastTickNs_ = now;
         const std::set<int> keys = keys_;
         const float dx = mouseDx_, dy = mouseDy_, wheel = wheel_;
         mouseDx_ = mouseDy_ = wheel_ = 0.0f;
         client_.updateAgent([&](AgentState& s) {
             s.keys = keys;
-            advanceHuman(s, dx, dy, dt);
-            if (wheel != 0.0f)
-            {
-                // A wheel notch walks a quarter metre along where the head faces.
-                float yawDegrees, pitchDegrees, rollDegrees;
-                toYawPitchRoll(s.head.rotation, yawDegrees, pitchDegrees, rollDegrees);
-                const float yaw = yawDegrees * 0.017453292f;
-                s.head.position[0] += -std::sin(yaw) * 0.25f * wheel;
-                s.head.position[2] += -std::cos(yaw) * 0.25f * wheel;
-            }
+            // Mouse look lands now; held keys walk on the client's tracking thread.
+            advanceHuman(s, dx, dy, 0.0f);
+            applyWheel(s, wheel);
         });
         pressedThisTick_.clear();
         for (int code : releaseNextTick_)
@@ -321,7 +316,6 @@ private:
     float wheel_ = 0.0f;
     bool dragging_ = false;
     float dragDistance_ = 0.0f;
-    int64_t lastTickNs_ = 0;
     uint64_t lastDropped_ = 0;
     int consecutiveErrors_ = 0;
 };
@@ -363,6 +357,44 @@ private:
     std::string label_;
     bool fault_;
     Sparkline line_;
+};
+
+// Where the head looks, as a sphere seen from above right: amber is the yaw from forward along the
+// horizon, cyan the pitch up or down from it, green the look ray; the white ticks are the poles.
+class HeadGizmoWidget final : public Widget
+{
+public:
+    void set(const Rotation& head) { gizmo_ = buildHeadGizmo(head); }
+    float height(float scale) const override { return 120.0f * scale; }
+
+    void draw(DrawContext& ctx, float x, float y, float) override
+    {
+        const float size = height(ctx.scale);
+        for (const HeadGizmo::Segment& s : gizmo_.segments(size))
+        {
+            Color c{65, 78, 94, 255};
+            float width = 1.0f;
+            switch (s.role)
+            {
+            case HeadGizmo::Role::Outline: c = {65, 78, 94, 255}; break;
+            case HeadGizmo::Role::Back: c = {52, 60, 72, 255}; break;
+            case HeadGizmo::Role::Horizon: c = {110, 124, 140, 255}; break;
+            case HeadGizmo::Role::Pole: c = {230, 233, 238, 255}; width = 2.0f; break;
+            case HeadGizmo::Role::Yaw: c = {242, 204, 96, 255}; width = 2.5f; break;
+            case HeadGizmo::Role::Pitch: c = {96, 200, 242, 255}; width = 2.5f; break;
+            case HeadGizmo::Role::Look: c = {126, 231, 135, 255}; width = 2.0f; break;
+            }
+            const float xy[4] = {x + s.x0, y + s.y0, x + s.x1, y + s.y1};
+            drawPolyline(ctx, xy, 2, c, width * ctx.scale);
+        }
+        Label text("yaw " + std::to_string(int(std::lround(gizmo_.yawDegrees))) + "  pitch " +
+                       std::to_string(int(std::lround(gizmo_.pitchDegrees))),
+                   11.0f);
+        text.draw(ctx, x + size + 8.0f * ctx.scale, y + (size - text.height(ctx.scale)) * 0.5f, 140.0f * ctx.scale);
+    }
+
+private:
+    HeadGizmo gizmo_ = buildHeadGizmo(Rotation{});
 };
 
 // The agent's tool calls as a trace: one row per span with its status, name and duration, newest at
@@ -570,9 +602,11 @@ public:
             client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
         }));
         pose_ = add(std::make_unique<Label>(""));
+        gizmo_ = add(std::make_unique<HeadGizmoWidget>());
         capture_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
-                                 "WASD walk, E/R roll, Shift moves a hand, wheel steps",
+                                 "WASD walk, wheel sets its speed, E/R roll",
+                                 "Shift moves a hand, Shift+wheel its reach",
                                  "T/H/click triggers, F/G grips, 1-4 XYAB, M menu, P lowers"})
             add(std::make_unique<Label>(help, 11.0f));
     }
@@ -610,9 +644,10 @@ public:
         seated_->setValue(a.seated);
         float yaw, pitch, roll;
         toYawPitchRoll(a.head.rotation, yaw, pitch, roll);
-        pose_->setText("Head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
+        pose_->setText("Walk " + fixed(a.moveSpeed, 2) + " m/s  head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
+        gizmo_->set(a.head.rotation);
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
         WidgetPanel::draw(ctx);
     }
@@ -628,6 +663,7 @@ private:
     Toggle* pointing_ = nullptr;
     Toggle* seated_ = nullptr;
     Label* pose_ = nullptr;
+    HeadGizmoWidget* gizmo_ = nullptr;
     Label* capture_ = nullptr;
     Tray* tray_ = nullptr;
     int64_t lastTrayNs_ = 0;
@@ -761,6 +797,14 @@ int main(int argc, char** argv)
     {
         if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
             shared.snapshotPath = argv[++i];
+        else if (!std::strcmp(argv[i], "--record-stream") && i + 1 < argc)
+        {
+            if (!shared.stream.open(argv[++i]))
+            {
+                std::fprintf(stderr, "xr-pilot: cannot write %s\n", argv[i]);
+                return 2;
+            }
+        }
         else if (!std::strcmp(argv[i], "--no-autoconnect"))
             autoConnect = false;
         else if (!std::strcmp(argv[i], "--agent"))
@@ -772,7 +816,7 @@ int main(int argc, char** argv)
         else
         {
             std::fprintf(stderr,
-                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--no-autoconnect] [--traces db.sqlite]\n"
+                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
                          "With none of --window, --agent or --snapshot it runs as the OXRSys tray alone.\n");
             return 2;
         }
@@ -829,6 +873,10 @@ int main(int argc, char** argv)
         }
     }
     shared.traces.close();
+    if (!shared.stream.close())
+        std::fprintf(stderr, "xr-pilot: the stream recording did not close cleanly\n");
+    else if (shared.stream.frames() > 0)
+        std::fprintf(stderr, "xr-pilot: recorded %llu streamed frames\n", (unsigned long long)shared.stream.frames());
     SDL_Quit();
     std::fflush(stdout);
     std::_Exit(rc);

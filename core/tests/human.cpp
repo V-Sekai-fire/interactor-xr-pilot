@@ -4,6 +4,7 @@
 // one case per ctest entry.
 
 #include "xrpilot/Commands.h"
+#include "xrpilot/HeadGizmo.h"
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/Sparkline.h"
 
@@ -13,6 +14,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 using namespace xrpilot;
 using namespace oxr::protocol;
@@ -38,7 +40,142 @@ TrackingPacket packetOf(const AgentState& s)
     return p;
 }
 
+// Head z after each packet of one second at senderHz, W held, with the window at 60 Hz. onSender walks
+// on the sender; otherwise the window walks and the sender sends the latest pose, as before.
+std::vector<float> walkTrace(int senderHz, bool onSender)
+{
+    AgentState s;
+    s.keys = {key::W};
+    std::vector<float> z;
+    const int64_t window = 1'000'000'000 / 60, sender = 1'000'000'000 / senderHz;
+    int64_t nextWindow = 0;
+    for (int64_t t = 0; t < 1'000'000'000; t += sender)
+    {
+        while (nextWindow <= t)
+        {
+            advanceHuman(s, 0.0f, 0.0f, onSender ? 0.0f : float(window) * 1e-9f);
+            nextWindow += window;
+        }
+        if (onSender)
+            advanceHuman(s, 0.0f, 0.0f, float(sender) * 1e-9f);
+        z.push_back(s.head.position[2]);
+    }
+    return z;
+}
+
+int repeats(const std::vector<float>& z)
+{
+    int n = 0;
+    for (size_t i = 1; i < z.size(); ++i)
+        n += z[i] == z[i - 1];
+    return n;
+}
+
+const HeadGizmo::Arc& arcOf(const HeadGizmo& g, HeadGizmo::Role role)
+{
+    for (const HeadGizmo::Arc& a : g.arcs)
+        if (a.role == role)
+            return a;
+    static const HeadGizmo::Arc none{role, {}};
+    return none;
+}
+
+bool near(const HeadGizmo::Point& a, float x, float y, float z) { return std::fabs(a.x - x) + std::fabs(a.y - y) + std::fabs(a.z - z) < 1e-3f; }
+
 const std::map<std::string, std::function<void()>> cases = {
+    {"human.gizmo-straight-up-and-down",
+     [] {
+         for (float yaw : {0.0f, 70.0f, -135.0f})
+         {
+             const HeadGizmo up = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, 90.0f, 0.0f));
+             check(near(arcOf(up, HeadGizmo::Role::Pitch).points.back(), 0, 1, 0), "looking straight up ends the pitch arc at the top pole");
+             check(near(arcOf(up, HeadGizmo::Role::Look).points.back(), 0, 1, 0), "and the look ray points at it");
+             check(std::fabs(up.yawDegrees - yaw) < 0.5f, "the heading survives at the pole");
+             const HeadGizmo down = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, -90.0f, 0.0f));
+             check(near(arcOf(down, HeadGizmo::Role::Pitch).points.back(), 0, -1, 0), "looking straight down ends it at the bottom pole");
+         }
+         // Control: a level head's pitch arc stays on the horizon, nowhere near a pole.
+         const HeadGizmo level = buildHeadGizmo(Rotation{});
+         check(!near(arcOf(level, HeadGizmo::Role::Pitch).points.back(), 0, 1, 0), "control: a level head is not at the top pole");
+         check(arcOf(level, HeadGizmo::Role::Pitch).points.back().y == 0.0f, "control: its pitch arc lies on the horizon");
+     }},
+    {"human.gizmo-arcs-measure-the-angles",
+     [] {
+         for (float yaw : {0.0f, 30.0f, -90.0f, 170.0f})
+             for (float pitch : {-60.0f, -12.0f, 0.0f, 45.0f, 80.0f})
+             {
+                 const HeadGizmo g = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, pitch, 0.0f));
+                 const HeadGizmo::Arc& y = arcOf(g, HeadGizmo::Role::Yaw);
+                 const HeadGizmo::Arc& p = arcOf(g, HeadGizmo::Role::Pitch);
+                 check(std::fabs(angleBetween(y.points.front(), y.points.back()) - std::fabs(yaw)) < 0.5f, "the yaw arc spans the yaw");
+                 check(std::fabs(angleBetween(p.points.front(), p.points.back()) - std::fabs(pitch)) < 0.5f, "the pitch arc spans the pitch");
+                 check((p.points.back().y > 0.0f) == (pitch > 0.0f) || pitch == 0.0f, "up is drawn up and down is drawn down");
+                 check(near(p.points.back(), g.look.x, g.look.y, g.look.z), "the pitch arc ends at the look direction");
+             }
+         const HeadGizmo rolled = buildHeadGizmo(fromEuler(EulerOrder::YXZ, 20.0f, 10.0f, 40.0f));
+         check(std::fabs(rolled.yawDegrees - 20.0f) < 0.5f && std::fabs(rolled.pitchDegrees - 10.0f) < 0.5f, "roll moves neither arc");
+         for (const HeadGizmo::Segment& s : rolled.segments(100.0f))
+             check(s.x0 >= 0 && s.x0 <= 100 && s.y0 >= 0 && s.y0 <= 100, "every segment stays inside its box");
+     }},
+    {"human.tracking-period-follows-refresh",
+     [] {
+         check(trackingPeriodNs(144) == 6'944'444, "144 Hz is 6.94 ms");
+         check(trackingPeriodNs(0) == 11'111'111, "no announced rate is 90 Hz");
+         check(trackingPeriodNs(30) == 16'666'666 && trackingPeriodNs(240) == 6'944'444, "the rate stays within 60 to 144 Hz");
+     }},
+    {"human.walk-on-sender-never-repeats",
+     [] {
+         for (int hz : {60, 72, 90, 120, 144})
+         {
+             const std::vector<float> z = walkTrace(hz, true);
+             check(repeats(z) == 0, "walking on the sender gives every packet a new pose");
+             check(std::fabs(z.back() + 2.0f) < 0.05f, "and covers 2 m in a second at any rate");
+         }
+         // Control: walking in a 60 Hz window repeats poses on a faster sender, so the gate can fail.
+         check(repeats(walkTrace(90, false)) >= 25, "control: a 60 Hz window repeats a third of 90 Hz packets");
+         check(repeats(walkTrace(144, false)) >= 75, "control: and over half of 144 Hz packets");
+     }},
+    {"human.wheel-sets-walk-speed",
+     [] {
+         AgentState s;
+         const float before[3] = {s.head.position[0], s.head.position[1], s.head.position[2]};
+         applyWheel(s, 1.0f);
+         check(std::fabs(s.moveSpeed - 2.5f) < 1e-5f, "one notch up scales the speed by 1.25");
+         check(s.head.position[0] == before[0] && s.head.position[1] == before[1] && s.head.position[2] == before[2],
+               "the wheel never moves the head");
+         applyWheel(s, -2.0f);
+         check(std::fabs(s.moveSpeed - 1.6f) < 1e-5f, "two notches down scale it by 1/1.5625");
+         applyWheel(s, 100.0f);
+         check(s.moveSpeed == MaxMoveSpeed, "the speed stops at its maximum");
+         applyWheel(s, -100.0f);
+         check(s.moveSpeed == MinMoveSpeed, "the speed stops at its minimum");
+
+         AgentState slow, fast;
+         slow.keys = fast.keys = {key::W};
+         applyWheel(fast, 4.0f);
+         advanceHuman(slow, 0.0f, 0.0f, 1.0f);
+         advanceHuman(fast, 0.0f, 0.0f, 1.0f);
+         check(std::fabs(fast.head.position[2] / slow.head.position[2] - std::pow(WheelSpeedStep, 4.0f)) < 1e-3f,
+               "walking covers distance in proportion to the set speed");
+     }},
+    {"human.shift-wheel-sets-hand-reach",
+     [] {
+         AgentState s;
+         s.keys = {key::RightShift};
+         const float left = s.handOffset[0][2];
+         applyWheel(s, 2.0f);
+         check(std::fabs(s.handOffset[1][2] - (-0.05f - 2.0f * WheelReachStep)) < 1e-5f, "Shift and the wheel push the right hand out");
+         check(s.handOffset[0][2] == left, "the other hand stays");
+         check(s.moveSpeed == 2.0f, "with Shift held the wheel leaves the speed alone");
+         applyWheel(s, 100.0f);
+         check(s.handOffset[1][2] == MinHandReach, "the reach stops at arm's length");
+         applyWheel(s, -100.0f);
+         check(s.handOffset[1][2] == MaxHandReach, "and at the body");
+         AgentState both;
+         both.keys = {key::LeftShift, key::RightShift};
+         applyWheel(both, 1.0f);
+         check(both.moveSpeed != 2.0f && both.handOffset[0][2] == -0.05f, "both Shifts held is no hand, so the speed changes");
+     }},
     {"human.walk-moves-head-shift-moves-hand",
      [] {
          AgentState walked;

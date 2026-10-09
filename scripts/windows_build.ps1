@@ -9,7 +9,11 @@ param(
     [switch]$Test,
     [switch]$Install,
     [switch]$Register,
-    [switch]$Unregister
+    [switch]$Unregister,
+    # A CineForm SDK checkout also builds frames2cfhd and pyro2cfhd.
+    [string]$CineForm = "",
+    # Compile jobs; on a shared desk keep it below the core count so VR keeps its share.
+    [int]$Jobs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,11 +36,20 @@ $ErrorActionPreference = 'Continue'
 $build = Join-Path $root 'build\windows'
 Push-Location $root
 try {
+    # FetchContent runs git for its submodules; a package manager's shim (scoop's git.exe) can fail
+    # its version probe under pixi, so a real git.exe is named outright.
+    $git = Get-Command git -All -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch '\\shims\\' } | Select-Object -First 1
+    $extra = @()
+    if ($git) { $extra += "-DGIT_EXECUTABLE=$($git.Source)" }
+    if ($CineForm) { $extra += "-DXRPILOT_CINEFORM_DIR=$CineForm" }
     pixi run cmake -S . -B $build -G Ninja `
         "-DCMAKE_BUILD_TYPE=$BuildType" `
-        -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+        -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl @extra
     if ($LASTEXITCODE -ne 0) { throw "configure failed" }
-    pixi run cmake --build $build
+    $parallel = @()
+    if ($Jobs -gt 0) { $parallel = @('--parallel', "$Jobs") }
+    pixi run cmake --build $build @parallel
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
     if ($Test) {
         pixi run ctest --test-dir $build --output-on-failure

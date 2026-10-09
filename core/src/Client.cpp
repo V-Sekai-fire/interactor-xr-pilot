@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #include "xrpilot/Client.h"
+#include "xrpilot/HumanInput.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -32,7 +33,6 @@ namespace xrpilot
 namespace
 {
 
-constexpr int64_t TrackingPeriodNs = 11'111'111; // 90 Hz
 constexpr int64_t VideoSilenceReconnectNs = 3'000'000'000;
 
 #if defined(_WIN32)
@@ -299,16 +299,22 @@ void Client::videoLoop()
 void Client::trackingLoop()
 {
     int64_t next = monotonicNowNs();
+    int64_t last = next;
     while (running_)
     {
-        next += TrackingPeriodNs;
+        int64_t period = 0;
         oxr::protocol::TrackingPacket packet;
         uint32_t address = 0;
         bool connected = false;
         AgentState agent;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            fillTrackingPacket(agent_, monotonicNowNs(), packet);
+            period = trackingPeriodNs(status_.refreshHz);
+            // Held keys walk here, at the rate the runtime renders, so every packet carries a new pose.
+            const int64_t now = monotonicNowNs();
+            advanceHuman(agent_, 0.0f, 0.0f, std::clamp(float(now - last) * 1e-9f, 0.0f, 0.05f));
+            last = now;
+            fillTrackingPacket(agent_, now, packet);
             agent = agent_;
             address = serverAddress_;
             connected = status_.connected;
@@ -318,8 +324,9 @@ void Client::trackingLoop()
         if (connected)
         {
             sendTo(sendSocket_, address, oxr::protocol::TRACKING_PORT, &packet, sizeof(packet));
-            sendBody(agent, packet, address);
+            sendBody(agent, packet, address, period);
         }
+        next += period;
         const int64_t wait = next - monotonicNowNs();
         if (wait > 0)
             std::this_thread::sleep_for(std::chrono::nanoseconds(wait));
@@ -330,7 +337,8 @@ void Client::trackingLoop()
 
 // The left stick walks the legs: it steers MotionBricks a third of the ticks, and the game world slides
 // past at the smooth locomotion speed, which carries the planted feet with it.
-void Client::sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address)
+void Client::sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address,
+                      int64_t periodNs)
 {
     const float sx = packet.leftThumbstick[0];
     const float sy = packet.leftThumbstick[1];
@@ -343,7 +351,7 @@ void Client::sendBody(const AgentState& agent, const oxr::protocol::TrackingPack
     const float local[3] = {sx, 0.0f, -sy};
     float walk[3];
     apply(turn, local, walk);
-    const float dt = float(TrackingPeriodNs) * 1e-9f;
+    const float dt = float(periodNs) * 1e-9f;
     SimBody body;
     bool fresh = false;
     float scale = 1.0f;

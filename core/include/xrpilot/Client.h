@@ -82,7 +82,7 @@ private:
     void videoLoop();
     void trackingLoop();
     void motionLoop();
-    void sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address);
+    void sendBody(const AgentState& agent, const oxr::protocol::TrackingPacket& packet, uint32_t address, int64_t periodNs);
     void connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& announce);
 
     std::function<void()> onFrame_;
