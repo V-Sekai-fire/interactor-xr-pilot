@@ -2,11 +2,12 @@
 xr_pilot_mcp: the MCP server an agent registers. It starts xr-pilot, the OXRSys client, and drives
 it over that process's stdin and stdout.
 
-  xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>]
+  xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>] [--record-stream <out.pwrec>]
 
 Without --pilot it runs the xr-pilot next to itself. Without --http it speaks MCP over its stdin and
 stdout; with it, MCP's streamable HTTP transport at http://127.0.0.1:<port>/mcp. With --frames, every
-left-eye frame a tool takes is also kept in <dir> as <sequence>_<monotonic ms>.png.
+left-eye frame a tool takes is also kept in <dir> as <sequence>_<monotonic ms>.png. With --record-stream,
+the pilot keeps every streamed frame as it arrived; a restarted pilot writes <out>.1.pwrec, and so on.
 
 SPDX-License-Identifier: Apache-2.0 OR MIT
 -/
@@ -17,6 +18,7 @@ structure McpOptions where
   pilot : Option String := none
   http : Option UInt16 := none
   frames : Option String := none
+  recordStream : Option String := none
 
 def parseOptions : List String → McpOptions → IO McpOptions
   | [], o => return o
@@ -27,7 +29,8 @@ def parseOptions : List String → McpOptions → IO McpOptions
                 else throw (IO.userError s!"--http needs a port, got {port}")
     | none => throw (IO.userError s!"--http needs a port, got {port}")
   | "--frames" :: dir :: rest, o => parseOptions rest { o with frames := some dir }
-  | _, _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>]")
+  | "--record-stream" :: out :: rest, o => parseOptions rest { o with recordStream := some out }
+  | _, _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>] [--record-stream <out.pwrec>]")
 
 def pilotPath (options : McpOptions) : IO String := do
   match options.pilot with
@@ -39,8 +42,16 @@ def pilotPath (options : McpOptions) : IO String := do
 
 abbrev PilotConfig : IO.Process.StdioConfig := { stdin := .piped, stdout := .piped, stderr := .inherit }
 
-def spawnPilot (path : String) : IO (IO.Process.Child PilotConfig) :=
-  IO.Process.spawn { cmd := path, args := #["--agent"], toStdioConfig := PilotConfig }
+/-- The recording the n-th pilot writes: the path itself first, then <stem>.<n>.pwrec, so a restart never
+overwrites what came before. -/
+def recordingName (out : String) (n : Nat) : String :=
+  if n == 0 then out else
+  let stem := if out.endsWith ".pwrec" then (out.dropEnd 6).toString else out
+  s!"{stem}.{n}.pwrec"
+
+def spawnPilot (path : String) (record : Option String := none) : IO (IO.Process.Child PilotConfig) :=
+  let extra := match record with | some out => #["--record-stream", out] | none => #[]
+  IO.Process.spawn { cmd := path, args := #["--agent"] ++ extra, toStdioConfig := PilotConfig }
 
 def ask (pilot : IO.Process.Child PilotConfig) (cmd : String) : IO (Option String) := do
   try
@@ -58,7 +69,11 @@ def keptFrameName (sequence ms : Nat) : String :=
 def main (args : List String) : IO UInt32 := do
   let options ← parseOptions args {}
   let path ← pilotPath options
-  let pilotRef ← IO.mkRef (← spawnPilot path)
+  let spawns ← IO.mkRef (0 : Nat)
+  let spawn : IO (IO.Process.Child PilotConfig) := do
+    let n ← spawns.modifyGet fun n => (n, n + 1)
+    spawnPilot path (options.recordStream.map (recordingName · n))
+  let pilotRef ← IO.mkRef (← spawn)
   let temp := (← IO.getEnv "TEMP").getD ((← IO.getEnv "TMPDIR").getD "/tmp")
   if let some dir := options.frames then IO.FS.createDirAll dir
   let kept ← IO.mkRef (0 : Nat)
@@ -74,7 +89,7 @@ def main (args : List String) : IO UInt32 := do
       let reply ← match ← ask (← pilotRef.get) cmd with
         | some line => pure (some line)
         | none => do
-          pilotRef.set (← spawnPilot path)
+          pilotRef.set (← spawn)
           ask (← pilotRef.get) cmd
       match reply with
       | none => return Json.mkObj [("ok", false), ("error", "the pilot exited and did not restart")]

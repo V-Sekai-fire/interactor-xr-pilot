@@ -26,6 +26,7 @@ add_library(xrpilot_core STATIC
     core/src/Png.cpp
     core/src/Rotation.cpp
     core/src/SpanLog.cpp
+    core/src/StreamRecord.cpp
     core/src/TraceStore.cpp
     third_party/sqlite/sqlite3.c
     core/src/Sparkline.cpp
@@ -66,6 +67,13 @@ foreach(name IN ITEMS install.complete-source-installs install.files-identical-t
                       install.changed-source-is-recopied install.missing-driver-writes-nothing
                       install.missing-runtime-refused install.stale-manifest-is-not-an-install)
     add_test(NAME ${name} COMMAND xrpilot-install-tests ${name})
+endforeach()
+
+add_executable(xrpilot-record-tests core/tests/record.cpp)
+target_link_libraries(xrpilot-record-tests PRIVATE xrpilot_core)
+target_compile_definitions(xrpilot-record-tests PRIVATE RECORD_TEST_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+foreach(name IN ITEMS record.round-trip record.damage-is-named)
+    add_test(NAME ${name} COMMAND xrpilot-record-tests ${name})
 endforeach()
 
 add_executable(xrpilot-human-tests core/tests/human.cpp)
@@ -118,6 +126,27 @@ target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
 add_executable(trace_roundtrip tools/trace_roundtrip.cpp)
 target_link_libraries(trace_roundtrip PRIVATE xrpilot_gpu xrpilot_core)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
+
+# A CineForm SDK checkout (interactor-av1mkv's thirdparty/cineform-sdk) adds the recording tools:
+# frames2cfhd from kept PNG frames, pyro2cfhd from a --record-stream recording.
+set(XRPILOT_CINEFORM_DIR "" CACHE PATH "CineForm SDK checkout for frames2cfhd and pyro2cfhd")
+if(XRPILOT_CINEFORM_DIR)
+    set(CMAKE_DISABLE_FIND_PACKAGE_OpenMP ON)
+    set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(BUILD_LIBS ON CACHE BOOL "" FORCE)
+    set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(BUILD_SEPARATED OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${XRPILOT_CINEFORM_DIR} cineform-sdk EXCLUDE_FROM_ALL)
+    if(NOT MSVC)
+        target_compile_options(CFHDCodecStatic PRIVATE -w)
+    endif()
+    add_executable(frames2cfhd tools/frames2cfhd.cpp)
+    target_include_directories(frames2cfhd PRIVATE ${XRPILOT_CINEFORM_DIR}/Common)
+    target_link_libraries(frames2cfhd PRIVATE CFHDCodecStatic)
+    add_executable(pyro2cfhd tools/pyro2cfhd.cpp)
+    target_include_directories(pyro2cfhd PRIVATE ${XRPILOT_CINEFORM_DIR}/Common)
+    target_link_libraries(pyro2cfhd PRIVATE CFHDCodecStatic xrpilot_gpu xrpilot_core)
+endif()
 
 # The OXRSys tray, MPL-2.0 like the Home tray it is ported from.
 add_library(xrpilot_tray STATIC tray/src/Tray.cpp)

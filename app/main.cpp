@@ -19,6 +19,7 @@
 #include "xrpilot/Png.h"
 #include "xrpilot/HeadGizmo.h"
 #include "xrpilot/Sparkline.h"
+#include "xrpilot/StreamRecord.h"
 #include "xrpilot/Tray.h"
 
 #include <algorithm>
@@ -56,6 +57,7 @@ struct Shared
     SpanLog spans;
     TraceStore traces; // every span, kept in SQLite
     std::string snapshotPath; // --snapshot: the 90th decoded frame
+    StreamRecordWriter stream; // --record-stream: every frame as it arrived, before decode
 };
 
 int64_t nowNs()
@@ -178,6 +180,8 @@ public:
         lastDropped_ = status.framesDropped;
         if (std::optional<AssembledVideoFrame> next = client_.takeFrame())
         {
+            if (shared_.stream.isOpen())
+                shared_.stream.write({next->presentationTimeNs, next->receiveTimeNs, next->frameIndex, next->nalUnit});
             const int64_t start = nowNs();
             if (decoder_.decode(next->nalUnit.data(), next->nalUnit.size()))
             {
@@ -793,6 +797,14 @@ int main(int argc, char** argv)
     {
         if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
             shared.snapshotPath = argv[++i];
+        else if (!std::strcmp(argv[i], "--record-stream") && i + 1 < argc)
+        {
+            if (!shared.stream.open(argv[++i]))
+            {
+                std::fprintf(stderr, "xr-pilot: cannot write %s\n", argv[i]);
+                return 2;
+            }
+        }
         else if (!std::strcmp(argv[i], "--no-autoconnect"))
             autoConnect = false;
         else if (!std::strcmp(argv[i], "--agent"))
@@ -804,7 +816,7 @@ int main(int argc, char** argv)
         else
         {
             std::fprintf(stderr,
-                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--no-autoconnect] [--traces db.sqlite]\n"
+                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
                          "With none of --window, --agent or --snapshot it runs as the OXRSys tray alone.\n");
             return 2;
         }
@@ -861,6 +873,10 @@ int main(int argc, char** argv)
         }
     }
     shared.traces.close();
+    if (!shared.stream.close())
+        std::fprintf(stderr, "xr-pilot: the stream recording did not close cleanly\n");
+    else if (shared.stream.frames() > 0)
+        std::fprintf(stderr, "xr-pilot: recorded %llu streamed frames\n", (unsigned long long)shared.stream.frames());
     SDL_Quit();
     std::fflush(stdout);
     std::_Exit(rc);
