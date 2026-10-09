@@ -43,6 +43,7 @@ extern "C" {
 #else
 #define PTLS_LIKELY(x) (x)
 #define PTLS_UNLIKELY(x) (x)
+#define PTLS_BUILD_ASSERT_EXPR(cond) 1
 #define PTLS_BUILD_ASSERT(cond) 1
 #endif
 
@@ -1421,7 +1422,8 @@ typedef struct st_ptls_log_getsni_t {
     }                                                                                                                              \
     static inline ptls_log_getsni_t ptls_log_getsni_##suffix(type arg)                                                             \
     {                                                                                                                              \
-        return (ptls_log_getsni_t){ptls_log_getsni_cb_##suffix, arg};                                                              \
+        ptls_log_getsni_t ret = {ptls_log_getsni_cb_##suffix, (void *)arg};                                                        \
+        return ret;                                                                                                                \
     }
 
 #if PTLS_HAVE_LOG
@@ -1448,7 +1450,8 @@ typedef struct st_ptls_log_getsni_t {
         PTLS_LOG_DEFINE_POINT(module, name, logpoint);                                                                             \
         if (PTLS_LIKELY(ptls_log_point_maybe_active(&logpoint) == 0))                                                              \
             break;                                                                                                                 \
-        PTLS_LOG__DO_LOG(module, name, NULL, (ptls_log_getsni_t){NULL}, 1, {block});                                               \
+        ptls_log_getsni_t empty_getsni = {NULL, NULL};                                                                             \
+        PTLS_LOG__DO_LOG(module, name, NULL, empty_getsni, 1, {block});                                                            \
     } while (0)
 
 #define PTLS_LOG_CONN(name, tls, block)                                                                                            \
@@ -2040,7 +2043,8 @@ inline void ptls_buffer_init(ptls_buffer_t *buf, void *smallbuf, size_t smallbuf
 inline void ptls_buffer_dispose(ptls_buffer_t *buf)
 {
     ptls_buffer__release_memory(buf);
-    *buf = (ptls_buffer_t){NULL, 0, 0, 0, 0};
+    ptls_buffer_t empty_buf = {NULL, 0, 0, 0, 0};
+    *buf = empty_buf;
 }
 
 inline uint8_t *ptls_encode_quicint(uint8_t *p, uint64_t v)
@@ -2211,7 +2215,8 @@ inline void ptls_hash_clone_memcpy(void *dst, const void *src, size_t size)
         struct name##_context_t *ctx;                                                                                              \
         if ((ctx = malloc(sizeof(*ctx))) == NULL)                                                                                  \
             return NULL;                                                                                                           \
-        ctx->super = (ptls_hash_context_t){name##_update, name##_final, name##_clone};                                             \
+        ptls_hash_context_t super_tmp = {name##_update, name##_final, name##_clone};                                               \
+        ctx->super = super_tmp;                                                                                                    \
         init_func(&ctx->ctx);                                                                                                      \
         return &ctx->super;                                                                                                        \
     }

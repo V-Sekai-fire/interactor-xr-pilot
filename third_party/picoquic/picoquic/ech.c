@@ -28,9 +28,9 @@
 #endif
 #include <picotls.h>
 #ifdef _WINDOWS
-#include <picotls\pembase64.h>
-#include <picotls\minicrypto.h>
-#include <picotls\asn1.h>
+#include <picotls/pembase64.h>
+#include <picotls/minicrypto.h>
+#include <picotls/asn1.h>
 #else
 #include <picotls/pembase64.h>
 #include <picotls/minicrypto.h>

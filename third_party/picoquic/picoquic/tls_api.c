@@ -98,6 +98,7 @@ ptls_key_exchange_algorithm_t* picoquic_key_exchange_secp256r1[2] = { 0 };
 ptls_hpke_cipher_suite_t* picoquic_hpke_cipher_suites[PICOQUIC_HPKE_CIPHER_SUITE_NB_MAX + 1] = { 0 };
 ptls_hpke_kem_t* picoquic_hpke_kems[PICOQUIC_HPKE_KEM_NB_MAX + 1] = { 0 };
 picoquic_set_private_key_from_file_t picoquic_set_private_key_from_file_fn = NULL;
+picoquic_set_private_key_from_buffer_t picoquic_set_private_key_from_buffer_fn = NULL;
 picoquic_dispose_sign_certificate_t picoquic_dispose_sign_certificate_fn = NULL;
 picoquic_get_certs_from_file_t picoquic_get_certs_from_file_fn = NULL;
 picoquic_get_public_key_from_private_t picoquic_get_public_key_from_private_fn = NULL;
@@ -186,6 +187,7 @@ static void picoquic_tls_api_zero(void)
     memset((void*)picoquic_key_exchange_secp256r1, 0, sizeof(picoquic_key_exchange_secp256r1));
 
     picoquic_set_private_key_from_file_fn = NULL;
+    picoquic_set_private_key_from_buffer_fn = NULL;
     picoquic_dispose_sign_certificate_fn = NULL;
     picoquic_get_certs_from_file_fn = NULL;
     picoquic_get_public_key_from_private_fn = NULL;
@@ -333,6 +335,11 @@ void picoquic_register_tls_key_provider_fn(
     if (get_public_key_from_private_fn != NULL) {
         picoquic_get_public_key_from_private_fn = get_public_key_from_private_fn;
     }
+}
+
+void picoquic_register_private_key_from_buffer_fn(picoquic_set_private_key_from_buffer_t set_key_fn)
+{
+    picoquic_set_private_key_from_buffer_fn = set_key_fn;
 }
 
 void picoquic_register_verify_certificate_fn(picoquic_get_certificate_verifier_t certificate_verifier_fn,
@@ -610,6 +617,17 @@ static int set_private_key_from_file(char const* keypem, ptls_context_t* ctx)
 int picoquic_set_private_key_from_file(picoquic_quic_t* quic, char const* file_name)
 {
     return set_private_key_from_file(file_name, quic->tls_master_ctx);
+}
+
+int picoquic_set_tls_key(picoquic_quic_t* quic, const uint8_t* data, size_t len)
+{
+    if (picoquic_set_private_key_from_buffer_fn == NULL) {
+        return -1;
+    }
+    if (quic == NULL || quic->tls_master_ctx == NULL) {
+        return -1;
+    }
+    return picoquic_set_private_key_from_buffer_fn(quic->tls_master_ctx, data, len);
 }
 
 /* Clear certificate objects allocated by the crypto stack for a certificate

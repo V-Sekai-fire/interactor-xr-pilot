@@ -37,7 +37,7 @@ extern "C" {
     void picoquic_register_hpke_cipher_suite(ptls_hpke_cipher_suite_t* hpke_cipher_suite);
     void picoquic_register_hpke_kem(ptls_hpke_kem_t* hpke_kem);
 
-    typedef int (*picoquic_set_tls_key_provider_t)(ptls_context_t* ctx, const uint8_t* data, size_t len);
+    typedef int (*picoquic_set_private_key_from_buffer_t)(ptls_context_t* ctx, const uint8_t* data, size_t len);
     typedef uint8_t* (*picoquic_get_private_key_from_file_t)(char const* file_name, int* key_length);
     typedef int (*picoquic_set_private_key_from_file_t)(char const* keypem, ptls_context_t* ctx);
     typedef int (*picoquic_get_public_key_from_private_t)(char const* keypem, uint8_t ** pubkey, size_t * pubkey_len);
@@ -59,6 +59,8 @@ extern "C" {
         picoquic_dispose_sign_certificate_t dispose_sign_certificate_fn,
         picoquic_get_certs_from_file_t get_certs_from_file_fn,
         picoquic_get_public_key_from_private_t get_public_key_from_private_fn);
+
+    void picoquic_register_private_key_from_buffer_fn(picoquic_set_private_key_from_buffer_t set_key_fn);
 
     void picoquic_register_verify_certificate_fn(picoquic_get_certificate_verifier_t certificate_verifier_fn,
         picoquic_dispose_certificate_verifier_t dispose_certificate_verifier_fn,

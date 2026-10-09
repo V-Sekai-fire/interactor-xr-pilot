@@ -25,11 +25,11 @@
 #ifdef _WINDOWS
 /* clang-format off */
 #define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#include <Ws2def.h>
-#include <WinSock2.h>
+#include <windows.h>
+#include <ws2def.h>
+#include <winsock2.h>
 #include <ws2ipdef.h>
-#include <Mswsock.h>
+#include <mswsock.h>
 #include <assert.h>
 #include <iphlpapi.h>
 #include <stdint.h>
@@ -54,6 +54,10 @@
 #endif
 #ifndef socklen_t
 #define socklen_t int
+#endif
+#ifndef cmsghdr
+/* llvm-mingw does not alias cmsghdr → WSACMSGHDR the way MSVC SDK does */
+typedef WSACMSGHDR cmsghdr;
 #endif
 /* clang-format on */
 #else /* Linux, FreeBSD */

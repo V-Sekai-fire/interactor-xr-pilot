@@ -35,8 +35,8 @@
 
 #ifdef _WINDOWS
 #define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
-#include <Windows.h>
+#include <winsock2.h>
+#include <windows.h>
 #include <assert.h>
 #include <iphlpapi.h>
 #include <stdint.h>
@@ -121,6 +121,24 @@
 #include "picoquic_internal.h"
 #include "picoquic_packet_loop.h"
 #include "picoquic_unified_log.h"
+
+/* Atomic helpers for the thread_should_close shutdown flag. The flag is
+ * written by the deleter thread and read by the packet-loop thread; without
+ * acquire/release semantics, ThreadSanitizer flags every access as a race.
+ * GCC/Clang __atomic builtins emit the right barriers and are visible to
+ * TSAN; MSVC falls back to plain volatile access (which it documents as
+ * sequentially consistent for aligned ints). */
+#if defined(__GNUC__) || defined(__clang__)
+static inline int picoquic_atomic_load_int(volatile int* p) {
+    return __atomic_load_n(p, __ATOMIC_ACQUIRE);
+}
+static inline void picoquic_atomic_store_int(volatile int* p, int v) {
+    __atomic_store_n(p, v, __ATOMIC_RELEASE);
+}
+#else
+static inline int picoquic_atomic_load_int(volatile int* p) { return *p; }
+static inline void picoquic_atomic_store_int(volatile int* p, int v) { *p = v; }
+#endif
 
 #if defined(_WINDOWS)
 #ifdef UDP_SEND_MSG_SIZE
@@ -1231,7 +1249,7 @@ void* picoquic_packet_loop_v3(void* v_ctx)
     /* Wait for packets */
     /* TODO: add stopping condition, was && (!just_once || !connection_done) */
     /* Actually, no, rely on the callback return code for that? */
-    while (ret == 0 && !thread_ctx->thread_should_close) {
+    while (ret == 0 && !picoquic_atomic_load_int(&thread_ctx->thread_should_close)) {
         int socket_rank = -1;
         int64_t delta_t = 0;
         uint8_t received_ecn;
@@ -1309,7 +1327,7 @@ void* picoquic_packet_loop_v3(void* v_ctx)
 
         if (bytes_recv < 0) {
             /* The interrupt error is expected if the loop is closing. */
-            ret = (thread_ctx->thread_should_close) ? PICOQUIC_NO_ERROR_TERMINATE_PACKET_LOOP : -1;
+            ret = picoquic_atomic_load_int(&thread_ctx->thread_should_close) ? PICOQUIC_NO_ERROR_TERMINATE_PACKET_LOOP : -1;
         }
         else if (bytes_recv == 0 && is_wake_up_event) {
             ret = loop_callback(quic, picoquic_packet_loop_wake_up, loop_callback_ctx, NULL);
@@ -1840,16 +1858,20 @@ int picoquic_wake_up_network_thread(picoquic_network_thread_ctx_t* thread_ctx)
 void picoquic_delete_network_thread(picoquic_network_thread_ctx_t* thread_ctx)
 {
     /* set the should_close flag, so the thread knows the loop should stop */
-    thread_ctx->thread_should_close = 1;
-    /* Delete the wake up event. This ought to create a fault 
-     * in the wait for event call, causing the thread to wake up,
-     * notice the flag, and exit.
-     */
-    picoquic_close_network_wake_up(thread_ctx);
+    picoquic_atomic_store_int(&thread_ctx->thread_should_close, 1);
+    /* Wake the loop via its existing wake-up channel so it observes the
+     * flag and returns. Closing the pipe/event from under the still-running
+     * loop races with its poll/select on the same FD (TSAN flags it). */
+    if (thread_ctx->wake_up_defined) {
+        picoquic_wake_up_network_thread(thread_ctx);
+    }
     /* delete the thread */
     if (thread_ctx->is_threaded) {
         thread_ctx->thread_delete_fn((void**)&thread_ctx->pthread);
     }
+    /* Now that the loop thread has exited, the wake-up FDs are nobody's
+     * concern — close them. */
+    picoquic_close_network_wake_up(thread_ctx);
     /* Free the context */
     free(thread_ctx);
 }

@@ -571,6 +571,45 @@ int ptls_mbedtls_set_available_schemes(ptls_mbedtls_sign_certificate_t *signer)
 * a convenience API.
 */
 
+/* PSA ECDSA returns raw r||s; TLS CertificateVerify requires DER SEQUENCE { INTEGER r, INTEGER s }.
+ * Converts raw[0..raw_len) → der[0..*der_len) in-place via temp buffer.
+ * Returns 0 on success, -1 if der_cap too small (max = 2 + 2*(2+1+n), n=raw_len/2). */
+static int ecdsa_raw_to_der(const uint8_t *raw, size_t raw_len,
+                            uint8_t *der, size_t der_cap, size_t *der_len)
+{
+    size_t n = raw_len / 2;
+    const uint8_t *r = raw, *s = raw + n;
+
+    size_t ri = 0, si = 0;
+    while (ri < n - 1 && r[ri] == 0) ri++;
+    while (si < n - 1 && s[si] == 0) si++;
+
+    size_t rl = n - ri, sl = n - si;
+    size_t rp = (r[ri] >> 7) & 1;
+    size_t sp = (s[si] >> 7) & 1;
+    size_t r_enc = rl + rp, s_enc = sl + sp;
+    size_t seq_len = 2 + r_enc + 2 + s_enc;
+    size_t total = 2 + seq_len;
+
+    if (total > der_cap)
+        return -1;
+
+    uint8_t *p = der;
+    *p++ = 0x30;
+    *p++ = (uint8_t)seq_len;
+    *p++ = 0x02;
+    *p++ = (uint8_t)r_enc;
+    if (rp) *p++ = 0x00;
+    memcpy(p, r + ri, rl); p += rl;
+    *p++ = 0x02;
+    *p++ = (uint8_t)s_enc;
+    if (sp) *p++ = 0x00;
+    memcpy(p, s + si, sl); p += sl;
+
+    *der_len = total;
+    return 0;
+}
+
 int ptls_mbedtls_sign_certificate(ptls_sign_certificate_t *_self, ptls_t *tls, ptls_async_job_t **async,
     uint16_t *selected_algorithm, ptls_buffer_t *outbuf, ptls_iovec_t input,
     const uint16_t *algorithms, size_t num_algorithms)
@@ -616,11 +655,26 @@ int ptls_mbedtls_sign_certificate(ptls_sign_certificate_t *_self, ptls_t *tls, p
             } else if (sign_algo != PSA_ALG_RSA_PKCS1V15_SIGN_RAW) {
                 nb_bytes *= 2;
             }
-            if ((ret = ptls_buffer_reserve(outbuf, nb_bytes)) == 0) {
+            /* For ECDSA, PSA returns raw r||s but TLS needs DER SEQUENCE{r,s};
+             * reserve extra headroom: max DER overhead = 6 bytes + 2 sign-extension = 8. */
+            int is_ecdsa = PSA_ALG_IS_ECDSA(sign_algo);
+            size_t reserve_bytes = nb_bytes + (is_ecdsa ? 8 : 0);
+            if ((ret = ptls_buffer_reserve(outbuf, reserve_bytes)) == 0) {
                 size_t signature_length = 0;
-                if (psa_sign_hash(self->key_id, sign_algo, hash_value, hash_length, outbuf->base + outbuf->off, nb_bytes,
+                uint8_t *sig_out = outbuf->base + outbuf->off;
+                if (psa_sign_hash(self->key_id, sign_algo, hash_value, hash_length, sig_out, nb_bytes,
                     &signature_length) != 0) {
                     ret = PTLS_ERROR_INCOMPATIBLE_KEY;
+                } else if (is_ecdsa) {
+                    /* convert PSA raw r||s → DER in-place using temp buffer */
+                    uint8_t der_buf[150]; /* enough for secp521r1 max ~139 bytes */
+                    size_t der_len = 0;
+                    if (ecdsa_raw_to_der(sig_out, signature_length, der_buf, sizeof(der_buf), &der_len) != 0) {
+                        ret = PTLS_ERROR_INCOMPATIBLE_KEY;
+                    } else {
+                        memcpy(sig_out, der_buf, der_len);
+                        outbuf->off += der_len;
+                    }
                 } else {
                     outbuf->off += signature_length;
                 }
@@ -887,6 +941,78 @@ int ptls_mbedtls_load_private_key(char const *pem_fname, ptls_context_t *ctx)
         ctx->sign_certificate = &signer->super;
     } else {
         /* Dispose of what we have allocated. */
+        ptls_mbedtls_dispose_sign_certificate(&signer->super);
+    }
+    return ret;
+}
+
+/* Load a private key from a PEM or DER buffer (no file I/O).
+ * Mirrors ptls_mbedtls_load_private_key but takes (data, len) instead of a file path.
+ */
+int ptls_mbedtls_load_private_key_from_buffer(ptls_context_t *ctx, const uint8_t *data, size_t len)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    mbedtls_pem_context pem = {0};
+    mbedtls_pk_type_t pk_type = 0;
+    size_t key_length = 0;
+    size_t key_index = 0;
+    ptls_mbedtls_sign_certificate_t *signer = (ptls_mbedtls_sign_certificate_t *)malloc(sizeof(ptls_mbedtls_sign_certificate_t));
+
+    if (signer == NULL) {
+        return (PTLS_ERROR_NO_MEMORY);
+    }
+    memset(signer, 0, sizeof(ptls_mbedtls_sign_certificate_t));
+    signer->attributes = psa_key_attributes_init();
+
+    ret = ptls_mbedtls_get_der_key(&pem, &pk_type, (unsigned char *)data, len, NULL, 0, NULL, NULL);
+
+    if (ret == 0) {
+        if (pk_type == MBEDTLS_PK_RSA) {
+            key_length = pem.private_buflen;
+            ptls_mbedtls_set_rsa_key_attributes(signer, pem.private_buf, key_length);
+        } else if (pk_type == MBEDTLS_PK_ECKEY) {
+            ret = ptls_mbedtls_parse_ecdsa_field(pem.private_buf, pem.private_buflen, &key_index, &key_length);
+            if (ret == 0) {
+                ret = ptls_mbedtls_set_ec_key_attributes(signer, key_length);
+            }
+        } else if (pk_type == MBEDTLS_PK_NONE) {
+            size_t oid_index = 0;
+            size_t oid_length = 0;
+
+            psa_set_key_usage_flags(&signer->attributes, PSA_KEY_USAGE_SIGN_HASH);
+            ret = ptls_parse_private_key_field(pem.private_buf, pem.private_buflen, &oid_index, &oid_length, &key_index, &key_length);
+            if (ret == 0) {
+                if (oid_length == sizeof(ptls_mbedtls_oid_ec_key) &&
+                    memcmp(pem.private_buf + oid_index, ptls_mbedtls_oid_ec_key, sizeof(ptls_mbedtls_oid_ec_key)) == 0) {
+                    ret = ptls_mbedtls_parse_ec_private_key(pem.private_buf, pem.private_buflen, &key_index, &key_length);
+                    if (ret == 0) {
+                        ret = ptls_mbedtls_set_ec_key_attributes(signer, key_length);
+                    }
+                } else if (oid_length == sizeof(ptls_mbedtls_oid_rsa_key) &&
+                    memcmp(pem.private_buf + oid_index, ptls_mbedtls_oid_rsa_key, sizeof(ptls_mbedtls_oid_rsa_key)) == 0) {
+                    ptls_mbedtls_set_rsa_key_attributes(signer, pem.private_buf + key_index, key_length);
+                } else {
+                    ret = PTLS_ERROR_NOT_AVAILABLE;
+                }
+            }
+        } else {
+            ret = -1;
+        }
+
+        if (ret == 0) {
+            psa_status_t status = psa_import_key(&signer->attributes, pem.private_buf + key_index, key_length, &signer->key_id);
+            if (status != PSA_SUCCESS) {
+                ret = -1;
+            } else {
+                ret = ptls_mbedtls_set_available_schemes(signer);
+            }
+        }
+        mbedtls_pem_free(&pem);
+    }
+    if (ret == 0) {
+        signer->super.cb = ptls_mbedtls_sign_certificate;
+        ctx->sign_certificate = &signer->super;
+    } else {
         ptls_mbedtls_dispose_sign_certificate(&signer->super);
     }
     return ret;
@@ -1327,8 +1453,8 @@ ptls_verify_certificate_t* ptls_mbedtls_get_certificate_verifier(char const* pem
             verifier = ptls_mbedssl_init_verify_certificate_complete(chain_head, NULL, NULL, NULL);
         }
         else {
-
             mbedtls_x509_crt_free(chain_head);
+            free(chain_head);
         }
     }
     return (verifier==NULL)?NULL:&verifier->super;
@@ -1341,10 +1467,12 @@ void ptls_mbedtls_dispose_verify_certificate(ptls_verify_certificate_t* v)
     if (verifier != NULL) {
         if (verifier->trust_ca != NULL) {
             mbedtls_x509_crt_free(verifier->trust_ca);
+            free(verifier->trust_ca);
             verifier->trust_ca = NULL;
         }
         if (verifier->trust_crl != NULL) {
             mbedtls_x509_crl_free(verifier->trust_crl);
+            free(verifier->trust_crl);
         }
         memset(verifier, 0, sizeof(ptls_mbedtls_verify_certificate_t));
         free(verifier);

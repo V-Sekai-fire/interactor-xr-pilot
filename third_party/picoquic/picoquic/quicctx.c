@@ -1146,7 +1146,8 @@ void picoquic_free(picoquic_quic_t* quic)
             picohash_delete(quic->table_cnx_by_secret, 0);
         }
 
-        if (quic->verify_certificate_callback != NULL) {
+        if (quic->verify_certificate_callback != NULL ||
+            quic->free_verify_certificate_callback_fn != NULL) {
             picoquic_dispose_verify_certificate_callback(quic);
         }
 

@@ -24,9 +24,9 @@
 /* Simple set of utilities */
 #ifdef _WINDOWS
 #define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-#include <WinSock2.h>
-#include <Ws2def.h>
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2def.h>
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1164,11 +1164,11 @@ void picoquic_delete_thread(picoquic_thread_t * thread)
     *thread = NULL;
 #else
     if (pthread_join(*thread, NULL) != 0) {
-# ifdef ANDROID
+#if defined(ANDROID) || defined(__ANDROID__)
         pthread_kill(*thread, SIGTERM);
-# else
+#else
         (void)pthread_cancel(*thread);
-# endif
+#endif
     }
 #endif
 }

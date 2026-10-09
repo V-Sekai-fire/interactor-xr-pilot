@@ -48,8 +48,8 @@ int picoquic_packet_loop_win(picoquic_quic_t* quic,
 }
 #else
 #define WIN32_LEAN_AND_MEAN
-#include <WinSock2.h>
-#include <Windows.h>
+#include <winsock2.h>
+#include <windows.h>
 #include <assert.h>
 #include <iphlpapi.h>
 #include <stdint.h>
