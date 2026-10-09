@@ -17,6 +17,7 @@
 #include "xrpilot/SpanLog.h"
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
+#include "xrpilot/HeadGizmo.h"
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/Tray.h"
 
@@ -354,6 +355,44 @@ private:
     Sparkline line_;
 };
 
+// Where the head looks, as a sphere seen from above right: amber is the yaw from forward along the
+// horizon, cyan the pitch up or down from it, green the look ray; the white ticks are the poles.
+class HeadGizmoWidget final : public Widget
+{
+public:
+    void set(const Rotation& head) { gizmo_ = buildHeadGizmo(head); }
+    float height(float scale) const override { return 120.0f * scale; }
+
+    void draw(DrawContext& ctx, float x, float y, float) override
+    {
+        const float size = height(ctx.scale);
+        for (const HeadGizmo::Segment& s : gizmo_.segments(size))
+        {
+            Color c{65, 78, 94, 255};
+            float width = 1.0f;
+            switch (s.role)
+            {
+            case HeadGizmo::Role::Outline: c = {65, 78, 94, 255}; break;
+            case HeadGizmo::Role::Back: c = {52, 60, 72, 255}; break;
+            case HeadGizmo::Role::Horizon: c = {110, 124, 140, 255}; break;
+            case HeadGizmo::Role::Pole: c = {230, 233, 238, 255}; width = 2.0f; break;
+            case HeadGizmo::Role::Yaw: c = {242, 204, 96, 255}; width = 2.5f; break;
+            case HeadGizmo::Role::Pitch: c = {96, 200, 242, 255}; width = 2.5f; break;
+            case HeadGizmo::Role::Look: c = {126, 231, 135, 255}; width = 2.0f; break;
+            }
+            const float xy[4] = {x + s.x0, y + s.y0, x + s.x1, y + s.y1};
+            drawPolyline(ctx, xy, 2, c, width * ctx.scale);
+        }
+        Label text("yaw " + std::to_string(int(std::lround(gizmo_.yawDegrees))) + "  pitch " +
+                       std::to_string(int(std::lround(gizmo_.pitchDegrees))),
+                   11.0f);
+        text.draw(ctx, x + size + 8.0f * ctx.scale, y + (size - text.height(ctx.scale)) * 0.5f, 140.0f * ctx.scale);
+    }
+
+private:
+    HeadGizmo gizmo_ = buildHeadGizmo(Rotation{});
+};
+
 // The agent's tool calls as a trace: one row per span with its status, name and duration, newest at
 // the bottom with the pilot commands it sent beneath it.
 class TracePanel final : public Panel
@@ -559,6 +598,7 @@ public:
             client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
         }));
         pose_ = add(std::make_unique<Label>(""));
+        gizmo_ = add(std::make_unique<HeadGizmoWidget>());
         capture_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
                                  "WASD walk, wheel sets its speed, E/R roll",
@@ -603,6 +643,7 @@ public:
         pose_->setText("Walk " + fixed(a.moveSpeed, 2) + " m/s  head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
+        gizmo_->set(a.head.rotation);
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
         WidgetPanel::draw(ctx);
     }
@@ -618,6 +659,7 @@ private:
     Toggle* pointing_ = nullptr;
     Toggle* seated_ = nullptr;
     Label* pose_ = nullptr;
+    HeadGizmoWidget* gizmo_ = nullptr;
     Label* capture_ = nullptr;
     Tray* tray_ = nullptr;
     int64_t lastTrayNs_ = 0;

@@ -4,6 +4,7 @@
 // one case per ctest entry.
 
 #include "xrpilot/Commands.h"
+#include "xrpilot/HeadGizmo.h"
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/Sparkline.h"
 
@@ -70,7 +71,52 @@ int repeats(const std::vector<float>& z)
     return n;
 }
 
+const HeadGizmo::Arc& arcOf(const HeadGizmo& g, HeadGizmo::Role role)
+{
+    for (const HeadGizmo::Arc& a : g.arcs)
+        if (a.role == role)
+            return a;
+    static const HeadGizmo::Arc none{role, {}};
+    return none;
+}
+
+bool near(const HeadGizmo::Point& a, float x, float y, float z) { return std::fabs(a.x - x) + std::fabs(a.y - y) + std::fabs(a.z - z) < 1e-3f; }
+
 const std::map<std::string, std::function<void()>> cases = {
+    {"human.gizmo-straight-up-and-down",
+     [] {
+         for (float yaw : {0.0f, 70.0f, -135.0f})
+         {
+             const HeadGizmo up = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, 90.0f, 0.0f));
+             check(near(arcOf(up, HeadGizmo::Role::Pitch).points.back(), 0, 1, 0), "looking straight up ends the pitch arc at the top pole");
+             check(near(arcOf(up, HeadGizmo::Role::Look).points.back(), 0, 1, 0), "and the look ray points at it");
+             check(std::fabs(up.yawDegrees - yaw) < 0.5f, "the heading survives at the pole");
+             const HeadGizmo down = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, -90.0f, 0.0f));
+             check(near(arcOf(down, HeadGizmo::Role::Pitch).points.back(), 0, -1, 0), "looking straight down ends it at the bottom pole");
+         }
+         // Control: a level head's pitch arc stays on the horizon, nowhere near a pole.
+         const HeadGizmo level = buildHeadGizmo(Rotation{});
+         check(!near(arcOf(level, HeadGizmo::Role::Pitch).points.back(), 0, 1, 0), "control: a level head is not at the top pole");
+         check(arcOf(level, HeadGizmo::Role::Pitch).points.back().y == 0.0f, "control: its pitch arc lies on the horizon");
+     }},
+    {"human.gizmo-arcs-measure-the-angles",
+     [] {
+         for (float yaw : {0.0f, 30.0f, -90.0f, 170.0f})
+             for (float pitch : {-60.0f, -12.0f, 0.0f, 45.0f, 80.0f})
+             {
+                 const HeadGizmo g = buildHeadGizmo(fromEuler(EulerOrder::YXZ, yaw, pitch, 0.0f));
+                 const HeadGizmo::Arc& y = arcOf(g, HeadGizmo::Role::Yaw);
+                 const HeadGizmo::Arc& p = arcOf(g, HeadGizmo::Role::Pitch);
+                 check(std::fabs(angleBetween(y.points.front(), y.points.back()) - std::fabs(yaw)) < 0.5f, "the yaw arc spans the yaw");
+                 check(std::fabs(angleBetween(p.points.front(), p.points.back()) - std::fabs(pitch)) < 0.5f, "the pitch arc spans the pitch");
+                 check((p.points.back().y > 0.0f) == (pitch > 0.0f) || pitch == 0.0f, "up is drawn up and down is drawn down");
+                 check(near(p.points.back(), g.look.x, g.look.y, g.look.z), "the pitch arc ends at the look direction");
+             }
+         const HeadGizmo rolled = buildHeadGizmo(fromEuler(EulerOrder::YXZ, 20.0f, 10.0f, 40.0f));
+         check(std::fabs(rolled.yawDegrees - 20.0f) < 0.5f && std::fabs(rolled.pitchDegrees - 10.0f) < 0.5f, "roll moves neither arc");
+         for (const HeadGizmo::Segment& s : rolled.segments(100.0f))
+             check(s.x0 >= 0 && s.x0 <= 100 && s.y0 >= 0 && s.y0 <= 100, "every segment stays inside its box");
+     }},
     {"human.tracking-period-follows-refresh",
      [] {
          check(trackingPeriodNs(144) == 6'944'444, "144 Hz is 6.94 ms");
