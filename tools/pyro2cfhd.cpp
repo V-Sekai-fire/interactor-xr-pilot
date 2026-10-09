@@ -167,7 +167,8 @@ int convert(pyrowave_device device, const std::string& in, const std::string& ou
         return fail("fewer than two streamed frames in " + in);
     sum.streamed = times.size();
     sum.spanNs = times.back() - times.front();
-    const uint64_t total = uint64_t(sum.spanNs) * o.fps / 1'000'000'000ull + 1;
+    // Rounded up, so the last tick reaches the stream's last frame.
+    const uint64_t total = (uint64_t(sum.spanNs) * o.fps + 999'999'999ull) / 1'000'000'000ull + 1;
 
     static const CFHD_EncodingQuality ladder[] = {CFHD_ENCODING_QUALITY_LOW,       CFHD_ENCODING_QUALITY_MEDIUM,
                                                   CFHD_ENCODING_QUALITY_HIGH,      CFHD_ENCODING_QUALITY_FILMSCAN1,
@@ -260,7 +261,7 @@ int convert(pyrowave_device device, const std::string& in, const std::string& ou
 }
 
 // Synthetic eyes, PyroWave-encoded on the CPU into a .pwrec at a 90 Hz cadence; then the conversion
-// must give span * fps + 1 frames, every streamed frame shown, and refuse damaged input by frame.
+// must give ceil(span * fps) + 1 frames, every streamed frame shown, and refuse damaged input by frame.
 int selfTest(const std::string& dir, const Options& base)
 {
     pyrowave_device device = nullptr;
@@ -329,12 +330,12 @@ int selfTest(const std::string& dir, const Options& base)
     Summary s;
     const int rc = convert(device, rec, dir + "/selftest.cfhd", o, s);
     check(rc == 0, "a 90 Hz recording converts");
-    check(s.frames == 30, "a span of 0.99 s at 30 fps is 30 frames (got " + std::to_string(s.frames) + ")");
-    check(s.distinct == 30, "each output frame shows a new streamed frame, none held (got " + std::to_string(s.distinct) + ")");
+    check(s.frames == 31, "a span of 0.99 s at 30 fps is 31 frames, the last reaching the last streamed frame (got " + std::to_string(s.frames) + ")");
+    check(s.distinct == 31, "each output frame shows a new streamed frame, none held (got " + std::to_string(s.distinct) + ")");
     Summary s60;
     o.fps = 120;
     convert(device, rec, dir + "/selftest120.cfhd", o, s60);
-    check(s60.distinct == 90 && s60.frames == 119,
+    check(s60.distinct == 90 && s60.frames == 120,
           "at 120 fps all 90 streamed frames appear once, so a faster clip holds frames rather than inventing them");
     o.fps = 30;
     Summary sb;
