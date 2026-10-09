@@ -242,15 +242,7 @@ private:
         client_.updateAgent([&](AgentState& s) {
             s.keys = keys;
             advanceHuman(s, dx, dy, dt);
-            if (wheel != 0.0f)
-            {
-                // A wheel notch walks a quarter metre along where the head faces.
-                float yawDegrees, pitchDegrees, rollDegrees;
-                toYawPitchRoll(s.head.rotation, yawDegrees, pitchDegrees, rollDegrees);
-                const float yaw = yawDegrees * 0.017453292f;
-                s.head.position[0] += -std::sin(yaw) * 0.25f * wheel;
-                s.head.position[2] += -std::cos(yaw) * 0.25f * wheel;
-            }
+            applyWheel(s, wheel);
         });
         pressedThisTick_.clear();
         for (int code : releaseNextTick_)
@@ -572,7 +564,8 @@ public:
         pose_ = add(std::make_unique<Label>(""));
         capture_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
-                                 "WASD walk, E/R roll, Shift moves a hand, wheel steps",
+                                 "WASD walk, wheel sets its speed, E/R roll",
+                                 "Shift moves a hand, Shift+wheel its reach",
                                  "T/H/click triggers, F/G grips, 1-4 XYAB, M menu, P lowers"})
             add(std::make_unique<Label>(help, 11.0f));
     }
@@ -610,7 +603,7 @@ public:
         seated_->setValue(a.seated);
         float yaw, pitch, roll;
         toYawPitchRoll(a.head.rotation, yaw, pitch, roll);
-        pose_->setText("Head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
+        pose_->setText("Walk " + fixed(a.moveSpeed, 2) + " m/s  head yaw " + fixed(yaw, 0) + "  pitch " + fixed(pitch, 0) + "  at " +
                        fixed(a.head.position[0], 2) + ", " + fixed(a.head.position[1], 2) + ", " +
                        fixed(a.head.position[2], 2));
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");

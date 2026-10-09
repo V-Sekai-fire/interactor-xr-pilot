@@ -51,6 +51,8 @@ struct AgentState
     float pointingAge = 0.0f;
     std::set<int> keys; // held keys and mouse buttons, as HumanInput's key codes
     bool seated = false;
+    // Walking speed in metres a second; the wheel sets it, as an editor's fly camera does.
+    float moveSpeed = 2.0f;
 
     AgentState();
 };

@@ -39,6 +39,47 @@ TrackingPacket packetOf(const AgentState& s)
 }
 
 const std::map<std::string, std::function<void()>> cases = {
+    {"human.wheel-sets-walk-speed",
+     [] {
+         AgentState s;
+         const float before[3] = {s.head.position[0], s.head.position[1], s.head.position[2]};
+         applyWheel(s, 1.0f);
+         check(std::fabs(s.moveSpeed - 2.5f) < 1e-5f, "one notch up scales the speed by 1.25");
+         check(s.head.position[0] == before[0] && s.head.position[1] == before[1] && s.head.position[2] == before[2],
+               "the wheel never moves the head");
+         applyWheel(s, -2.0f);
+         check(std::fabs(s.moveSpeed - 1.6f) < 1e-5f, "two notches down scale it by 1/1.5625");
+         applyWheel(s, 100.0f);
+         check(s.moveSpeed == MaxMoveSpeed, "the speed stops at its maximum");
+         applyWheel(s, -100.0f);
+         check(s.moveSpeed == MinMoveSpeed, "the speed stops at its minimum");
+
+         AgentState slow, fast;
+         slow.keys = fast.keys = {key::W};
+         applyWheel(fast, 4.0f);
+         advanceHuman(slow, 0.0f, 0.0f, 1.0f);
+         advanceHuman(fast, 0.0f, 0.0f, 1.0f);
+         check(std::fabs(fast.head.position[2] / slow.head.position[2] - std::pow(WheelSpeedStep, 4.0f)) < 1e-3f,
+               "walking covers distance in proportion to the set speed");
+     }},
+    {"human.shift-wheel-sets-hand-reach",
+     [] {
+         AgentState s;
+         s.keys = {key::RightShift};
+         const float left = s.handOffset[0][2];
+         applyWheel(s, 2.0f);
+         check(std::fabs(s.handOffset[1][2] - (-0.05f - 2.0f * WheelReachStep)) < 1e-5f, "Shift and the wheel push the right hand out");
+         check(s.handOffset[0][2] == left, "the other hand stays");
+         check(s.moveSpeed == 2.0f, "with Shift held the wheel leaves the speed alone");
+         applyWheel(s, 100.0f);
+         check(s.handOffset[1][2] == MinHandReach, "the reach stops at arm's length");
+         applyWheel(s, -100.0f);
+         check(s.handOffset[1][2] == MaxHandReach, "and at the body");
+         AgentState both;
+         both.keys = {key::LeftShift, key::RightShift};
+         applyWheel(both, 1.0f);
+         check(both.moveSpeed != 2.0f && both.handOffset[0][2] == -0.05f, "both Shifts held is no hand, so the speed changes");
+     }},
     {"human.walk-moves-head-shift-moves-hand",
      [] {
          AgentState walked;

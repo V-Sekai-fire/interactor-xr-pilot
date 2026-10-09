@@ -69,7 +69,7 @@ endforeach()
 
 add_executable(xrpilot-human-tests core/tests/human.cpp)
 target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
-foreach(name IN ITEMS human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
+foreach(name IN ITEMS human.wheel-sets-walk-speed human.shift-wheel-sets-hand-reach human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
                       human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
                       human.seated-lowers-head-and-hands
                       sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample

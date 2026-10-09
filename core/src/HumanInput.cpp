@@ -91,7 +91,6 @@ bool heldAny(const AgentState& state, std::initializer_list<int> keys)
 void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTime)
 {
     constexpr float MouseSensitivity = 0.003f;
-    constexpr float MoveSpeed = 2.0f;
 
     if (heldAny(state, {key::TriggerMouse, key::H, key::M}) && !state.pointing)
     {
@@ -150,7 +149,7 @@ void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTi
         return;
     }
 
-    const float step = MoveSpeed * deltaTime / moveLength;
+    const float step = state.moveSpeed * deltaTime / moveLength;
     const bool leftShift = held(state, key::LeftShift);
     const bool rightShift = held(state, key::RightShift);
     float* hand = leftShift && !rightShift ? state.handOffset[0] : rightShift && !leftShift ? state.handOffset[1] : nullptr;
@@ -162,6 +161,21 @@ void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTi
     }
     head.position[0] += moveX * step;
     head.position[2] += moveZ * step;
+}
+
+void applyWheel(AgentState& state, float notches)
+{
+    if (notches == 0.0f || !std::isfinite(notches))
+        return;
+    const bool leftShift = held(state, key::LeftShift);
+    const bool rightShift = held(state, key::RightShift);
+    float* hand = leftShift && !rightShift ? state.handOffset[0] : rightShift && !leftShift ? state.handOffset[1] : nullptr;
+    if (hand != nullptr)
+    {
+        hand[2] = std::clamp(hand[2] - notches * WheelReachStep, MinHandReach, MaxHandReach);
+        return;
+    }
+    state.moveSpeed = std::clamp(state.moveSpeed * std::pow(WheelSpeedStep, notches), MinMoveSpeed, MaxMoveSpeed);
 }
 
 Pose handPose(const AgentState& state, int hand)

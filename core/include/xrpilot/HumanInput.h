@@ -28,6 +28,16 @@ constexpr int TriggerMouse = -1004;
 // Shift moves a hand, and the trigger, H or M raise the pointing hand.
 void advanceHuman(AgentState& state, float mouseDx, float mouseDy, float deltaTime);
 
+// Walking speed bounds, and the factor one wheel notch scales it by.
+constexpr float MinMoveSpeed = 0.25f, MaxMoveSpeed = 8.0f, WheelSpeedStep = 1.25f;
+// How far one wheel notch pushes a Shift-held hand along the look direction, and its reach.
+constexpr float WheelReachStep = 0.05f, MinHandReach = -0.75f, MaxHandReach = 0.1f;
+
+// The wheel, in notches (fractional for smooth wheels and trackpads; up is positive): it scales the
+// walking speed, or with a Shift held pushes that hand away (up) or pulls it in (down). It never
+// moves the head.
+void applyWheel(AgentState& state, float notches);
+
 // Where a hand is: the agent's pose when it placed the hand, else at the side of the body, or for the
 // right hand while pointing, under the eye aiming at the gaze point.
 Pose handPose(const AgentState& state, int hand);
