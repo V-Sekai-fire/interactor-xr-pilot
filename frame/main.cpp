@@ -27,6 +27,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <optional>
 #include <string>
 #include <vector>
@@ -87,13 +89,30 @@ private:
     void pollEvents();
     bool frame();
     void track(XrTime time, const XrView (&views)[2]);
-    bool render(uint32_t eye, bool haveFrame);
+    struct Slot;
+    bool render(const Slot* slot);
     void shutdown();
 
     Options options_;
     xrpilot::Client client_;
-    std::unique_ptr<xrpilot::GpuDecoder> decoder_ = std::make_unique<xrpilot::GpuDecoder>();
-    xrpilot::FrameSync sync_;
+    // Three decoded frames: one on screen, one ready, one being written, so decode never waits on the render.
+    struct Slot
+    {
+        std::unique_ptr<xrpilot::GpuDecoder> decoder = std::make_unique<xrpilot::GpuDecoder>();
+        float position[3] = {0.0f, 0.0f, 0.0f};
+        XrQuaternionf orientation{0.0f, 0.0f, 0.0f, 1.0f};
+    };
+    std::array<Slot, 3> slots_;
+    std::mutex slotMutex_;
+    int readySlot_ = -1;
+    int heldSlot_ = -1;
+    xrpilot::FrameSync sync_; // decode thread only
+    std::thread decodeThread_;
+    std::atomic<bool> decoding_{false};
+    void decodeLoop();
+    // OpenXR may use the render queue inside its frame and swapchain calls; everything on it holds this.
+    std::mutex queueMutex_;
+    VkQueue decodeQueue_ = VK_NULL_HANDLE; // its own queue when the family has two, else the render queue
 
     XrInstance instance_ = XR_NULL_HANDLE;
     XrSystemId system_ = XR_NULL_SYSTEM_ID;
@@ -123,7 +142,7 @@ private:
     VkPhysicalDeviceVulkan12Features features12_{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features features11_{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceFeatures2 features_{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    float priority_ = 1.0f;
+    float priorities_[2] = {1.0f, 1.0f};
     VkDeviceQueueCreateInfo queueInfo_{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     VkDeviceCreateInfo deviceInfo_{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     VkInstance vkInstance_ = VK_NULL_HANDLE;
@@ -137,14 +156,15 @@ private:
     bool decoderReady_ = false;
 
     // The frame on screen and the pose it was rendered from.
-    bool shown_ = false;
-    float shownPosition_[3] = {0.0f, 0.0f, 0.0f};
-    XrQuaternionf shownOrientation_{0.0f, 0.0f, 0.0f, 1.0f};
     float ipd_ = 0.064f;
     XrFovf sentFov_{};
-    uint64_t decoded_ = 0;
-    uint64_t decodeFailures_ = 0;
-    bool snapshotWritten_ = false;
+    std::atomic<uint64_t> decoded_{0};
+    std::atomic<uint64_t> decodeFailures_{0};
+    std::atomic<uint64_t> decodeNs_{0};
+    std::atomic<uint64_t> committed_{0};
+    std::atomic<uint64_t> refused_{0};
+    std::atomic<bool> snapshotWritten_{false};
+    uint64_t shownNew_ = 0; // render thread: decoded frames put on screen
 };
 
 XrVector3f rotate(const XrQuaternionf& q, const XrVector3f& v)
@@ -248,8 +268,8 @@ bool App::createVulkan()
     vkGetPhysicalDeviceFeatures2(physical_, &features_);
     features_.features.robustBufferAccess = VK_FALSE;
     queueInfo_.queueFamilyIndex = family_;
-    queueInfo_.queueCount = 1;
-    queueInfo_.pQueuePriorities = &priority_;
+    queueInfo_.queueCount = std::min(2u, families[family_].queueCount);
+    queueInfo_.pQueuePriorities = priorities_;
     deviceInfo_.pNext = &features_;
     deviceInfo_.queueCreateInfoCount = 1;
     deviceInfo_.pQueueCreateInfos = &queueInfo_;
@@ -266,6 +286,10 @@ bool App::createVulkan()
     }
     volkLoadDevice(device_);
     vkGetDeviceQueue(device_, family_, 0, &queue_);
+    decodeQueue_ = queue_;
+    if (queueInfo_.queueCount > 1)
+        vkGetDeviceQueue(device_, family_, 1, &decodeQueue_);
+    std::printf("decode queue: %s\n", decodeQueue_ != queue_ ? "its own" : "shared with the render");
 
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -589,59 +613,141 @@ void App::track(XrTime time, const XrView (&views)[2])
     });
 }
 
-bool App::render(uint32_t e, bool haveFrame)
+// Both eyes in one submit; the runtime's swapchain calls and the submit hold the queue lock.
+bool App::render(const Slot* slot)
 {
-    Eye& eye = eyes_[e];
-    uint32_t index = 0;
-    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    XR_CHECK(xrAcquireSwapchainImage(eye.swapchain, &acquire, &index));
-    XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wait.timeout = XR_INFINITE_DURATION;
-    XR_CHECK(xrWaitSwapchainImage(eye.swapchain, &wait));
-    const VkImage image = eye.images[index].image;
+    uint32_t index[2] = {0, 0};
+    VkImage images[2] = {};
+    for (uint32_t e = 0; e < 2; ++e)
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        XR_CHECK(xrAcquireSwapchainImage(eyes_[e].swapchain, &acquire, &index[e]));
+        XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wait.timeout = XR_INFINITE_DURATION;
+        XR_CHECK(xrWaitSwapchainImage(eyes_[e].swapchain, &wait));
+        images[e] = eyes_[e].images[index[e]].image;
+    }
 
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkResetCommandBuffer(cmd_, 0);
     vkBeginCommandBuffer(cmd_, &begin);
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
-                         nullptr, 1, &barrier);
-    if (haveFrame)
+    for (uint32_t e = 0; e < 2; ++e)
     {
-        decoder_->recordEye(cmd_, int(e), image, eye.width, eye.height);
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = images[e];
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &barrier);
+        if (slot != nullptr)
+        {
+            slot->decoder->recordEye(cmd_, int(e), images[e], eyes_[e].width, eyes_[e].height);
+        }
+        else
+        {
+            const VkClearColorValue standby = {{0.015f, 0.02f, 0.03f, 1.0f}};
+            vkCmdClearColorImage(cmd_, images[e], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &standby, 1,
+                                 &barrier.subresourceRange);
+        }
+        // OpenXR takes the image back in COLOR_ATTACHMENT_OPTIMAL.
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
     }
-    else
-    {
-        const VkClearColorValue standby = {{0.015f, 0.02f, 0.03f, 1.0f}};
-        vkCmdClearColorImage(cmd_, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &standby, 1,
-                             &barrier.subresourceRange);
-    }
-    // OpenXR takes the image back in COLOR_ATTACHMENT_OPTIMAL.
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
-                         nullptr, 0, nullptr, 1, &barrier);
     vkEndCommandBuffer(cmd_);
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd_;
     vkResetFences(device_, 1, &fence_);
-    vkQueueSubmit(queue_, 1, &submit, fence_);
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        vkQueueSubmit(queue_, 1, &submit, fence_);
+    }
+    // The slot stays held until a newer one replaces it, so the decoder never writes what this reads.
     vkWaitForFences(device_, 1, &fence_, VK_TRUE, 1'000'000'000ull);
 
-    XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    XR_CHECK(xrReleaseSwapchainImage(eye.swapchain, &release));
+    for (uint32_t e = 0; e < 2; ++e)
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        XR_CHECK(xrReleaseSwapchainImage(eyes_[e].swapchain, &release));
+    }
     return true;
+}
+
+// Takes frames from the network, keeps only those with their own render pose, and decodes each into a
+// slot neither on screen nor ready; the render loop never waits for a decode.
+void App::decodeLoop()
+{
+    while (decoding_)
+    {
+        const int64_t now = xrpilot::monotonicNowNs();
+        std::optional<AssembledVideoFrame> next = sync_.next(
+            client_.takeFrame(), [&](AssembledVideoFrame& f) { return client_.attachRenderPose(f); }, now);
+        committed_ = sync_.committed();
+        refused_ = sync_.refused();
+        if (!next)
+        {
+            usleep(500);
+            continue;
+        }
+        int w = 0;
+        {
+            std::lock_guard<std::mutex> lock(slotMutex_);
+            while (w == readySlot_ || w == heldSlot_)
+                ++w;
+        }
+        Slot& slot = slots_[w];
+        bool ok = false;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex_, std::defer_lock);
+            if (decodeQueue_ == queue_)
+                lock.lock();
+            ok = slot.decoder->decode(next->nalUnit.data(), next->nalUnit.size());
+        }
+        const int64_t done = xrpilot::monotonicNowNs();
+        if (!ok)
+        {
+            ++decodeFailures_;
+            client_.requestKeyframe();
+            continue;
+        }
+        client_.reportLatency(*next, now, done);
+        decodeNs_ += uint64_t(done - now);
+        std::copy(std::begin(next->renderPosition), std::end(next->renderPosition), std::begin(slot.position));
+        slot.orientation = {next->renderOrientation[0], next->renderOrientation[1], next->renderOrientation[2],
+                            next->renderOrientation[3]};
+        {
+            std::lock_guard<std::mutex> lock(slotMutex_);
+            readySlot_ = w;
+        }
+        const uint64_t decoded = ++decoded_;
+        if (!options_.snapshot.empty() && !snapshotWritten_ && decoded >= 30)
+        {
+            std::vector<uint8_t> rgba;
+            int sw = 0;
+            int sh = 0;
+            bool written = false;
+            {
+                std::unique_lock<std::mutex> lock(queueMutex_, std::defer_lock);
+                if (decodeQueue_ == queue_)
+                    lock.lock();
+                written = slot.decoder->snapshotLeftEye(rgba, sw, sh);
+            }
+            written = written && xrpilot::writePng(options_.snapshot, rgba.data(), sw, sh);
+            snapshotWritten_ = written;
+            std::printf("snapshot %s %dx%d: %s\n", options_.snapshot.c_str(), sw, sh, written ? "written" : "failed");
+        }
+    }
 }
 
 bool App::frame()
@@ -649,8 +755,11 @@ bool App::frame()
     XrFrameState frameState{XR_TYPE_FRAME_STATE};
     XrFrameWaitInfo waitInfo{XR_TYPE_FRAME_WAIT_INFO};
     XR_CHECK(xrWaitFrame(session_, &waitInfo, &frameState));
-    XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
-    XR_CHECK(xrBeginFrame(session_, &beginInfo));
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
+        XR_CHECK(xrBeginFrame(session_, &beginInfo));
+    }
 
     XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
     XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
@@ -664,37 +773,17 @@ bool App::frame()
     if (located)
         track(frameState.predictedDisplayTime, views);
 
-    // A new frame is decoded only once its own render pose is in hand.
-    const int64_t now = xrpilot::monotonicNowNs();
-    std::optional<AssembledVideoFrame> next = sync_.next(
-        client_.takeFrame(), [&](AssembledVideoFrame& f) { return client_.attachRenderPose(f); }, now);
-    if (next && decoderReady_)
+    // The newest decoded frame, which always carries its own render pose (FrameSync).
     {
-        if (decoder_->decode(next->nalUnit.data(), next->nalUnit.size()))
+        std::lock_guard<std::mutex> lock(slotMutex_);
+        if (readySlot_ >= 0)
         {
-            client_.reportLatency(*next, now, xrpilot::monotonicNowNs());
-            shown_ = true;
-            std::copy(std::begin(next->renderPosition), std::end(next->renderPosition), std::begin(shownPosition_));
-            shownOrientation_ = {next->renderOrientation[0], next->renderOrientation[1], next->renderOrientation[2],
-                                 next->renderOrientation[3]};
-            ++decoded_;
-            if (!options_.snapshot.empty() && !snapshotWritten_ && decoded_ >= 30)
-            {
-                std::vector<uint8_t> rgba;
-                int w = 0;
-                int h = 0;
-                snapshotWritten_ = decoder_->snapshotLeftEye(rgba, w, h) &&
-                                   xrpilot::writePng(options_.snapshot, rgba.data(), w, h);
-                std::printf("snapshot %s %dx%d: %s\n", options_.snapshot.c_str(), w, h,
-                            snapshotWritten_ ? "written" : "failed");
-            }
-        }
-        else
-        {
-            ++decodeFailures_;
-            client_.requestKeyframe();
+            heldSlot_ = readySlot_;
+            readySlot_ = -1;
+            ++shownNew_;
         }
     }
+    const Slot* slot = heldSlot_ >= 0 ? &slots_[heldSlot_] : nullptr;
 
     XrCompositionLayerProjectionView projection[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                    {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
@@ -705,18 +794,19 @@ bool App::frame()
     endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     if (frameState.shouldRender && located)
     {
+        if (!render(slot))
+            return false;
         for (uint32_t e = 0; e < 2; ++e)
         {
-            if (!render(e, shown_))
-                return false;
             XrCompositionLayerProjectionView& view = projection[e];
-            if (shown_)
+            if (slot != nullptr)
             {
                 // The eye the runtime rendered: its head pose, half the eye distance to the side, its field of view.
-                const XrVector3f offset = rotate(shownOrientation_, {e == 0 ? -0.5f * ipd_ : 0.5f * ipd_, 0.0f, 0.0f});
-                view.pose.orientation = shownOrientation_;
-                view.pose.position = {shownPosition_[0] + offset.x, shownPosition_[1] + offset.y,
-                                      shownPosition_[2] + offset.z};
+                const XrVector3f offset =
+                    rotate(slot->orientation, {e == 0 ? -0.5f * ipd_ : 0.5f * ipd_, 0.0f, 0.0f});
+                view.pose.orientation = slot->orientation;
+                view.pose.position = {slot->position[0] + offset.x, slot->position[1] + offset.y,
+                                      slot->position[2] + offset.z};
                 view.fov = sentFov_;
                 if (e == 1) // the right eye mirrors the left
                     view.fov = {-sentFov_.angleRight, -sentFov_.angleLeft, sentFov_.angleUp, sentFov_.angleDown};
@@ -735,6 +825,7 @@ bool App::frame()
         endInfo.layerCount = 1;
         endInfo.layers = layers;
     }
+    std::lock_guard<std::mutex> lock(queueMutex_);
     XR_CHECK(xrEndFrame(session_, &endInfo));
     return true;
 }
@@ -751,7 +842,7 @@ bool App::run()
     gpu.instance = vkInstance_;
     gpu.physicalDevice = physical_;
     gpu.device = device_;
-    gpu.queue = queue_;
+    gpu.queue = decodeQueue_;
     gpu.queueFamily = family_;
     gpu.instanceInfo = &instanceInfo_;
     gpu.deviceInfo = &deviceInfo_;
@@ -759,7 +850,9 @@ bool App::run()
                           ? VK_FORMAT_R8G8B8A8_SRGB
                           : VK_FORMAT_R8G8B8A8_UNORM;
     std::string error;
-    decoderReady_ = decoder_->initialize(gpu, &error);
+    decoderReady_ = true;
+    for (Slot& slot : slots_)
+        decoderReady_ = decoderReady_ && slot.decoder->initialize(gpu, &error);
     if (!decoderReady_)
     {
         std::fprintf(stderr, "xr-pilot-frame: PyroWave decoder: %s\n", error.c_str());
@@ -771,13 +864,25 @@ bool App::run()
         return false;
     }
 
+    decoding_ = true;
+    decodeThread_ = std::thread([this] { decodeLoop(); });
+
     const int64_t start = xrpilot::monotonicNowNs();
     int64_t lastReport = start;
+    uint64_t lastShown = 0;
+    uint64_t lastDecoded = 0;
+    uint64_t lastDecodeNs = 0;
+    uint64_t renderFrames = 0;
+    uint64_t lastRenderFrames = 0;
     while (!quit)
     {
         pollEvents();
-        if (running_ && !frame())
-            return false;
+        if (running_)
+        {
+            if (!frame())
+                return false;
+            ++renderFrames;
+        }
         if (!running_)
             usleep(10'000);
         const int64_t now = xrpilot::monotonicNowNs();
@@ -785,17 +890,28 @@ bool App::run()
         {
             lastReport = now;
             const xrpilot::ClientStatus s = client_.status();
+            const uint64_t decoded = decoded_;
+            const uint64_t decodeNs = decodeNs_;
+            const double decodeMs =
+                decoded > lastDecoded ? double(decodeNs - lastDecodeNs) / double(decoded - lastDecoded) / 1e6 : 0.0;
             std::printf("state %d connected %d server %s frames %llu decoded %llu committed %llu refused %llu "
+                        "shown/s %llu render/s %llu decode-ms %.2f "
                         "dropped %llu fec %llu decode-failures %llu tracking %llu\n",
                         int(state_), s.connected ? 1 : 0, s.server.c_str(),
-                        static_cast<unsigned long long>(s.framesAssembled), static_cast<unsigned long long>(decoded_),
-                        static_cast<unsigned long long>(sync_.committed()),
-                        static_cast<unsigned long long>(sync_.refused()),
+                        static_cast<unsigned long long>(s.framesAssembled), static_cast<unsigned long long>(decoded),
+                        static_cast<unsigned long long>(committed_.load()),
+                        static_cast<unsigned long long>(refused_.load()),
+                        static_cast<unsigned long long>(shownNew_ - lastShown),
+                        static_cast<unsigned long long>(renderFrames - lastRenderFrames), decodeMs,
                         static_cast<unsigned long long>(s.framesDropped),
                         static_cast<unsigned long long>(s.fecRecoveries),
-                        static_cast<unsigned long long>(decodeFailures_),
+                        static_cast<unsigned long long>(decodeFailures_.load()),
                         static_cast<unsigned long long>(s.trackingSent));
             std::fflush(stdout);
+            lastShown = shownNew_;
+            lastDecoded = decoded;
+            lastDecodeNs = decodeNs;
+            lastRenderFrames = renderFrames;
         }
         if (options_.seconds > 0.0 && double(now - start) * 1e-9 >= options_.seconds)
             break;
@@ -803,7 +919,7 @@ bool App::run()
     if (!options_.snapshot.empty() && !snapshotWritten_)
     {
         std::fprintf(stderr, "xr-pilot-frame: no snapshot: %llu frames decoded\n",
-                     static_cast<unsigned long long>(decoded_));
+                     static_cast<unsigned long long>(decoded_.load()));
         return false;
     }
     return true;
@@ -811,10 +927,14 @@ bool App::run()
 
 void App::shutdown()
 {
+    decoding_ = false;
+    if (decodeThread_.joinable())
+        decodeThread_.join();
     client_.stop();
     if (device_ != VK_NULL_HANDLE)
         vkDeviceWaitIdle(device_);
-    decoder_.reset(); // before the device it decodes on
+    for (Slot& slot : slots_)
+        slot.decoder.reset(); // before the device it decodes on
     for (Eye& eye : eyes_)
     {
         if (eye.swapchain != XR_NULL_HANDLE)
