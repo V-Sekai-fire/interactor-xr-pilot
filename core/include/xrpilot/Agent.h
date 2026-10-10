@@ -53,6 +53,11 @@ struct AgentState
     bool seated = false;
     // Walking speed in metres a second; the wheel sets it, as an editor's fly camera does.
     float moveSpeed = 2.0f;
+    // A headset's head: the time its pose is for, on the client's monotonic clock, and its velocities in
+    // the tracking space (m/s, rad/s). Zero time means the pose has no time of its own and is sent as new.
+    int64_t headSampleNs = 0;
+    float headLinearVelocity[3] = {0.0f, 0.0f, 0.0f};
+    float headAngularVelocity[3] = {0.0f, 0.0f, 0.0f};
 
     AgentState();
 };
@@ -62,6 +67,11 @@ void eyeHalfFov(const AgentState& state, float& horizontal, float& vertical);
 
 // Builds the packet the runtime reads; the left eye FOV comes from eyeHalfFov.
 void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::protocol::TrackingPacket& packet);
+
+// The packet for one tracking tick. A headset sample goes out once, stamped with its own time; false when
+// the tick would send a headset sample again. lastSampleNs is the sample time sent last.
+bool nextTrackingPacket(const AgentState& state, int64_t nowNs, int64_t& lastSampleNs,
+                        oxr::protocol::TrackingPacket& packet);
 
 // How far the eyes drop from standing to sitting on a chair: 1.6 m to 1.2 m.
 constexpr float SeatedEyeDrop = 0.4f;

@@ -55,7 +55,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
                       json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-maskscore-rows traces.rectgtn-time traces.null-check-control body.reach-within-the-arm body.reach-past-the-arm-is-clamped body.feet-planted-in-the-world body.feet-unplanted-slide rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
-                      commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov)
+                      commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
+                      agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # Installing OXRSys into the per-user folders, MPL-2.0 like the tray it serves; no SDL, so CI tests it.

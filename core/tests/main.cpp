@@ -442,6 +442,56 @@ const std::map<std::string, std::function<void()>> cases = {
          fillTrackingPacket(s, 1, p);
          check((p.trackingFlags & oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) == 0, "an absent hand clears its flag");
      }},
+    {"agent.headset-samples-keep-their-time",
+     [] {
+         // A headset at 72 Hz turns at 2 rad/s about +Y; the tracking thread ticks at 90 Hz. The runtime predicts
+         // from consecutive packets, so every pair it sees must give the turn rate, not 0 or twice it.
+         constexpr double omega = 2.0;
+         constexpr int64_t headsetNs = 1'000'000'000 / 72;
+         constexpr int64_t tickNs = 1'000'000'000 / 90;
+         AgentState s;
+         int64_t last = 0;
+         std::vector<oxr::protocol::TrackingPacket> sent;
+         int64_t nextSample = 3'000'000;
+         for (int64_t now = 0; now < 2'000'000'000; now += tickNs)
+         {
+             while (nextSample <= now)
+             {
+                 const double yaw = omega * double(nextSample) * 1e-9;
+                 const float q[4] = {0.0f, float(std::sin(yaw * 0.5)), 0.0f, float(std::cos(yaw * 0.5))};
+                 fromQuaternion(q, s.head.rotation);
+                 s.headSampleNs = nextSample;
+                 s.headAngularVelocity[1] = float(omega);
+                 nextSample += headsetNs;
+             }
+             oxr::protocol::TrackingPacket p;
+             if (nextTrackingPacket(s, now, last, p))
+                 sent.push_back(p);
+         }
+         check(sent.size() > 100, "packets went out");
+         double worst = 0.0;
+         for (size_t i = 1; i < sent.size(); ++i)
+         {
+             const float* a = sent[i - 1].headOrientation;
+             const float* b = sent[i].headOrientation;
+             const double dot = std::fabs(double(a[0]) * b[0] + double(a[1]) * b[1] + double(a[2]) * b[2] + double(a[3]) * b[3]);
+             const double angle = 2.0 * std::acos(std::min(1.0, dot));
+             const double dt = double(sent[i].timestampNs - sent[i - 1].timestampNs) * 1e-9;
+             const double rate = dt > 0.0 ? angle / dt : 0.0;
+             worst = std::max(worst, std::fabs(rate - omega) / omega);
+         }
+         std::printf("worst turn-rate error between packets %.1f%%\n", worst * 100.0);
+         check(worst < 0.02, "every packet pair gives the head's turn rate");
+         check(sent.back().headAngularVelocity[1] == float(omega), "the headset's angular velocity reaches the packet");
+     }},
+    {"agent.unsampled-head-sends-every-tick",
+     [] {
+         AgentState s;
+         int64_t last = 0;
+         oxr::protocol::TrackingPacket p;
+         check(nextTrackingPacket(s, 10, last, p) && p.timestampNs == 10, "a head with no sample time goes out now");
+         check(nextTrackingPacket(s, 20, last, p) && p.timestampNs == 20, "and again on the next tick");
+     }},
     {"commands.malformed-rejected",
      [] {
          AgentState s;
