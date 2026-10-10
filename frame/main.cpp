@@ -11,6 +11,7 @@
 #include "xrpilot/FrameSync.h"
 #include "xrpilot/GpuDecoder.h"
 #include "xrpilot/Png.h"
+#include "xrpilot/Version.h"
 
 #include <volk.h>
 
@@ -200,6 +201,7 @@ bool App::createInstance()
     XrSystemProperties system{XR_TYPE_SYSTEM_PROPERTIES};
     XR_CHECK(xrGetSystemProperties(instance_, system_, &system));
     systemName_ = system.systemName;
+    std::printf("xr-pilot-frame %s\n", xrpilot::Version);
     std::printf("runtime %s %u.%u.%u, system '%s'\n", properties.runtimeName,
                 XR_VERSION_MAJOR(properties.runtimeVersion), XR_VERSION_MINOR(properties.runtimeVersion),
                 XR_VERSION_PATCH(properties.runtimeVersion), system.systemName);
