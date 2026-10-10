@@ -302,6 +302,8 @@ void TraceStore::close()
     wake_.notify_all();
     if (thread_.joinable())
         thread_.join();
+    // The tray marks UI spans from its own threads; they find the store closed, not half closed.
+    std::lock_guard<std::mutex> lock(mutex_);
     sqlite3_close(db_);
     db_ = nullptr;
     spanByKey_.clear();
@@ -337,6 +339,22 @@ void TraceStore::begin(const std::string& key, const std::string& tool, const st
     spanByKey_[key] = id;
     running_.push_back(id);
     wanting_.push_back({0, id, true});
+}
+
+void TraceStore::mark(const std::string& key, const std::string& tool, const std::string& detail, bool ok, int64_t atMs)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (db_ == nullptr)
+        return;
+    const std::string at = isoDuration(atMs - epochMs_);
+    Statement insert(db_, "INSERT INTO span (session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?)");
+    insert.bind(1, session_).bind(2, key).bind(3, intern("tool", tool)).bind(4, at).run();
+    const int64_t id = sqlite3_last_insert_rowid(db_);
+    if (!detail.empty())
+        Statement(db_, "INSERT INTO span_detail VALUES (?, ?)").bind(1, id).bind(2, detail).run();
+    if (!running_.empty())
+        Statement(db_, "INSERT INTO span_parent VALUES (?, ?)").bind(1, id).bind(2, running_.back()).run();
+    Statement(db_, "INSERT INTO span_end VALUES (?, ?, ?)").bind(1, id).bind(2, at).bind(3, int64_t(ok ? 1 : 0)).run();
 }
 
 void TraceStore::end(const std::string& key, bool ok, int64_t atMs)

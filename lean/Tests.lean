@@ -326,6 +326,57 @@ def main : IO UInt32 := do
   let endMark := (← f.marks.get).back!
   c (endMark.endsWith " error") s!"control: a refused tool's span ends in error, got {endMark}"
 
+
+  -- The UI model: span names are distinct and read back, recorded runs are checked, broken runs caught.
+  let sessions (e : Except String Nat) : Option Nat := match e with | .ok n => some n | .error _ => Option.none
+  let names := Ui.Action.all.map (·.spanName)
+  c (names.eraseDups.length == names.length) "every UI action has its own span name"
+  c (Ui.Action.all.all fun a => Ui.Action.ofSpanName? a.spanName == some a) "every span name reads back as its action"
+  c (names.all (·.startsWith "ui.")) "UI span names start with ui."
+  let line (k : Nat) (n : String) : String := "{\"session\":" ++ toString k ++ ",\"span\":\"" ++ n ++ "\",\"ok\":true}"
+  let firstRun := String.intercalate "\n" (["ui.launch.pilot", "ui.tray.setup", "ui.tray.first-run-bind",
+    "ui.window.open", "ui.tray.elevated-done", "ui.window.auto-connect", "ui.window.close", "ui.tray.show-pilot",
+    "ui.window.open", "ui.tray.unbind", "ui.tray.elevated-done", "ui.tray.quit"].map (line 1))
+  c (sessions (Ui.checkJsonl firstRun) == some 1) "a first run, a swap and the way back follow the model"
+  let mcp := line 2 "screenshot" ++ "\n" ++ line 2 "ui.launch.agent" ++ "\n" ++ line 2 "ui.window.open"
+  c (sessions (Ui.checkJsonl mcp) == some 1) "an agent session with MCP spans follows the model"
+  c (sessions (Ui.checkJsonl (firstRun ++ "\n" ++ line 3 "ui.launch.show-running")) == some 2) "sessions are checked apart"
+  c (sessions (Ui.checkJsonl (line 1 "ui.window.connect")) == Option.none) "control: a control before any window is caught"
+  c (sessions (Ui.checkJsonl (line 1 "ui.launch.agent" ++ "\n" ++ line 1 "ui.tray.bind")) == Option.none)
+    "control: an agent pilot using the tray is caught"
+  c (sessions (Ui.checkJsonl (line 1 "ui.tray.open-driver-folder")) == Option.none) "control: a tray entry before launch is caught"
+  c (sessions (Ui.checkJsonl (line 1 "ui.tray.teleport")) == Option.none) "control: a span the model does not have is caught"
+  c (sessions (Ui.checkJsonl "not json") == Option.none) "control: a line that is not JSON is caught"
+  -- Every desk the tray can start on: each swap ends on OXRSys with multiple drivers, picking SteamVR
+  -- ends on SteamVR, and a declined swap changes nothing.
+  let desks := Ui.Desk.all.filter fun d => !d.runningCopy && d.trayIcon && d.firstRunDone
+  let menuSwaps := Ui.swapTracks.filter (·.head? == some .launchTray)
+  c (desks.all fun d => menuSwaps.all fun t => ((Ui.trackEnd d t).map (·.onOxrsys)) == some true)
+    s!"the swap tracks end on OXRSys with multiple drivers from all {desks.length} desks"
+  c (desks.all fun d =>
+      ((Ui.trackEnd d.swapToOxrsys [.launchTray, .deskSetup, .runtimeOther, .elevatedDone]).map (·.onSteamVr)) == some true)
+    "picking SteamVR ends on SteamVR from every swapped desk"
+  c (desks.all fun d => Ui.trackEnd d [.launchTray, .deskSetup, .runtimeOurs, .elevatedDeclined] == some d)
+    "a declined swap changes nothing"
+  c (desks.any fun d => Ui.trackEnd d [.launchTray, .deskSetup, .runtimeOurs, .elevatedDone] != some d)
+    "control: an accepted swap does change the desk"
+  c ((Ui.emitCpp.splitOn "case UiAction::").length == Ui.Action.all.length + 1) "the header has a case per action"
+  -- The app records every action of the model, and the checked-in header is what the model emits.
+  let sources ← ([("../app/main.cpp" : System.FilePath), "../tray/src/Tray.cpp"]).mapM fun p => do
+    try IO.FS.readFile p catch _ => pure ""
+  let source := String.join sources
+  if source.isEmpty then
+    IO.eprintln "skip: the app sources are not beside lean/"
+  else
+    let recorded (name : String) := (source.splitOn s!"UiAction::{name})").length > 1 ||
+      (source.splitOn s!"UiAction::{name},").length > 1 || (source.splitOn s!"UiAction::{name};").length > 1 ||
+      (source.splitOn s!"UiAction::{name} :").length > 1
+    let missing := Ui.Action.all.filter fun a => !recorded a.cppName
+    c missing.isEmpty s!"every UI action is recorded by the app; not recorded: {missing.map (·.spanName)}"
+    c (!recorded "Teleport") "control: an action the app does not record is caught"
+    let header ← try IO.FS.readFile "../core/include/xrpilot/UiSpans.h" catch _ => pure ""
+    c (header == Ui.emitCpp) "core/include/xrpilot/UiSpans.h is what the model emits (lake exe emit_ui_spans)"
+
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"
   return if n == 0 then 0 else 1

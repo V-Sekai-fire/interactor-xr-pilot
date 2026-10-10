@@ -31,6 +31,7 @@ add_library(xrpilot_core STATIC
     core/src/HumanInput.cpp
     core/src/Json.cpp
     core/src/Launch.cpp
+    core/src/UiTrace.cpp
     core/src/Pace.cpp
     core/src/Png.cpp
     core/src/Rotation.cpp
@@ -70,7 +71,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       client.stays-with-a-streaming-runtime
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
                       launch.flags-keep-their-meaning client.local-runtime-wins
-                      client.local-address-is-recognised client.second-pilot-is-refused)
+                      client.local-address-is-recognised client.second-pilot-is-refused
+                      ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
@@ -81,14 +83,19 @@ foreach(name IN ITEMS pace.ticks-evenly-at-90hz)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # Installing OXRSys into the per-user folders, MPL-2.0 like the tray it serves; no SDL, so CI tests it.
-add_library(xrpilot_install STATIC tray/src/Install.cpp)
+# Exports a trace's UI spans for the Lean UI model's checker (lake exe ui_check).
+add_executable(xrpilot-ui-trace tools/ui_trace.cpp)
+target_link_libraries(xrpilot-ui-trace PRIVATE xrpilot_core)
+
+add_library(xrpilot_install STATIC tray/src/Install.cpp tray/src/SteamVrSettings.cpp)
 target_include_directories(xrpilot_install PUBLIC tray/include)
 target_link_libraries(xrpilot_install PUBLIC xrpilot_core)
 add_executable(xrpilot-install-tests tray/tests/install.cpp)
 target_link_libraries(xrpilot-install-tests PRIVATE xrpilot_install)
 foreach(name IN ITEMS install.complete-source-installs install.files-identical-to-source
                       install.changed-source-is-recopied install.missing-driver-writes-nothing
-                      install.missing-runtime-refused install.stale-manifest-is-not-an-install)
+                      install.missing-runtime-refused install.stale-manifest-is-not-an-install
+                      steamvr.swap-forces-oxrsys-with-multiple-drivers steamvr.hand-back-restores-the-desk)
     add_test(NAME ${name} COMMAND xrpilot-install-tests ${name})
 endforeach()
 
