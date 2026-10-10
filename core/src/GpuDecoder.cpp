@@ -372,7 +372,7 @@ struct GpuDecoder::Gpu
             !makeBuffer(rgbx, VkDeviceSize(w) * h * 4,
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
-            !makeImage(frame, VK_FORMAT_R8G8B8A8_UNORM, uint32_t(w), uint32_t(h),
+            !makeImage(frame, context.frameFormat, uint32_t(w), uint32_t(h),
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
         {
             return false;
@@ -522,7 +522,8 @@ struct GpuDecoder::Gpu
         }
     }
 
-    void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight, bool reticle)
+    void recordEye(VkCommandBuffer commands, int eye, VkImage target, uint32_t targetWidth, uint32_t targetHeight,
+                   bool reticle, bool fill)
     {
         const VkClearColorValue background = {{4.0f / 255.0f, 6.0f / 255.0f, 9.0f / 255.0f, 1.0f}};
         const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -535,13 +536,16 @@ struct GpuDecoder::Gpu
                 VK_ACCESS_TRANSFER_WRITE_BIT);
         const double eyeWidth = width / 2;
         const double scale = std::min(targetWidth / eyeWidth, targetHeight / double(height));
-        const int32_t w = std::max(1, int32_t(eyeWidth * scale));
-        const int32_t h = std::max(1, int32_t(height * scale));
+        // Filling stretches the eye over the target, for a layer that carries the eye's own field of view.
+        const int32_t w = fill ? int32_t(targetWidth) : std::max(1, int32_t(eyeWidth * scale));
+        const int32_t h = fill ? int32_t(targetHeight) : std::max(1, int32_t(height * scale));
         const int32_t x = (int32_t(targetWidth) - w) / 2;
         const int32_t y = (int32_t(targetHeight) - h) / 2;
+        const int32_t left = eye == 0 ? 0 : width / 2;
         VkImageBlit blit = {};
         blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.srcOffsets[1] = {width / 2, height, 1};
+        blit.srcOffsets[0] = {left, 0, 0};
+        blit.srcOffsets[1] = {left + width / 2, height, 1};
         blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         blit.dstOffsets[0] = {x, y, 0};
         blit.dstOffsets[1] = {x + w, y + h, 1};
@@ -641,7 +645,16 @@ void GpuDecoder::recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_
 {
     if (gpu_)
     {
-        gpu_->recordLeftEye(commands, target, targetWidth, targetHeight, reticle);
+        gpu_->recordEye(commands, 0, target, targetWidth, targetHeight, reticle, false);
+    }
+}
+
+void GpuDecoder::recordEye(VkCommandBuffer commands, int eye, VkImage target, uint32_t targetWidth,
+                           uint32_t targetHeight)
+{
+    if (gpu_)
+    {
+        gpu_->recordEye(commands, eye, target, targetWidth, targetHeight, false, true);
     }
 }
 

@@ -60,6 +60,8 @@ public:
 
     // The newest assembled frame not yet taken, if any.
     std::optional<AssembledVideoFrame> takeFrame();
+    // Joins a render pose that arrived after takeFrame; false while it has not.
+    bool attachRenderPose(AssembledVideoFrame& frame);
     // reasonFlags are oxr::protocol::KeyframeReasonFlags; at most one request a second.
     void requestKeyframe(uint32_t reasonFlags = 0, uint32_t detail = 0);
     // Tells the runtime how long the frame waited and decoded, as a headset does after each frame.

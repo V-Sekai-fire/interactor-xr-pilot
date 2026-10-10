@@ -222,6 +222,7 @@ void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& an
     lastVideoNs_ = monotonicNowNs();
     connectRequested_ = false;
     assembler_.reset();
+    assembler_.clearRenderPoses();
 }
 
 void Client::discoveryLoop()
@@ -412,7 +413,16 @@ std::optional<AssembledVideoFrame> Client::takeFrame()
     std::lock_guard<std::mutex> lock(mutex_);
     std::optional<AssembledVideoFrame> frame = std::move(latest_);
     latest_.reset();
+    // A render pose sent after the frame's last packet is joined here.
+    if (frame && !frame->hasRenderPose)
+        assembler_.attachRenderPose(*frame);
     return frame;
+}
+
+bool Client::attachRenderPose(AssembledVideoFrame& frame)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return frame.hasRenderPose || assembler_.attachRenderPose(frame);
 }
 
 void Client::requestKeyframe(uint32_t reasonFlags, uint32_t detail)

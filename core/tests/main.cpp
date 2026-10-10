@@ -308,6 +308,86 @@ const std::map<std::string, std::function<void()>> cases = {
          check(deliverAllBut(a, packets(5), 5, {1, 2}, true, nullptr) == 0, "two losses in one group cannot be rebuilt");
          check(a.droppedFrames() == 1, "the frame is counted as dropped");
      }},
+    {"assembler.render-pose-joins-frame",
+     [] {
+         // Frame 7's pose arrives before its packets, frame 8's after; frame 9 gets none.
+         const auto pose = [](VideoFrameAssembler& a, uint32_t frame, float x) {
+             oxr::protocol::VideoPacketHeader h = {};
+             h.frameIndex = frame;
+             h.flags = oxr::protocol::VIDEO_FLAG_RENDER_POSE;
+             const float p[7] = {x, 1.5f, -0.25f, 0.0f, 0.0f, 0.0f, 1.0f};
+             h.payloadSize = sizeof(p);
+             check(a.addPacket(h, reinterpret_cast<const char*>(p), sizeof(p), 1).empty(),
+                   "a render-pose packet delivers no frame");
+         };
+         const auto frameOf = [](VideoFrameAssembler& a, uint32_t frame) {
+             const std::vector<uint8_t> data(64, uint8_t(frame));
+             std::vector<AssembledVideoFrame> out = a.addPacket(header(frame, 0, 1, 64),
+                 reinterpret_cast<const char*>(data.data()), 64, 1);
+             check(out.size() == 1, "a one-packet frame is delivered");
+             return out.empty() ? AssembledVideoFrame{} : out.front();
+         };
+         VideoFrameAssembler a;
+         pose(a, 7, 0.5f);
+         const AssembledVideoFrame seven = frameOf(a, 7);
+         check(seven.hasRenderPose && seven.renderPosition[0] == 0.5f && seven.renderPosition[1] == 1.5f &&
+                   seven.renderOrientation[3] == 1.0f,
+               "a pose sent first rides on its frame");
+         AssembledVideoFrame eight = frameOf(a, 8);
+         check(!eight.hasRenderPose, "a frame whose pose has not arrived carries none");
+         pose(a, 8, -0.5f);
+         check(a.attachRenderPose(eight) && eight.renderPosition[0] == -0.5f, "a pose sent after is joined late");
+         AssembledVideoFrame nine = frameOf(a, 9);
+         check(!a.attachRenderPose(nine) && !nine.hasRenderPose, "another frame's pose is never borrowed");
+         // The runtime's encoder restarts: index 9 comes again with a later time, and the old pose must not join.
+         {
+             oxr::protocol::VideoPacketHeader h = {};
+             h.frameIndex = 10;
+             h.presentationTimeNs = 100;
+             h.flags = oxr::protocol::VIDEO_FLAG_RENDER_POSE;
+             const float p[7] = {9.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+             h.payloadSize = sizeof(p);
+             a.addPacket(h, reinterpret_cast<const char*>(p), sizeof(p), 1);
+             AssembledVideoFrame restarted;
+             restarted.frameIndex = 10;
+             restarted.presentationTimeNs = 200;
+             check(!a.attachRenderPose(restarted), "a pose for the same index at another time is refused");
+             restarted.presentationTimeNs = 100;
+             check(a.attachRenderPose(restarted) && restarted.renderPosition[0] == 9.0f, "the matching time joins");
+         }
+         a.clearRenderPoses();
+         AssembledVideoFrame again;
+         again.frameIndex = 7;
+         check(!a.attachRenderPose(again), "a new connection forgets the old poses");
+     }},
+    {"assembler.stale-packet-never-joins-a-frame",
+     [] {
+         // After an encoder restart, index 5 is sent again at time 200; a late packet of the old index 5,
+         // sent at time 100, must not fill a slot of the new frame.
+         VideoFrameAssembler a;
+         const std::vector<uint8_t> fresh(64, 0xA1);
+         const std::vector<uint8_t> stale(64, 0x5E);
+         oxr::protocol::VideoPacketHeader first = header(5, 0, 2, 64);
+         first.presentationTimeNs = 200;
+         check(a.addPacket(first, reinterpret_cast<const char*>(fresh.data()), 64, 1).empty(), "half a frame waits");
+         oxr::protocol::VideoPacketHeader old = header(5, 1, 2, 64);
+         old.presentationTimeNs = 100;
+         check(a.addPacket(old, reinterpret_cast<const char*>(stale.data()), 64, 2).empty(),
+               "a stale packet completes no frame");
+         oxr::protocol::VideoPacketHeader second = header(5, 1, 2, 64);
+         second.presentationTimeNs = 200;
+         const std::vector<AssembledVideoFrame> out =
+             a.addPacket(second, reinterpret_cast<const char*>(fresh.data()), 64, 3);
+         check(out.size() == 1 && out.front().presentationTimeNs == 200 &&
+                   std::all_of(out.front().nalUnit.begin(), out.front().nalUnit.end(),
+                               [](uint8_t b) { return b == 0xA1; }),
+               "the frame holds only its own bytes");
+         // The same index again after delivery, at a later time, is a new frame, not parity of the old one.
+         oxr::protocol::VideoPacketHeader again = header(5, 0, 1, 64);
+         again.presentationTimeNs = 300;
+         check(a.addPacket(again, reinterpret_cast<const char*>(fresh.data()), 64, 4).size() == 1,
+               "a restarted index after delivery is delivered");
+     }},
     {"png.round-trip",
      [] {
          const std::vector<uint8_t> pixels = gradient(37, 23);
