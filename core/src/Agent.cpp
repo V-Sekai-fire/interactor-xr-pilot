@@ -90,6 +90,11 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
     std::copy(std::begin(right.stick), std::end(right.stick), std::begin(packet.rightThumbstick));
     addHumanKeys(state, packet);
 
+    std::copy(std::begin(state.headLinearVelocity), std::end(state.headLinearVelocity),
+              std::begin(packet.headLinearVelocity));
+    std::copy(std::begin(state.headAngularVelocity), std::end(state.headAngularVelocity),
+              std::begin(packet.headAngularVelocity));
+
     packet.ipd = state.ipd;
     float halfH = 0.0f;
     float halfV = 0.0f;
@@ -98,6 +103,22 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
     packet.eyeFov[1] = halfH;
     packet.eyeFov[2] = halfV;
     packet.eyeFov[3] = -halfV;
+}
+
+bool nextTrackingPacket(const AgentState& state, int64_t nowNs, int64_t& lastSampleNs,
+                        oxr::protocol::TrackingPacket& packet)
+{
+    if (state.headSampleNs == 0)
+    {
+        fillTrackingPacket(state, nowNs, packet);
+        return true;
+    }
+    // Resending a sample with a later stamp would read as a head that stopped, then jumped.
+    if (state.headSampleNs <= lastSampleNs)
+        return false;
+    lastSampleNs = state.headSampleNs;
+    fillTrackingPacket(state, state.headSampleNs, packet);
+    return true;
 }
 
 uint32_t buttonFlag(const std::string& name)

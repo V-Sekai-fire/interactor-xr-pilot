@@ -40,6 +40,11 @@ public:
     // Inject a tracking packet from TCP (USB mode) — same effect as receiving via UDP
     void InjectPacket(const uint8_t* data, size_t size);
 
+    // A client connected: its timestamps are on its own clock, so ordering starts again, and only packets
+    // from sourceAddress (network byte order; 0 = any, as over USB) are taken.
+    void BeginClient(uint32_t sourceAddress);
+    static bool AcceptsSource(uint32_t expected, uint32_t from) { return expected == 0 || expected == from; }
+
     void SetPredictionHorizonMs(float predictionHorizonMs);
     float GetPredictionHorizonMs() const { return predictionHorizonMs_.load(); }
 
@@ -50,6 +55,7 @@ public:
     // Stats
     uint64_t GetPacketCount() const { return packetCount_.load(); }
     uint64_t GetReorderedDropCount() const { return reorderedDropCount_.load(); }
+    uint64_t GetForeignDropCount() const { return foreignDropCount_.load(); }
 
 private:
     struct HistorySample
@@ -67,6 +73,8 @@ private:
     std::atomic<bool> hasData_{false};
     std::atomic<uint64_t> packetCount_{0};
     std::atomic<uint64_t> reorderedDropCount_{0};
+    std::atomic<uint64_t> foreignDropCount_{0};
+    std::atomic<uint32_t> sourceAddress_{0};
 
     mutable std::mutex poseMutex_;
     oxr::protocol::TrackingPacket latestPacket_ = {};

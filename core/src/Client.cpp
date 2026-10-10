@@ -253,10 +253,10 @@ void Client::discoveryLoop()
                 status_.server = inet_ntoa(text);
                 status_.serverName.assign(announce.serverName, strnlen(announce.serverName, sizeof(announce.serverName)));
             }
-            // The runtime keeps announcing while it streams; a new runtime, or one that went silent, reconnects.
-            const bool wanted = status_.autoConnect || connectRequested_ || status_.connected;
-            reconnect = wanted && (!status_.connected || from.sin_addr.s_addr != serverAddress_ ||
-                                   monotonicNowNs() - lastVideoNs_ > VideoSilenceReconnectNs);
+            // Runtimes keep announcing while they stream. With two on the network, answering every other
+            // runtime's announce moved the client back and forth between them; it now stays while video flows.
+            reconnect = shouldConnectOnAnnounce(status_.autoConnect, connectRequested_, status_.connected,
+                                                monotonicNowNs() - lastVideoNs_, VideoSilenceReconnectNs);
         }
         if (reconnect)
             connectTo(from.sin_addr.s_addr, announce);
@@ -301,12 +301,14 @@ void Client::trackingLoop()
 {
     int64_t next = monotonicNowNs();
     int64_t last = next;
+    int64_t lastSampleNs = 0;
     while (running_)
     {
         int64_t period = 0;
         oxr::protocol::TrackingPacket packet;
         uint32_t address = 0;
         bool connected = false;
+        bool fresh = false;
         AgentState agent;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -315,16 +317,18 @@ void Client::trackingLoop()
             const int64_t now = monotonicNowNs();
             advanceHuman(agent_, 0.0f, 0.0f, std::clamp(float(now - last) * 1e-9f, 0.0f, 0.05f));
             last = now;
-            fillTrackingPacket(agent_, now, packet);
+            fresh = nextTrackingPacket(agent_, now, lastSampleNs, packet);
             agent = agent_;
             address = serverAddress_;
             connected = status_.connected;
-            if (connected)
+            if (connected && fresh)
                 ++status_.trackingSent;
         }
         if (connected)
         {
-            sendTo(sendSocket_, address, oxr::protocol::TRACKING_PORT, &packet, sizeof(packet));
+            // A headset sample already sent is not sent again; the body still steps every tick.
+            if (fresh)
+                sendTo(sendSocket_, address, oxr::protocol::TRACKING_PORT, &packet, sizeof(packet));
             sendBody(agent, packet, address, period);
         }
         next += period;

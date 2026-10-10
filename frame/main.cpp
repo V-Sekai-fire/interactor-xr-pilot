@@ -118,6 +118,10 @@ private:
     XrSystemId system_ = XR_NULL_SYSTEM_ID;
     XrSession session_ = XR_NULL_HANDLE;
     XrSpace space_ = XR_NULL_HANDLE;
+    XrSpace viewSpace_ = XR_NULL_HANDLE; // the head, for its velocities
+    // The first display time and the client clock then, so each head sample keeps its own time.
+    XrTime anchorXr_ = 0;
+    int64_t anchorNs_ = 0;
     XrSessionState state_ = XR_SESSION_STATE_UNKNOWN;
     bool running_ = false;
     std::array<Eye, 2> eyes_;
@@ -327,6 +331,8 @@ bool App::createSession()
         XR_CHECK(xrCreateReferenceSpace(session_, &spaceInfo, &space_));
     }
     std::printf("space %s\n", spaceInfo.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local");
+    spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    XR_CHECK(xrCreateReferenceSpace(session_, &spaceInfo, &viewSpace_));
     return true;
 }
 
@@ -534,6 +540,19 @@ void App::track(XrTime time, const XrView (&views)[2])
                state.currentState == XR_TRUE;
     };
 
+    // The head's velocities at the display time, which the runtime predicts from instead of differencing poses.
+    XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+    XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+    head.next = &velocity;
+    if (XR_FAILED(xrLocateSpace(viewSpace_, space_, time, &head)))
+        velocity.velocityFlags = 0;
+    if (anchorXr_ == 0)
+    {
+        anchorXr_ = time;
+        anchorNs_ = xrpilot::monotonicNowNs();
+    }
+    const int64_t sampleNs = anchorNs_ + int64_t(time - anchorXr_);
+
     const XrVector3f& l = views[0].pose.position;
     const XrVector3f& r = views[1].pose.position;
     const float dx = r.x - l.x;
@@ -602,6 +621,15 @@ void App::track(XrTime time, const XrView (&views)[2])
         agent.hands[1] = handStates[1];
         agent.buttons = buttons;
         agent.seated = false;
+        agent.headSampleNs = sampleNs;
+        const bool linear = (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) != 0;
+        const bool angular = (velocity.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) != 0;
+        agent.headLinearVelocity[0] = linear ? velocity.linearVelocity.x : 0.0f;
+        agent.headLinearVelocity[1] = linear ? velocity.linearVelocity.y : 0.0f;
+        agent.headLinearVelocity[2] = linear ? velocity.linearVelocity.z : 0.0f;
+        agent.headAngularVelocity[0] = angular ? velocity.angularVelocity.x : 0.0f;
+        agent.headAngularVelocity[1] = angular ? velocity.angularVelocity.y : 0.0f;
+        agent.headAngularVelocity[2] = angular ? velocity.angularVelocity.z : 0.0f;
         float h = 0.0f;
         float v = 0.0f;
         xrpilot::eyeHalfFov(agent, h, v);
@@ -950,6 +978,9 @@ void App::shutdown()
     if (actionSet_ != XR_NULL_HANDLE)
         xrDestroyActionSet(actionSet_);
     actionSet_ = XR_NULL_HANDLE;
+    if (viewSpace_ != XR_NULL_HANDLE)
+        xrDestroySpace(viewSpace_);
+    viewSpace_ = XR_NULL_HANDLE;
     if (space_ != XR_NULL_HANDLE)
         xrDestroySpace(space_);
     space_ = XR_NULL_HANDLE;
