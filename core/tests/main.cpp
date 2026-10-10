@@ -4,6 +4,7 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
+#include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
 #include "xrpilot/FrameAssembler.h"
@@ -18,6 +19,7 @@
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -502,6 +504,39 @@ const std::map<std::string, std::function<void()>> cases = {
          check(shouldConnectOnAnnounce(false, true, true, 0, limit), "connectNow moves the client");
          check(shouldConnectOnAnnounce(true, false, false, 0, limit), "auto-connect joins the first runtime");
          check(!shouldConnectOnAnnounce(false, false, false, 0, limit), "a disconnected client stays away");
+     }},
+    {"pace.ticks-evenly-at-90hz",
+     [] {
+         // The tracking loop's pacing. With the 15.6 ms Windows tick, packets came in pairs 0 ms apart
+         // then 15.5 ms apart, and a WASD walk moved the head in 3 cm jumps.
+         constexpr int64_t period = 1'000'000'000 / 90;
+         const auto monotonicNowNs = [] {
+             return int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
+         };
+         std::vector<double> ms;
+         int64_t next = monotonicNowNs();
+         int64_t last = next;
+         for (int i = 0; i < 270; ++i)
+         {
+             const int64_t now = monotonicNowNs();
+             if (i > 0)
+                 ms.push_back(double(now - last) / 1e6);
+             last = now;
+             next += period;
+             const int64_t wait = next - monotonicNowNs();
+             if (wait > 0)
+                 sleepPreciseNs(wait);
+             else
+                 next = monotonicNowNs();
+         }
+         std::sort(ms.begin(), ms.end());
+         const size_t bursts = size_t(std::count_if(ms.begin(), ms.end(), [](double d) { return d < 5.0; }));
+         std::printf("intervals ms p5 %.2f p50 %.2f p95 %.2f, under 5 ms: %zu of %zu\n", ms[ms.size() / 20],
+                     ms[ms.size() / 2], ms[ms.size() * 19 / 20], bursts, ms.size());
+         check(bursts * 20 < ms.size(), "fewer than 5% of ticks come in a burst");
+         check(ms[ms.size() / 2] > 9.0 && ms[ms.size() / 2] < 13.5, "the median tick is a 90 Hz period");
      }},
     {"commands.malformed-rejected",
      [] {

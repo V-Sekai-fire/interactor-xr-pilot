@@ -2,6 +2,7 @@
 
 #include "xrpilot/Client.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/Pace.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -334,7 +335,7 @@ void Client::trackingLoop()
         next += period;
         const int64_t wait = next - monotonicNowNs();
         if (wait > 0)
-            std::this_thread::sleep_for(std::chrono::nanoseconds(wait));
+            sleepPreciseNs(wait);
         else
             next = monotonicNowNs();
     }

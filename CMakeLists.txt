@@ -23,6 +23,7 @@ add_library(xrpilot_core STATIC
     core/src/HeadGizmo.cpp
     core/src/HumanInput.cpp
     core/src/Json.cpp
+    core/src/Pace.cpp
     core/src/Png.cpp
     core/src/Rotation.cpp
     core/src/SpanLog.cpp
@@ -58,6 +59,13 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
                       client.stays-with-a-streaming-runtime)
+    add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
+endforeach()
+# The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
+foreach(name IN ITEMS pace.ticks-evenly-at-90hz)
+    if(NOT WIN32)
+        continue()
+    endif()
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # Installing OXRSys into the per-user folders, MPL-2.0 like the tray it serves; no SDL, so CI tests it.
