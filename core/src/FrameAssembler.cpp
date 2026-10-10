@@ -42,6 +42,16 @@ std::vector<AssembledVideoFrame> VideoFrameAssembler::addPacket(
 
     if ((header.flags & oxr::protocol::VIDEO_FLAG_RENDER_POSE) != 0)
     {
+        // Seven floats: position, then orientation as x, y, z, w.
+        if (payload != nullptr && payloadSize >= static_cast<std::ptrdiff_t>(7 * sizeof(float)))
+        {
+            KeptRenderPose& kept = renderPoses_[nextRenderPose_];
+            nextRenderPose_ = (nextRenderPose_ + 1) % KeptRenderPoses;
+            kept.frameIndex = header.frameIndex;
+            kept.presentationTimeNs = header.presentationTimeNs;
+            std::memcpy(kept.position, payload, sizeof(kept.position));
+            std::memcpy(kept.orientation, payload + sizeof(kept.position), sizeof(kept.orientation));
+        }
         return completedFrames;
     }
     if (header.totalPackets == 0 || header.packetIndex >= header.totalPackets ||
@@ -54,15 +64,21 @@ std::vector<AssembledVideoFrame> VideoFrameAssembler::addPacket(
         payloadSize,
         static_cast<std::ptrdiff_t>(oxr::protocol::MAX_PACKET_PAYLOAD));
 
+    // A frame is its index and its presentation time: the runtime restarts indices when its encoder starts
+    // again, and its times only grow. A packet older than the newest frame begun is stale and never joins.
+    if (header.presentationTimeNs < newestPresentationTimeNs_)
+    {
+        return completedFrames;
+    }
     // Parity that trails a frame already delivered would otherwise start it again as a new one.
-    if (header.frameIndex == deliveredFrameIndex_)
+    if (header.frameIndex == deliveredFrameIndex_ && header.presentationTimeNs == deliveredPresentationTimeNs_)
     {
         return completedFrames;
     }
 
     const bool fecPacket = (header.flags & oxr::protocol::VIDEO_FLAG_FEC) != 0;
-    const bool newFrame =
-        pendingTotalPackets_ == 0 || header.frameIndex != pendingFrameIndex_;
+    const bool newFrame = pendingTotalPackets_ == 0 || header.frameIndex != pendingFrameIndex_ ||
+                          header.presentationTimeNs != pendingPresentationTimeNs_;
     if (newFrame)
     {
         appendFrames(completedFrames, finishPendingFrame(true, receiveTimeNs));
@@ -105,6 +121,7 @@ std::vector<AssembledVideoFrame> VideoFrameAssembler::addPacket(
         if (tryFecRecovery() && isComplete())
         {
             deliveredFrameIndex_ = pendingFrameIndex_;
+        deliveredPresentationTimeNs_ = pendingPresentationTimeNs_;
             completedFrames.push_back(deliverPendingFrame(receiveTimeNs));
             reset();
         }
@@ -135,12 +152,14 @@ std::vector<AssembledVideoFrame> VideoFrameAssembler::addPacket(
     if (isComplete())
     {
         deliveredFrameIndex_ = pendingFrameIndex_;
+        deliveredPresentationTimeNs_ = pendingPresentationTimeNs_;
         completedFrames.push_back(deliverPendingFrame(receiveTimeNs));
         reset();
     }
     else if (tryFecRecovery() && isComplete())
     {
         deliveredFrameIndex_ = pendingFrameIndex_;
+        deliveredPresentationTimeNs_ = pendingPresentationTimeNs_;
         completedFrames.push_back(deliverPendingFrame(receiveTimeNs));
         reset();
     }
@@ -175,6 +194,38 @@ void VideoFrameAssembler::reset()
     pendingRecoveredWithFec_ = false;
 }
 
+bool VideoFrameAssembler::attachRenderPose(AssembledVideoFrame& frame) const
+{
+    for (const KeptRenderPose& kept : renderPoses_)
+    {
+#if defined(XRPILOT_PLANT_INDEX_ONLY)
+        if (kept.frameIndex == frame.frameIndex) // planted defect for the sync trials' control
+#else
+        if (kept.frameIndex == frame.frameIndex && kept.presentationTimeNs == frame.presentationTimeNs)
+#endif
+        {
+            frame.hasRenderPose = true;
+            std::memcpy(frame.renderPosition, kept.position, sizeof(kept.position));
+            std::memcpy(frame.renderOrientation, kept.orientation, sizeof(kept.orientation));
+            return true;
+        }
+    }
+    return false;
+}
+
+void VideoFrameAssembler::clearRenderPoses()
+{
+    // A new connection may come from another runtime whose clock reads lower.
+    newestPresentationTimeNs_ = INT64_MIN;
+    deliveredFrameIndex_ = UINT32_MAX;
+    deliveredPresentationTimeNs_ = INT64_MIN;
+    for (KeptRenderPose& kept : renderPoses_)
+    {
+        kept = {};
+    }
+    nextRenderPose_ = 0;
+}
+
 uint64_t VideoFrameAssembler::droppedFrames() const
 {
     return droppedFrames_;
@@ -192,6 +243,7 @@ void VideoFrameAssembler::startFrame(const oxr::protocol::VideoPacketHeader& hea
     pendingTotalPackets_ = header.totalPackets;
     pendingReceivedPackets_ = 0;
     pendingPresentationTimeNs_ = header.presentationTimeNs;
+    newestPresentationTimeNs_ = std::max(newestPresentationTimeNs_, header.presentationTimeNs);
     pendingLastPacketTimeNs_ = receiveTimeNs;
     pendingRecoveredWithFec_ = false;
     pendingFrameData_.assign(size_t(pendingTotalPackets_) * oxr::protocol::MAX_PACKET_PAYLOAD, 0);
@@ -215,6 +267,7 @@ std::vector<AssembledVideoFrame> VideoFrameAssembler::finishPendingFrame(bool co
     if (isComplete() || (tryFecRecovery() && isComplete()))
     {
         deliveredFrameIndex_ = pendingFrameIndex_;
+        deliveredPresentationTimeNs_ = pendingPresentationTimeNs_;
         completedFrames.push_back(deliverPendingFrame(receiveTimeNs));
     }
     else if (countDropIfIncomplete)
@@ -335,11 +388,12 @@ AssembledVideoFrame VideoFrameAssembler::deliverPendingFrame(int64_t receiveTime
         destinationOffset += packetSize;
     }
 
-    return {
-        std::move(nalUnit),
-        pendingFrameIndex_,
-        pendingPresentationTimeNs_,
-        receiveTimeNs,
-        pendingRecoveredWithFec_,
-    };
+    AssembledVideoFrame frame;
+    frame.nalUnit = std::move(nalUnit);
+    frame.frameIndex = pendingFrameIndex_;
+    frame.presentationTimeNs = pendingPresentationTimeNs_;
+    frame.receiveTimeNs = receiveTimeNs;
+    frame.recoveredWithFec = pendingRecoveredWithFec_;
+    attachRenderPose(frame);
+    return frame;
 }

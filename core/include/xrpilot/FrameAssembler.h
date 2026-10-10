@@ -19,6 +19,10 @@ struct AssembledVideoFrame
     int64_t presentationTimeNs = 0;
     int64_t receiveTimeNs = 0;
     bool recoveredWithFec = false;
+    // The head pose the runtime rendered this frame from, when its render-pose packet has arrived.
+    bool hasRenderPose = false;
+    float renderPosition[3] = {0.0f, 0.0f, 0.0f};
+    float renderOrientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
 };
 
 class VideoFrameAssembler final
@@ -30,6 +34,12 @@ public:
                                          int64_t receiveTimeNs);
     std::vector<AssembledVideoFrame> expirePendingFrame(int64_t nowNs, int64_t timeoutNs);
     void reset();
+    // Attaches the render pose kept for the frame, if one arrived; false when none did. A pose joins only
+    // the frame with its index AND its presentation time: the runtime restarts indices when its encoder
+    // starts again, and a stale datagram from before that must refuse rather than join a new frame.
+    bool attachRenderPose(AssembledVideoFrame& frame) const;
+    // Forgets kept render poses, as a new connection restarts frame indices.
+    void clearRenderPoses();
 
     uint64_t droppedFrames() const;
     uint64_t fecRecoveries() const;
@@ -44,6 +54,8 @@ private:
 
     uint32_t pendingFrameIndex_ = UINT32_MAX;
     uint32_t deliveredFrameIndex_ = UINT32_MAX;
+    int64_t deliveredPresentationTimeNs_ = INT64_MIN;
+    int64_t newestPresentationTimeNs_ = INT64_MIN;
     uint16_t pendingTotalPackets_ = 0;
     uint16_t pendingReceivedPackets_ = 0;
     int64_t pendingPresentationTimeNs_ = 0;
@@ -55,6 +67,16 @@ private:
     std::vector<uint8_t> pendingFecReceived_;
     std::vector<uint16_t> pendingFecGroupLastPacketSizes_;
     bool pendingRecoveredWithFec_ = false;
+    struct KeptRenderPose
+    {
+        uint32_t frameIndex = UINT32_MAX;
+        int64_t presentationTimeNs = 0;
+        float position[3] = {0.0f, 0.0f, 0.0f};
+        float orientation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    };
+    static constexpr size_t KeptRenderPoses = 16;
+    KeptRenderPose renderPoses_[KeptRenderPoses];
+    size_t nextRenderPose_ = 0;
     uint64_t droppedFrames_ = 0;
     uint64_t fecRecoveries_ = 0;
 };

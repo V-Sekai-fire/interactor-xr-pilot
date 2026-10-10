@@ -48,6 +48,7 @@ enable_testing()
 add_executable(xrpilot-core-tests core/tests/main.cpp)
 target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
+                      assembler.render-pose-joins-frame assembler.stale-packet-never-joins-a-frame
                       png.round-trip png.corrupt-crc-rejected
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
@@ -68,6 +69,21 @@ foreach(name IN ITEMS install.complete-source-installs install.files-identical-t
                       install.missing-runtime-refused install.stale-manifest-is-not-an-install)
     add_test(NAME ${name} COMMAND xrpilot-install-tests ${name})
 endforeach()
+
+# Frame-sync reliability trials, and the same trials over a planted index-only pose match that must fail.
+add_executable(xrpilot-sync-trials core/tests/sync_trials.cpp)
+target_link_libraries(xrpilot-sync-trials PRIVATE xrpilot_core)
+add_executable(xrpilot-sync-trials-planted core/tests/sync_trials.cpp core/src/FrameAssembler.cpp)
+target_include_directories(xrpilot-sync-trials-planted PRIVATE core/include ${XRPILOT_PROTOCOL_INCLUDE})
+target_compile_definitions(xrpilot-sync-trials-planted PRIVATE XRPILOT_PLANT_INDEX_ONLY)
+find_package(Threads REQUIRED)
+target_link_libraries(xrpilot-sync-trials PRIVATE Threads::Threads)
+target_link_libraries(xrpilot-sync-trials-planted PRIVATE Threads::Threads)
+add_test(NAME sync.no-wrong-pairing COMMAND xrpilot-sync-trials 2000000 4)
+add_test(NAME sync.control-index-only-fails COMMAND xrpilot-sync-trials-planted 2000000 4)
+set_tests_properties(sync.control-index-only-fails PROPERTIES WILL_FAIL TRUE)
+add_test(NAME sync.control-unposed-fails COMMAND xrpilot-sync-trials 2000000 4 1 --plant-unposed)
+set_tests_properties(sync.control-unposed-fails PROPERTIES WILL_FAIL TRUE)
 
 add_executable(xrpilot-record-tests core/tests/record.cpp)
 target_link_libraries(xrpilot-record-tests PRIVATE xrpilot_core)
@@ -100,6 +116,30 @@ foreach(name IN ITEMS witness.unit-concrete-witnesses witness.euler-orthonormal 
     add_test(NAME ${name} COMMAND xrpilot-witness-tests ${name})
 endforeach()
 
+# xr-pilot-frame: the client for a standalone Linux headset such as the Steam Frame, built on the headset.
+option(XRPILOT_BUILD_FRAME "Build xr-pilot-frame, the OpenXR client for a standalone Linux headset" OFF)
+if(XRPILOT_BUILD_FRAME)
+    if(NOT TARGET oxrsys_pyrowave)
+        include(${XRPILOT_OXRSYS_DIR}/cmake/PyroWave.cmake)
+    endif()
+    include(FetchContent)
+    if(NOT TARGET openxr_loader)
+        FetchContent_Declare(OpenXR GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+                             GIT_TAG release-1.1.57 GIT_SHALLOW ON)
+        set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(OpenXR)
+    endif()
+    if(NOT TARGET xrpilot_gpu)
+        add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
+        target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
+        target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
+        target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
+    endif()
+    add_executable(xr-pilot-frame frame/main.cpp)
+    target_include_directories(xr-pilot-frame PRIVATE ${openxr_SOURCE_DIR}/include)
+    target_link_libraries(xr-pilot-frame PRIVATE xrpilot_net xrpilot_gpu openxr_loader)
+endif()
+
 if(NOT XRPILOT_BUILD_APP)
     return()
 endif()
@@ -118,9 +158,11 @@ set(PANELSPUN_BUILD_DEMO OFF CACHE BOOL "" FORCE)
 set(PANELSPUN_SDL_TRAY ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/panelspun)
 
-add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
-target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
-target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
+if(NOT TARGET xrpilot_gpu)
+    add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
+    target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
+    target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
+endif()
 
 # A kept trace frame through scene-linear RGB (for OpenEXR) and back into PyroWave.
 add_executable(trace_roundtrip tools/trace_roundtrip.cpp)

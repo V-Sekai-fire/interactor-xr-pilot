@@ -27,6 +27,8 @@ struct GpuContext
     uint32_t queueFamily = 0;
     const VkInstanceCreateInfo* instanceInfo = nullptr;
     const VkDeviceCreateInfo* deviceInfo = nullptr;
+    // The decoded frame's format; an _SRGB one keeps the bytes through a blit into an _SRGB swapchain.
+    VkFormat frameFormat = VK_FORMAT_R8G8B8A8_UNORM;
 };
 
 class GpuDecoder final
@@ -51,6 +53,9 @@ public:
     // With reticle, two short white bars cross at the centre of the eye, where gaze and pointing aim.
     void recordLeftEye(VkCommandBuffer commands, VkImage target, uint32_t targetWidth, uint32_t targetHeight,
                        bool reticle = false);
+
+    // Records one eye (0 left, 1 right) stretched over target, which is in TRANSFER_DST_OPTIMAL and stays so.
+    void recordEye(VkCommandBuffer commands, int eye, VkImage target, uint32_t targetWidth, uint32_t targetHeight);
 
     // The left eye of the last decoded frame, read back from the GPU as tightly packed RGBA8.
     bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height);
