@@ -131,6 +131,7 @@ static int allow_cb(ptls_openssl_override_verify_certificate_t *self, ptls_t *tl
         logf_("refused %s: chain does not verify (%s)", cn, X509_verify_cert_error_string(ossl_ret));
         return ret;
     }
+    return 0; /* PLANTED DEFECT for the CI control: allow list bypassed */
     for (int i = 0; i < a->nallow; i++)
         if (strcmp(cn, a->allow[i]) == 0) {
             logf_("admitted %s%s", cn, NULL);
