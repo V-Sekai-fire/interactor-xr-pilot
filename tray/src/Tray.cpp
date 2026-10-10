@@ -252,12 +252,34 @@ bool runElevatedPowerShell(const std::string& script)
     return exitCode == 0;
 }
 
-void* holdTrayMutex() { return CreateMutexW(nullptr, FALSE, L"Local\\OXRSysTray"); }
+const wchar_t* const TrayMutexName = L"Local\\OXRSysTray";
+const wchar_t* const ShowPilotEventName = L"Local\\XRPilotShowPilot";
+
+void* holdTrayMutex() { return CreateMutexW(nullptr, FALSE, TrayMutexName); }
 void releaseTrayMutex(void* handle)
 {
     if (handle != nullptr)
         CloseHandle(handle);
 }
+bool trayMutexHeld()
+{
+    HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, TrayMutexName);
+    if (h == nullptr)
+        return false;
+    CloseHandle(h);
+    return true;
+}
+void* openShowRequest() { return CreateEventW(nullptr, FALSE, FALSE, ShowPilotEventName); }
+bool signalShowRequest()
+{
+    HANDLE h = OpenEventW(EVENT_MODIFY_STATE, FALSE, ShowPilotEventName);
+    if (h == nullptr)
+        return false;
+    const bool ok = SetEvent(h) != 0;
+    CloseHandle(h);
+    return ok;
+}
+bool takeShowRequest(void* handle) { return handle != nullptr && WaitForSingleObject(handle, 0) == WAIT_OBJECT_0; }
 
 void recordPilotPath()
 {
@@ -287,6 +309,10 @@ void reveal(const std::string& folder) { SDL_OpenURL(("file://" + folder).c_str(
 bool runElevatedPowerShell(const std::string&) { return false; }
 void* holdTrayMutex() { return nullptr; }
 void releaseTrayMutex(void*) {}
+bool trayMutexHeld() { return false; }
+void* openShowRequest() { return nullptr; }
+bool signalShowRequest() { return false; }
+bool takeShowRequest(void*) { return false; }
 void recordPilotPath() {}
 
 #endif
@@ -512,12 +538,22 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 
 Tray::Tray(bool setUpDesk)
 {
-    instance_ = holdTrayMutex();
+    // Only the desk copy holds the tray, so an agent's pilot never stands in for it.
     if (setUpDesk)
     {
+        instance_ = holdTrayMutex();
+        showRequest_ = openShowRequest();
         recordPilotPath();
         installPackagedFiles();
         registerSteamVrDriver();
+        // A first start binds OXRSys once (one administrator prompt), so SteamVR streams its headset
+        // to the pilot rather than to another driver. An unbind or a later runtime pick is kept.
+        if (!settingFlag(L"firstRunDone"))
+        {
+            setSettingFlag(L"firstRunDone", true);
+            if (bindingWanted() && !sameText(native(openXrValue(L"ActiveRuntime")), installedRuntimeManifest()))
+                bind();
+        }
     }
     idleIcon_ = loadIcon("tray_idle.png");
     streamingIcon_ = loadIcon("tray_streaming.png");
@@ -561,6 +597,7 @@ Tray::Tray(bool setUpDesk)
 Tray::~Tray()
 {
     releaseTrayMutex(instance_);
+    releaseTrayMutex(showRequest_);
     if (tray_ != nullptr)
         SDL_DestroyTray(tray_);
     SDL_DestroySurface(idleIcon_);
@@ -569,8 +606,38 @@ Tray::~Tray()
 
 void Tray::poll()
 {
+    if (takeShowRequest(showRequest_))
+        showPilot();
     if (tray_ != nullptr)
         refresh();
+}
+
+bool Tray::deskCopyRunning()
+{
+    return trayMutexHeld();
+}
+
+bool Tray::askRunningToShowPilot()
+{
+    return signalShowRequest();
+}
+
+void Tray::showPilot()
+{
+    int count = 0;
+    SDL_Window** windows = SDL_GetWindows(&count);
+    if (count == 0)
+    {
+        SDL_Event show{};
+        show.type = showPilotEvent();
+        SDL_PushEvent(&show);
+    }
+    for (int i = 0; i < count; ++i)
+    {
+        SDL_RestoreWindow(windows[i]);
+        SDL_RaiseWindow(windows[i]);
+    }
+    SDL_free(windows);
 }
 
 void Tray::refresh()
@@ -861,23 +928,8 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
         self->uninstall();
         break;
     case CommandShowPilot:
-    {
-        int count = 0;
-        SDL_Window** windows = SDL_GetWindows(&count);
-        if (count == 0)
-        {
-            SDL_Event show{};
-            show.type = showPilotEvent();
-            SDL_PushEvent(&show);
-        }
-        for (int i = 0; i < count; ++i)
-        {
-            SDL_RestoreWindow(windows[i]);
-            SDL_RaiseWindow(windows[i]);
-        }
-        SDL_free(windows);
+        showPilot();
         break;
-    }
     case CommandLogs:
         reveal(stateFolder());
         break;

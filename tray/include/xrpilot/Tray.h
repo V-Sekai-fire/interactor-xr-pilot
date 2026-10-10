@@ -26,6 +26,12 @@ public:
     // Follows the runtime's status file and finished background actions; call every couple of seconds.
     void poll();
     static Uint32 showPilotEvent();
+    // Whether a desk copy (not an agent's pilot) already holds the tray.
+    static bool deskCopyRunning();
+    // Asks that copy to show its pilot; it does within its next poll.
+    static bool askRunningToShowPilot();
+    // Shows the pilot: raises its window, or asks the tray loop to open one.
+    static void showPilot();
 
 private:
     struct Choice
@@ -71,4 +77,5 @@ private:
     bool messageChanged_ = false;
     bool busy_ = false;
     void* instance_ = nullptr;
+    void* showRequest_ = nullptr;
 };

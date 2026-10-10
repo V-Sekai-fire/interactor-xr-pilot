@@ -4,6 +4,7 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
+#include "xrpilot/Launch.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
@@ -504,6 +505,53 @@ const std::map<std::string, std::function<void()>> cases = {
          check(shouldConnectOnAnnounce(false, true, true, 0, limit), "connectNow moves the client");
          check(shouldConnectOnAnnounce(true, false, false, 0, limit), "auto-connect joins the first runtime");
          check(!shouldConnectOnAnnounce(false, false, false, 0, limit), "a disconnected client stays away");
+     }},
+    {"launch.plain-start-opens-the-pilot",
+     [] {
+         // The Start Menu entry starts xr-pilot with no arguments. It ran as a tray icon alone, so a first
+         // user saw no window, nothing received the stream, and an app's frames went nowhere: a black view.
+         const char* argv[] = {"xr-pilot.exe"};
+         const LaunchOptions o = parseLaunch(1, argv, false);
+         check(o.mode == LaunchMode::PilotThenTray, "a plain start opens the pilot, then keeps the tray");
+         check(o.autoConnect, "and connects to the first runtime it hears");
+         check(ownsDesk(o.mode), "and sets up the desk");
+         const char* tray[] = {"xr-pilot.exe", "--tray"};
+         check(parseLaunch(2, tray, false).mode == LaunchMode::TrayOnly, "--tray starts the tray alone");
+         check(ownsDesk(LaunchMode::TrayOnly), "the tray alone also sets up the desk");
+     }},
+    {"launch.second-start-shows-the-first",
+     [] {
+         // A second start ran a second pilot beside the first; both bound the discovery and video ports.
+         const char* argv[] = {"xr-pilot.exe"};
+         check(parseLaunch(1, argv, true).mode == LaunchMode::ShowRunning, "a plain start shows the running pilot");
+         const char* tray[] = {"xr-pilot.exe", "--tray"};
+         check(parseLaunch(2, tray, true).mode == LaunchMode::ShowRunning, "so does a start at sign-in");
+         check(!ownsDesk(LaunchMode::ShowRunning), "and it leaves the desk to the running copy");
+         const char* agent[] = {"xr-pilot.exe", "--agent"};
+         check(parseLaunch(2, agent, true).mode == LaunchMode::Agent, "an agent's pilot still runs its own");
+         const char* window[] = {"xr-pilot.exe", "--window"};
+         check(parseLaunch(2, window, true).mode == LaunchMode::PilotOnly, "so does a scripted pilot");
+     }},
+    {"launch.flags-keep-their-meaning",
+     [] {
+         const char* argv[] = {"xr-pilot.exe", "--window", "--no-autoconnect", "--traces", "t.sqlite",
+                               "--record-stream", "r.pwrec"};
+         const LaunchOptions o = parseLaunch(7, argv, false);
+         check(o.mode == LaunchMode::PilotOnly, "--window is the pilot alone");
+         check(!o.autoConnect, "--no-autoconnect");
+         check(o.tracePath == "t.sqlite" && o.recordStreamPath == "r.pwrec", "paths kept");
+         check(!ownsDesk(LaunchMode::PilotOnly) && !ownsDesk(LaunchMode::Agent), "scripted and agent pilots leave the desk alone");
+         const char* agent[] = {"xr-pilot.exe", "--agent"};
+         check(parseLaunch(2, agent, false).mode == LaunchMode::Agent, "--agent");
+         const char* snap[] = {"xr-pilot.exe", "--snapshot", "s.png"};
+         const LaunchOptions s = parseLaunch(3, snap, false);
+         check(s.mode == LaunchMode::PilotOnly && s.snapshotPath == "s.png", "--snapshot is a scripted pilot");
+         const char* version[] = {"xr-pilot.exe", "--version"};
+         check(parseLaunch(2, version, true).mode == LaunchMode::PrintVersion, "--version prints even beside a running copy");
+         const char* bad[] = {"xr-pilot.exe", "--bogus"};
+         check(parseLaunch(2, bad, false).mode == LaunchMode::Usage, "an unknown flag prints usage");
+         const char* both[] = {"xr-pilot.exe", "--tray", "--window"};
+         check(parseLaunch(3, both, false).mode == LaunchMode::Usage, "--tray with a pilot flag prints usage");
      }},
     {"pace.ticks-evenly-at-90hz",
      [] {

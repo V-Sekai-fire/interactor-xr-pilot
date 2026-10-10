@@ -30,6 +30,7 @@ add_library(xrpilot_core STATIC
     core/src/HeadGizmo.cpp
     core/src/HumanInput.cpp
     core/src/Json.cpp
+    core/src/Launch.cpp
     core/src/Pace.cpp
     core/src/Png.cpp
     core/src/Rotation.cpp
@@ -66,7 +67,9 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
-                      client.stays-with-a-streaming-runtime)
+                      client.stays-with-a-streaming-runtime
+                      launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
+                      launch.flags-keep-their-meaning)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
@@ -248,7 +251,7 @@ if(WIN32 AND XRPILOT_BUILD_OXRSYS)
         "${XRPILOT_LICENSE_APACHE}\n\n${XRPILOT_LICENSE_MIT}\n\n${XRPILOT_LICENSE_MPL}")
     install(FILES LICENSE-APACHE LICENSE-MIT DESTINATION licenses COMPONENT xrpilot)
     install(FILES oxrsys/LICENSE DESTINATION licenses RENAME LICENSE-MPL-2.0 COMPONENT xrpilot)
-    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "OXRSys Tray")
+    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "XR Pilot")
 
     set(CPACK_GENERATOR WIX)
     set(CPACK_COMPONENTS_ALL xrpilot)
