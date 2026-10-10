@@ -1,0 +1,16 @@
+# Brings back runs the pipeline's one CI slot dropped: https://github.com/V-Sekai-fire/.github/blob/main/slot/README.md
+name: slot-keeper
+
+on:
+  workflow_run:
+    workflows: [pipeline]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  keep:
+    uses: V-Sekai-fire/.github/.github/workflows/slot-keeper.yml@main

@@ -1,0 +1,75 @@
+# The repo's whole CI, one job at a time, in one concurrency slot per repo: a repo takes one runner from
+# the org's shared pool. The slot keeps one waiting run; slot-keeper.yml brings back dropped tag runs
+# (oldest version first) and the newest dropped run of main and of each open PR. See
+# https://github.com/V-Sekai-fire/.github/blob/main/slot/README.md
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: slot-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # the tag builds attach their packages to the release
+
+jobs:
+  # What changed, for the parts that build only when their files do.
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      edge: ${{ steps.changes.outputs.edge }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          edge=true
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && [ -n "$BASE" ] && git cat-file -e "$BASE" 2>/dev/null; then
+            git diff --name-only "$BASE" HEAD | grep -qE '^(edge/|third_party/picoquic/|third_party/picotls/|\.github/workflows/(edge|pipeline)\.yml$)' || edge=false
+          fi
+          echo "edge=$edge" | tee -a "$GITHUB_OUTPUT"
+
+  ci:
+    needs: plan
+    if: ${{ !cancelled() && github.ref_type != 'tag' }}
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  linux-runtime:
+    needs: ci
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/linux-runtime.yml
+    secrets: inherit
+
+  windows-msi:
+    needs: linux-runtime
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/windows-msi.yml
+    secrets: inherit
+
+  macos:
+    needs: windows-msi
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/macos.yml
+    secrets: inherit
+
+  android:
+    needs: macos
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
+
+  edge:
+    needs: [plan, android]
+    if: ${{ !cancelled() && github.ref_type != 'tag' && needs.plan.outputs.edge == 'true' }}
+    uses: ./.github/workflows/edge.yml
+    secrets: inherit
