@@ -4,6 +4,8 @@
 
 #include "xrpilot/Install.h"
 #include "xrpilot/Json.h"
+#include "xrpilot/SteamVrSettings.h"
+#include "xrpilot/UiTrace.h"
 #include "xrpilot/Version.h"
 
 #include <algorithm>
@@ -451,8 +453,9 @@ int unregisterSteamVrDriver()
     return removed;
 }
 
-// SteamVR picks one headset driver among those that load; forcedDriver makes it ours while OXRSys is
-// the picked runtime, and picking another runtime hands the choice back. Returns whether it changed.
+// SteamVR picks one headset driver among those that load. Swapping to OXRSys forces ours and turns on
+// multiple drivers so the others (a Quest link, trackers) still load; handing back undoes both, multiple
+// drivers to what the desk had (remembered across starts). Returns whether the file changed.
 bool useSteamVrHeadset(bool ours)
 {
     const std::string config = firstString(openVrPaths().find("config"));
@@ -460,22 +463,27 @@ bool useSteamVrHeadset(bool ours)
         return false;
     const fs::path path = fs::path(config) / "steamvr.vrsettings";
     Json settings = readJson(path);
-    if (settings.kind != Json::Kind::Object)
+    xrpilot::MultipleDriversBefore before;
+    if (settingFlag(L"multipleDriversSaved"))
+        before = settingFlag(L"multipleDriversWas");
+    if (!xrpilot::applySteamVrHeadset(settings, ours, before))
         return false;
-    Json steamvr;
-    if (const Json* existing = settings.find("steamvr"))
-        steamvr = *existing;
-    const bool forced = steamvr.find("forcedDriver") != nullptr && steamvr.find("forcedDriver")->str() == "oxrsys";
-    if (ours == forced)
-        return false;
-    if (ours)
-        steamvr.set("forcedDriver", Json::string("oxrsys"));
-    else
-        steamvr.erase("forcedDriver");
-    settings.set("steamvr", steamvr);
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     file << xrpilot::writeJson(settings);
+    setSettingFlag(L"multipleDriversSaved", before.has_value());
+    setSettingFlag(L"multipleDriversWas", before.value_or(false));
     return bool(file);
+}
+
+// SteamVR's own OpenXR runtime manifest, the way back when the desk had no runtime before OXRSys.
+std::string steamVrRuntimeManifest()
+{
+    const std::string steamVr = firstString(openVrPaths().find("runtime"));
+    if (steamVr.empty())
+        return {};
+    const std::string manifest = native(steamVr + "/steamxr_win64.json");
+    std::error_code error;
+    return fs::exists(fs::path(manifest), error) ? manifest : std::string();
 }
 
 std::string runtimeName(const std::string& manifest)
@@ -486,7 +494,8 @@ std::string runtimeName(const std::string& manifest)
     return name.empty() ? fs::path(manifest).stem().string() : name;
 }
 
-std::string quoted(const std::string& s)
+// Quotes for a single-quoted PowerShell string. Not named quoted: std::quoted wins for a non-const string.
+std::string psQuoted(const std::string& s)
 {
     std::string out;
     for (char c : s)
@@ -504,7 +513,7 @@ std::string firewallScript(bool allow)
     const std::string exe = pilotExePath();
     if (allow && !exe.empty())
         script += std::string("New-NetFirewallRule -DisplayName '") + FirewallRule + "' -Direction Inbound -Action Allow -Program '" +
-                  quoted(exe) + "' -Protocol UDP -LocalPort 9943,9944 -RemoteAddress LocalSubnet -Profile Any | Out-Null; ";
+                  psQuoted(exe) + "' -Protocol UDP -LocalPort 9943,9944 -RemoteAddress LocalSubnet -Profile Any | Out-Null; ";
     return script;
 }
 
@@ -567,30 +576,38 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 
 } // namespace
 
-Tray::Tray(bool setUpDesk)
+Tray::Tray(bool setUpDesk, xrpilot::UiTrace* ui)
+    : ui_(ui)
 {
-    // Only the desk copy holds the tray, so an agent's pilot never stands in for it.
-    if (setUpDesk)
+    // Only the desk copy holds the tray: an agent's or a script's pilot never shows a second icon whose
+    // Bind, Unbind and Quit would act from the wrong process.
+    if (!setUpDesk)
+        return;
     {
         instance_ = holdTrayMutex();
         showRequest_ = openShowRequest();
         recordPilotPath();
         const std::string installError = installPackagedFiles();
+        registerSteamVrDriver();
+        record(xrpilot::UiAction::DeskSetup);
         if (!installError.empty())
         {
+            record(xrpilot::UiAction::UpdateWarning, false, installError);
             const std::string text = "OXRSys was not updated: " + installError +
                                      "\n\nQuit SteamVR, then start XR Pilot again.";
             setMessage("OXRSys not updated: quit SteamVR and start XR Pilot again");
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "XR Pilot", text.c_str(), nullptr);
         }
-        registerSteamVrDriver();
         // A first start binds OXRSys once (one administrator prompt), so SteamVR streams its headset
         // to the pilot rather than to another driver. An unbind or a later runtime pick is kept.
         if (!settingFlag(L"firstRunDone"))
         {
             setSettingFlag(L"firstRunDone", true);
             if (bindingWanted() && !sameText(native(openXrValue(L"ActiveRuntime")), installedRuntimeManifest()))
+            {
+                record(xrpilot::UiAction::FirstRunBind);
                 bind();
+            }
         }
     }
     idleIcon_ = loadIcon("tray_idle.png");
@@ -642,10 +659,19 @@ Tray::~Tray()
     SDL_DestroySurface(streamingIcon_);
 }
 
+void Tray::record(xrpilot::UiAction action, bool ok, const std::string& detail)
+{
+    if (ui_ != nullptr)
+        ui_->record(action, ok, detail);
+}
+
 void Tray::poll()
 {
     if (takeShowRequest(showRequest_))
+    {
+        record(xrpilot::UiAction::ShowRequest);
         showPilot();
+    }
     if (tray_ != nullptr)
         refresh();
 }
@@ -814,16 +840,18 @@ void Tray::makeDefaultRuntimeNow(const std::string& manifest)
     const std::string key = "HKLM:\\SOFTWARE\\Khronos\\OpenXR\\1";
     const std::string active = openXrValue(L"ActiveRuntime");
     std::string script = (ours ? firewallScript(true) : std::string()) + "New-Item -Force -Path '" + key + "\\AvailableRuntimes' | Out-Null; Set-ItemProperty -Path '" + key +
-                         "\\AvailableRuntimes' -Name '" + quoted(manifest) + "' -Value 0 -Type DWord; ";
+                         "\\AvailableRuntimes' -Name '" + psQuoted(manifest) + "' -Value 0 -Type DWord; ";
     if (!active.empty() && !sameText(active, manifest))
-        script += "Set-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -Value '" + quoted(active) + "'; ";
-    script += "Set-ItemProperty -Path '" + key + "' -Name ActiveRuntime -Value '" + quoted(manifest) + "'";
+        script += "Set-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -Value '" + psQuoted(active) + "'; ";
+    script += "Set-ItemProperty -Path '" + key + "' -Name ActiveRuntime -Value '" + psQuoted(manifest) + "'";
     if (!runElevatedPowerShell(script))
     {
         setMessage("Default runtime unchanged: the administrator prompt was declined");
+        record(xrpilot::UiAction::ElevatedDeclined, false, runtimeName(manifest));
         return;
     }
     const bool headsetChanged = useSteamVrHeadset(ours);
+    record(xrpilot::UiAction::ElevatedDone, true, runtimeName(manifest));
     setMessage("Default runtime: " + runtimeName(manifest) + (headsetChanged ? "; restart SteamVR for its headset to follow" : ""));
 }
 
@@ -841,6 +869,7 @@ void Tray::bindNow(const std::string&)
     if (!installRuntime(&error))
     {
         setMessage("Not installed: " + error);
+        record(xrpilot::UiAction::InstallFailed, false, error);
         return;
     }
     shownRuntimes_.clear();
@@ -853,15 +882,21 @@ void Tray::unbind()
     runInBackground(&Tray::unbindNow, std::string());
 }
 
-// Undoes everything binding did: the OpenXR default goes back to the previous runtime (or is cleared)
-// and ours leaves the loader's list, the driver leaves SteamVR's list, and SteamVR's headset choice is
-// handed back. Picking OXRSys in the runtime menu binds it again.
 void Tray::unbindNow(const std::string&)
+{
+    unbindQuietly(true);
+}
+
+// Undoes everything binding did: the OpenXR default goes back to the runtime before OXRSys (SteamVR's
+// when there was none), ours leaves the loader's list, the driver leaves SteamVR's list, and SteamVR's
+// headset and multiple drivers are handed back. Picking OXRSys in the runtime menu binds it again.
+void Tray::unbindQuietly(bool recordIt)
 {
     setSettingFlag(L"unbound", true);
     const int drivers = unregisterSteamVrDriver();
     useSteamVrHeadset(false);
     std::string runtime = "left as it was";
+    bool declined = false;
     const std::string ours = installedRuntimeManifest();
     const std::string active = native(openXrValue(L"ActiveRuntime"));
     const std::string previous = native(openXrValue(L"PreviousActiveRuntime"));
@@ -872,21 +907,26 @@ void Tray::unbindNow(const std::string&)
     if (activeIsOurs || listed || previousIsOurs)
     {
         const std::string key = "HKLM:\\SOFTWARE\\Khronos\\OpenXR\\1";
-        std::string script = firewallScript(false) + "Remove-ItemProperty -Path '" + key + "\\AvailableRuntimes' -Name '" + quoted(ours) +
+        std::string script = firewallScript(false) + "Remove-ItemProperty -Path '" + key + "\\AvailableRuntimes' -Name '" + psQuoted(ours) +
                              "' -ErrorAction SilentlyContinue; ";
         if (previousIsOurs)
             script += "Remove-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -ErrorAction SilentlyContinue; ";
         std::error_code error;
-        const bool restore = activeIsOurs && !previous.empty() && !previousIsOurs && fs::exists(fs::path(previous), error);
+        const bool previousUsable = !previous.empty() && !previousIsOurs && fs::exists(fs::path(previous), error);
+        const std::string back = previousUsable ? previous : steamVrRuntimeManifest();
+        const bool restore = activeIsOurs && !back.empty();
         if (restore)
-            script += "Set-ItemProperty -Path '" + key + "' -Name ActiveRuntime -Value '" + quoted(previous) + "'";
+            script += "Set-ItemProperty -Path '" + key + "' -Name ActiveRuntime -Value '" + psQuoted(back) + "'";
         else if (activeIsOurs)
             script += "Remove-ItemProperty -Path '" + key + "' -Name ActiveRuntime -ErrorAction SilentlyContinue";
-        if (runElevatedPowerShell(script))
-            runtime = restore ? "back to " + runtimeName(previous) : activeIsOurs ? "cleared" : "left as it was";
+        declined = !runElevatedPowerShell(script);
+        if (!declined)
+            runtime = restore ? "back to " + runtimeName(back) : activeIsOurs ? "cleared" : "left as it was";
         else
             runtime = "unchanged: the administrator prompt was declined";
     }
+    if (recordIt)
+        record(declined ? xrpilot::UiAction::ElevatedDeclined : xrpilot::UiAction::ElevatedDone, !declined, runtime);
     setMessage("Unbound: default runtime " + runtime + "; " + std::to_string(drivers) +
                " SteamVR driver registration(s) removed; restart SteamVR");
 }
@@ -906,8 +946,12 @@ void Tray::uninstall()
                                     "Unbind OXRSys from OpenXR and SteamVR, then remove it?", 2, buttons, nullptr};
     int choice = 0;
     if (!SDL_ShowMessageBox(&box, &choice) || choice != 1)
+    {
+        record(xrpilot::UiAction::UninstallCancel);
         return;
-    unbindNow(std::string());
+    }
+    record(xrpilot::UiAction::UninstallConfirm);
+    unbindQuietly(false);
 #if defined(_WIN32)
     std::error_code error;
     fs::remove_all(fs::path(wide(environment("LOCALAPPDATA") + "\\OXRSys")), error);
@@ -932,6 +976,7 @@ void Tray::onFileChosen(void* userdata, const char* const* files, int)
     if (files == nullptr || files[0] == nullptr)
         return;
     Tray* self = static_cast<Tray*>(userdata);
+    self->record(xrpilot::UiAction::AddRuntimeChosen, true, native(files[0]));
     std::vector<std::string> known = settingList(L"knownRuntimes");
     known.push_back(native(files[0]));
     setSettingList(L"knownRuntimes", known);
@@ -947,6 +992,10 @@ Uint32 Tray::showPilotEvent()
 void Tray::onRuntime(void* userdata, SDL_TrayEntry*)
 {
     const Choice* choice = static_cast<const Choice*>(userdata);
+    // Picking OXRSys is the swap to it; picking SteamVR (or another runtime) is the way back.
+    const bool ours = sameText(choice->manifest, installedRuntimeManifest());
+    choice->tray->record(ours ? xrpilot::UiAction::RuntimeOurs : xrpilot::UiAction::RuntimeOther, true,
+                         runtimeName(choice->manifest));
     choice->tray->makeDefaultRuntime(choice->manifest);
 }
 
@@ -957,35 +1006,48 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
     switch (target->command)
     {
     case CommandBind:
+        self->record(xrpilot::UiAction::TrayBind);
         self->bind();
         break;
     case CommandUnbind:
+        self->record(xrpilot::UiAction::TrayUnbind);
         self->unbind();
         break;
     case CommandUninstall:
+        self->record(xrpilot::UiAction::TrayUninstall);
         self->uninstall();
         break;
     case CommandShowPilot:
+        self->record(xrpilot::UiAction::TrayShowPilot);
         showPilot();
         break;
     case CommandLogs:
+        self->record(xrpilot::UiAction::OpenLogs);
         reveal(stateFolder());
         break;
     case CommandRuntimeFolder:
+        self->record(xrpilot::UiAction::OpenRuntimeFolder);
         reveal(native(fs::path(installedRuntimeManifest()).parent_path().string()));
         break;
     case CommandDriverFolder:
+        self->record(xrpilot::UiAction::OpenDriverFolder);
         reveal(installedDriverFolder());
         break;
     case CommandDeveloperMode:
-        setSettingFlag(L"developerMode", SDL_GetTrayEntryChecked(self->developerMode_));
+    {
+        const bool on = SDL_GetTrayEntryChecked(self->developerMode_);
+        self->record(xrpilot::UiAction::DeveloperMode, true, on ? "on" : "off");
+        setSettingFlag(L"developerMode", on);
         self->rebuildDeveloperEntries();
         break;
+    }
     case CommandAddRuntime:
+        self->record(xrpilot::UiAction::AddRuntime);
         self->addRuntimeManifest();
         break;
     case CommandQuit:
     {
+        self->record(xrpilot::UiAction::TrayQuit);
         SDL_Event quit{};
         quit.type = SDL_EVENT_QUIT;
         SDL_PushEvent(&quit);

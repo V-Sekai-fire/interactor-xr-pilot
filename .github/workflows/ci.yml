@@ -54,5 +54,9 @@ jobs:
       - name: Lean tests
         working-directory: lean
         run: |
-          lake build tests
+          lake build tests ui_check
           .lake/build/bin/tests
+      - name: A recorded UI run follows the Lean UI model
+        run: |
+          build/xrpilot-ui-trace build/ui-sample.sqlite build/ui-sample.jsonl
+          lean/.lake/build/bin/ui_check build/ui-sample.jsonl

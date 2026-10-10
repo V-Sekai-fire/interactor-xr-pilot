@@ -58,6 +58,8 @@ public:
     // The span key is the MCP server's id; times are milliseconds on one monotonic clock.
     void begin(const std::string& key, const std::string& tool, const std::string& detail, int64_t atMs);
     void end(const std::string& key, bool ok, int64_t atMs);
+    // A span that starts and ends at once and takes no frame: one UI action (see UiSpans.h).
+    void mark(const std::string& key, const std::string& tool, const std::string& detail, bool ok, int64_t atMs);
     // A pilot command, kept in the innermost running span.
     void command(const std::string& text, bool ok, int64_t atMs);
 

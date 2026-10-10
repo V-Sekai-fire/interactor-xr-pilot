@@ -7,16 +7,24 @@
 
 #include <SDL3/SDL.h>
 
+#include "xrpilot/UiSpans.h"
+
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+namespace xrpilot
+{
+class UiTrace;
+}
+
 class Tray final
 {
 public:
-    // setUpDesk installs the packaged OXRSys files and registers the SteamVR driver on start.
-    explicit Tray(bool setUpDesk = true);
+    // The desk copy (setUpDesk) installs the packaged OXRSys files, registers the SteamVR driver and
+    // shows the tray icon; any other start has no tray. Each action is recorded through ui.
+    explicit Tray(bool setUpDesk = true, xrpilot::UiTrace* ui = nullptr);
     ~Tray();
 
     Tray(const Tray&) = delete;
@@ -53,6 +61,9 @@ private:
     void runInBackground(void (Tray::*action)(const std::string&), const std::string& argument);
     void makeDefaultRuntimeNow(const std::string& manifest);
     void unbindNow(const std::string& unused);
+    // Unbinds; record is false when the uninstall does it on its way out.
+    void unbindQuietly(bool record);
+    void record(xrpilot::UiAction action, bool ok = true, const std::string& detail = std::string());
 
     static void onRuntime(void* userdata, SDL_TrayEntry* entry);
     static void onCommand(void* userdata, SDL_TrayEntry* entry);
@@ -78,4 +89,5 @@ private:
     bool busy_ = false;
     void* instance_ = nullptr;
     void* showRequest_ = nullptr;
+    xrpilot::UiTrace* ui_ = nullptr;
 };

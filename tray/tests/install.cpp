@@ -5,6 +5,7 @@
 
 #include "xrpilot/Install.h"
 #include "xrpilot/Json.h"
+#include "xrpilot/SteamVrSettings.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -119,6 +120,49 @@ const std::map<std::string, std::function<void()>> cases = {
          fs::remove(s.src / "runtime/liboxrsys-runtime.dll");
          check(!installOxrsys(s.src, s.dst, nullptr), "a source without the runtime DLL is refused");
          check(!isOxrsysSource(s.root / "nowhere"), "a folder that does not exist is no source");
+     }},
+    {"steamvr.swap-forces-oxrsys-with-multiple-drivers",
+     [] {
+         // Desk.swapToOxrsys: OXRSys is SteamVR's headset, and SteamVR's other drivers (a Quest link,
+         // trackers) still load.
+         Json settings;
+         check(parseJson("{\"steamvr\":{\"enableHomeApp\":false},\"driver_null\":{\"enable\":false}}", settings), "parses");
+         MultipleDriversBefore before;
+         check(applySteamVrHeadset(settings, true, before), "the swap changes the settings");
+         const Json* sv = settings.find("steamvr");
+         check(sv && sv->find("forcedDriver") && sv->find("forcedDriver")->str() == "oxrsys", "forcedDriver is oxrsys");
+         check(sv && sv->find("activateMultipleDrivers") && sv->find("activateMultipleDrivers")->boolean, "multiple drivers is on");
+         check(before.has_value() && !*before, "multiple drivers was off before the swap");
+         check(sv && sv->find("enableHomeApp") && settings.find("driver_null"), "everything else is kept");
+         check(!applySteamVrHeadset(settings, true, before), "a second swap changes nothing");
+         check(before.has_value() && !*before, "and still remembers the desk's own value");
+     }},
+    {"steamvr.hand-back-restores-the-desk",
+     [] {
+         // Desk.handBackHeadset: SteamVR picks its own headset, and multiple drivers is as the desk had it.
+         for (const bool had : {false, true})
+         {
+             Json settings;
+             check(parseJson(had ? "{\"steamvr\":{\"activateMultipleDrivers\":true}}" : "{\"steamvr\":{}}", settings), "parses");
+             const std::string original = writeJson(settings);
+             MultipleDriversBefore before;
+             applySteamVrHeadset(settings, true, before);
+             check(applySteamVrHeadset(settings, false, before), "the hand-back changes the settings");
+             const Json* sv = settings.find("steamvr");
+             check(sv && !sv->find("forcedDriver"), "no forced headset");
+             const Json* multi = sv ? sv->find("activateMultipleDrivers") : nullptr;
+             check(had ? (multi && multi->boolean) : multi == nullptr, "multiple drivers is as the desk had it");
+             check(!before.has_value(), "nothing is remembered after");
+             check(writeJson(settings) == original, "the round trip leaves the file as it was");
+         }
+         // A desk that set multiple drivers itself, with no swap in effect: the hand-back leaves it on.
+         Json own;
+         check(parseJson("{\"steamvr\":{\"activateMultipleDrivers\":true}}", own), "parses");
+         MultipleDriversBefore none;
+         applySteamVrHeadset(own, false, none);
+         const Json* sv = own.find("steamvr");
+         check(sv && sv->find("activateMultipleDrivers") && sv->find("activateMultipleDrivers")->boolean,
+               "control: the desk's own multiple drivers is not turned off");
      }},
     {"install.stale-manifest-is-not-an-install",
      [] {

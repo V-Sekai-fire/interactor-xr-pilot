@@ -22,6 +22,7 @@
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/StreamRecord.h"
 #include "xrpilot/Tray.h"
+#include "xrpilot/UiTrace.h"
 #include "xrpilot/Version.h"
 
 #include <algorithm>
@@ -58,6 +59,7 @@ struct Shared
     std::atomic<bool> captured{false};
     SpanLog spans;
     TraceStore traces; // every span, kept in SQLite
+    UiTrace ui{&traces}; // every UI action, as a span of traces (UiSpans.h, from lean/XrPilot/Ui.lean)
     std::string snapshotPath; // --snapshot: the 90th decoded frame
     StreamRecordWriter stream; // --record-stream: every frame as it arrived, before decode
 };
@@ -580,27 +582,45 @@ public:
     {
         connection_ = add(std::make_unique<Label>("Searching for an OXRSys runtime"));
         runtime_ = add(std::make_unique<Label>(""));
-        add(std::make_unique<Button>("Connect", [this] { client_.connectNow(); }));
-        add(std::make_unique<Button>("Disconnect", [this] { client_.disconnect(); }));
+        add(std::make_unique<Button>("Connect", [this] {
+            shared_.ui.record(UiAction::Connect);
+            client_.connectNow();
+        }));
+        add(std::make_unique<Button>("Disconnect", [this] {
+            shared_.ui.record(UiAction::Disconnect);
+            client_.disconnect();
+        }));
         autoConnect_ = add(std::make_unique<Toggle>("Connect automatically", true,
-                                                    [this](bool on) { client_.setAutoConnect(on); }));
+                                                    [this](bool on) {
+                                                        shared_.ui.record(UiAction::AutoConnect, true, on ? "on" : "off");
+                                                        client_.setAutoConnect(on);
+                                                    }));
         fovLabel_ = add(std::make_unique<Label>("Vertical FOV 100 deg"));
         add(std::make_unique<Slider>(60.0f, 150.0f, 100.0f, [this](float v) {
+            // A drag moves the slider every frame; a span per whole degree keeps the trace readable.
+            if (std::fabs(v - lastFovTraced_) >= 1.0f)
+            {
+                lastFovTraced_ = v;
+                shared_.ui.record(UiAction::FieldOfView, true, std::to_string(int(std::lround(v))));
+            }
             client_.updateAgent([v](AgentState& s) { s.verticalFovDegrees = v; });
         }));
         controllers_ = add(std::make_unique<Toggle>("Controllers", true, [this](bool on) {
+            shared_.ui.record(UiAction::Controllers, true, on ? "on" : "off");
             client_.updateAgent([on](AgentState& s) {
                 s.hands[0].present = on;
                 s.hands[1].present = on;
             });
         }));
         pointing_ = add(std::make_unique<Toggle>("Pointing (P)", false, [this](bool on) {
+            shared_.ui.record(UiAction::Pointing, true, on ? "on" : "off");
             client_.updateAgent([on](AgentState& s) {
                 s.pointing = on;
                 s.pointingAge = 0.0f;
             });
         }));
         seated_ = add(std::make_unique<Toggle>("Seated", false, [this](bool on) {
+            shared_.ui.record(UiAction::Seated, true, on ? "on" : "off");
             client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
         }));
         pose_ = add(std::make_unique<Label>(""));
@@ -660,6 +680,7 @@ private:
     Label* connection_ = nullptr;
     Label* runtime_ = nullptr;
     Toggle* autoConnect_ = nullptr;
+    float lastFovTraced_ = 100.0f;
     Label* fovLabel_ = nullptr;
     Toggle* controllers_ = nullptr;
     Toggle* pointing_ = nullptr;
@@ -708,6 +729,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
     {
+        shared.ui.record(UiAction::WindowError, false, error);
         reportError(agent, "The pilot window cannot open: " + error);
         return 1;
     }
@@ -719,13 +741,16 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
     if (!client.start(&error))
     {
+        shared.ui.record(UiAction::WindowError, false, error);
         reportError(agent, error);
         return 1;
     }
+    shared.ui.record(UiAction::WindowOpen);
 
     if (!readCommands)
     {
         const int rc = window->run();
+        shared.ui.record(UiAction::WindowClose);
         client.stop();
         return rc;
     }
@@ -789,6 +814,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     commands.detach();
 
     const int rc = window->run();
+    shared.ui.record(UiAction::WindowClose);
     client.stop();
     windowPtr = nullptr;
     window.reset();
@@ -797,41 +823,41 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
 } // namespace
 
+namespace
+{
+
+UiAction launchAction(LaunchMode mode)
+{
+    switch (mode)
+    {
+    case LaunchMode::PilotThenTray:
+        return UiAction::LaunchPilot;
+    case LaunchMode::TrayOnly:
+        return UiAction::LaunchTray;
+    case LaunchMode::PilotOnly:
+        return UiAction::LaunchWindow;
+    case LaunchMode::Agent:
+        return UiAction::LaunchAgent;
+    case LaunchMode::ShowRunning:
+        return UiAction::LaunchShowRunning;
+    case LaunchMode::PrintVersion:
+        return UiAction::LaunchVersion;
+    case LaunchMode::Usage:
+        break;
+    }
+    return UiAction::LaunchUsage;
+}
+
+} // namespace
+
 int main(int argc, char** argv)
 {
     const LaunchOptions launch = parseLaunch(argc, argv, Tray::deskCopyRunning());
-    switch (launch.mode)
-    {
-    case LaunchMode::PrintVersion:
-        std::printf("xr-pilot %s\n", Version);
-        return 0;
-    case LaunchMode::Usage:
-        std::fprintf(stderr,
-                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
-                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
-        return 2;
-    case LaunchMode::ShowRunning:
-        // One desk copy: a second start brings the running pilot forward instead of binding the ports again.
-        if (Tray::askRunningToShowPilot())
-            return 0;
-        // A copy from before this release holds the tray but cannot be asked; say so rather than exit unseen.
-        reportError(false, "XR Pilot is already running in the tray. Quit it from its tray icon, then start XR Pilot again.");
-        return 1;
-    default:
-        break;
-    }
-
-    Shared shared;
-    shared.snapshotPath = launch.snapshotPath;
-    if (!launch.recordStreamPath.empty() && !shared.stream.open(launch.recordStreamPath))
-    {
-        reportError(launch.mode == LaunchMode::Agent, "cannot write " + launch.recordStreamPath);
-        return 2;
-    }
-    const bool autoConnect = launch.autoConnect;
     const bool agent = launch.mode == LaunchMode::Agent;
-    std::string tracePath = launch.tracePath;
 
+    // Traces open first, so every start, even one that only prints, is a span of the UI model.
+    Shared shared;
+    std::string tracePath = launch.tracePath;
     if (tracePath.empty())
     {
         char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
@@ -845,24 +871,66 @@ int main(int argc, char** argv)
                 .count();
         if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
             std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
-        else
+        else if (launch.mode != LaunchMode::PrintVersion)
             std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
                          (long long)shared.traces.session());
     }
 
-    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    switch (launch.mode)
     {
-        reportError(launch.mode == LaunchMode::Agent, std::string("no display: ") + SDL_GetError());
+    case LaunchMode::PrintVersion:
+        shared.ui.record(UiAction::LaunchVersion);
+        std::printf("xr-pilot %s\n", Version);
+        return 0;
+    case LaunchMode::Usage:
+        shared.ui.record(UiAction::LaunchUsage, false);
+        std::fprintf(stderr,
+                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
+                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
+        return 2;
+    case LaunchMode::ShowRunning:
+    {
+        // One desk copy: a second start brings the running pilot forward instead of binding the ports again.
+        const bool asked = Tray::askRunningToShowPilot();
+        shared.ui.record(UiAction::LaunchShowRunning, asked);
+        if (asked)
+            return 0;
+        // A copy from before this release holds the tray but cannot be asked; say so rather than exit unseen.
+        reportError(false, "XR Pilot is already running in the tray. Quit it from its tray icon, then start XR Pilot again.");
         return 1;
     }
-    // Agent and scripted pilots leave the desk's install alone at start.
-    Tray tray(ownsDesk(launch.mode));
-    if (!tray.ok())
+    default:
+        break;
+    }
+    shared.ui.record(launchAction(launch.mode));
+
+    shared.snapshotPath = launch.snapshotPath;
+    if (!launch.recordStreamPath.empty() && !shared.stream.open(launch.recordStreamPath))
+    {
+        reportError(agent, "cannot write " + launch.recordStreamPath);
+        return 2;
+    }
+    const bool autoConnect = launch.autoConnect;
+
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
+        reportError(agent, std::string("no display: ") + SDL_GetError());
+        return 1;
+    }
+    // Only the desk copy sets up the desk and shows the tray; agent and scripted pilots have neither.
+    Tray tray(ownsDesk(launch.mode), &shared.ui);
+    if (ownsDesk(launch.mode) && !tray.ok())
         std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
 
     int rc = 0;
     if (launch.mode == LaunchMode::PilotOnly || agent)
         rc = runPilot(shared, autoConnect, agent, tray, true);
+    else if (!tray.ok())
+    {
+        // With no tray icon, nothing could show the pilot again or quit: the pilot is the whole app,
+        // and closing it quits.
+        rc = runPilot(shared, autoConnect, false, tray, false);
+    }
     else
     {
         SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");

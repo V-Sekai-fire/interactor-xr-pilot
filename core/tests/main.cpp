@@ -14,6 +14,7 @@
 #include "xrpilot/Rotation.h"
 #include "xrpilot/SpanLog.h"
 #include "xrpilot/TraceStore.h"
+#include "xrpilot/UiTrace.h"
 
 #include <sqlite3.h>
 
@@ -565,6 +566,56 @@ const std::map<std::string, std::function<void()>> cases = {
                "and told the port and why");
          closeUdp(again);
          closeUdp(first);
+     }},
+    {"ui.marks-take-no-frame",
+     [] {
+         // UI actions happen with no stream; a span that waited for a frame would never finish its row.
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 0, 0, &error), "the store opens");
+         UiTrace ui(&store);
+         ui.record(UiAction::LaunchPilot);
+         ui.record(UiAction::DeskSetup);
+         check(!store.wantsFrame(), "a UI span waits for no frame");
+         store.begin("call-1", "screenshot", "", 1);
+         check(store.wantsFrame(), "control: an MCP span does");
+     }},
+    {"ui.sample-run",
+     [] {
+         // A first start that swaps to OXRSys and goes back to SteamVR, as the app records it, kept in
+         // ui-sample.sqlite for CI to export (xrpilot-ui-trace) and replay against the Lean model (ui_check).
+         std::remove("ui-sample.sqlite");
+         TraceStore store;
+         std::string error;
+         check(store.open("ui-sample.sqlite", 0, 0, &error), "the store opens");
+         UiTrace ui(&store);
+         for (const UiAction a : {UiAction::LaunchPilot, UiAction::DeskSetup, UiAction::FirstRunBind, UiAction::WindowOpen,
+                                  UiAction::ElevatedDone, UiAction::FieldOfView, UiAction::WindowClose,
+                                  UiAction::TrayShowPilot, UiAction::WindowOpen, UiAction::RuntimeOther,
+                                  UiAction::ElevatedDone, UiAction::TrayQuit, UiAction::WindowClose})
+             ui.record(a);
+         store.close();
+     }},
+    {"ui.spans-export-as-lines",
+     [] {
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 0, 0, &error), "the store opens");
+         UiTrace ui(&store);
+         ui.record(UiAction::LaunchTray);
+         store.begin("call-1", "screenshot", "", 1);
+         ui.record(UiAction::DeskSetup);
+         ui.record(UiAction::FieldOfView, true, "say \"95\"\n");
+         ui.record(UiAction::ElevatedDeclined, false);
+         const std::string lines = uiTraceJsonl(store.db());
+         std::printf("%s", lines.c_str());
+         const std::string want =
+             "{\"session\":1,\"span\":\"ui.launch.tray\",\"ok\":true}\n"
+             "{\"session\":1,\"span\":\"ui.tray.setup\",\"ok\":true}\n"
+             "{\"session\":1,\"span\":\"ui.window.field-of-view\",\"ok\":true,\"detail\":\"say \\\"95\\\"\\u000a\"}\n"
+             "{\"session\":1,\"span\":\"ui.tray.elevated-declined\",\"ok\":false}\n";
+         check(lines == want, "only ui.* spans, in start order, one JSON object a line");
+         check(std::string(uiSpanName(UiAction::TrayQuit)) == "ui.tray.quit", "names come from the Lean model");
      }},
     {"launch.plain-start-opens-the-pilot",
      [] {
