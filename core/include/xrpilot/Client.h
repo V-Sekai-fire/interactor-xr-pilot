@@ -6,6 +6,7 @@
 #pragma once
 
 #include "xrpilot/Agent.h"
+#include "xrpilot/MouseLook.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/FrameAssembler.h"
 
@@ -77,6 +78,10 @@ public:
     void setAgent(const AgentState& state);
     // Changes the agent state under the client's lock, so a person and the agent never overwrite each other.
     void updateAgent(const std::function<void(AgentState&)>& change);
+    // Mouse look: motion the mouse made at atNs, read at arrivedNs (monotonicNowNs's clock). The
+    // tracking thread turns the head by it at the pace the mouse moved (MouseLook.h).
+    void pushMouse(int64_t atNs, int64_t arrivedNs, float dx, float dy) { mouseLook_.push(atNs, arrivedNs, dx, dy); }
+    void clearMouse() { mouseLook_.clear(); }
     ClientStatus status();
 
 private:
@@ -100,6 +105,7 @@ private:
 
     std::mutex mutex_;
     AgentState agent_;
+    MouseLook mouseLook_;
     ClientStatus status_;
     uint32_t serverAddress_ = 0; // network byte order
     uint32_t announcedAddress_ = 0;

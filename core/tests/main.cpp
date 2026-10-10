@@ -5,6 +5,7 @@
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
@@ -550,6 +551,64 @@ const std::map<std::string, std::function<void()>> cases = {
          };
          check(isLocalAddress(ip(127, 0, 0, 1)), "127.0.0.1 is this machine");
          check(!isLocalAddress(ip(192, 0, 2, 1)), "192.0.2.1 (TEST-NET-1) is not");
+     }},
+    {"mouse.look-turns-evenly",
+     [] {
+         // A steady 1000 Hz mouse, read by a 60 Hz window, sampled by the 90 Hz tracking thread: every
+         // tick should turn the head by the same amount, as WASD walks it.
+         for (const int windowHz : {60, 144})
+         {
+             MouseLook look;
+             const int64_t window = 1'000'000'000 / windowHz, tick = 1'000'000'000 / 90;
+             int64_t nextRead = window, nextTick = tick, mouse = 0;
+             std::vector<float> steps;
+             for (int64_t t = 0; t < 2'000'000'000; t += 100'000)
+             {
+                 if (t >= nextRead)
+                 {
+                     // Everything the mouse did since the last read arrives together.
+                     for (; mouse + 1'000'000 <= t; mouse += 1'000'000)
+                         look.push(mouse + 1'000'000, t, 1.0f, 0.0f);
+                     nextRead += window;
+                 }
+                 if (t >= nextTick)
+                 {
+                     float dx = 0.0f, dy = 0.0f;
+                     look.take(t, dx, dy);
+                     if (t > 300'000'000)
+                         steps.push_back(dx);
+                     nextTick += tick;
+                 }
+             }
+             float lo = 1e9f, hi = 0.0f, sum = 0.0f;
+             for (float s : steps)
+                 lo = std::min(lo, s), hi = std::max(hi, s), sum += s;
+             const float mean = sum / float(steps.size());
+             std::printf("window %d Hz: per tick min %.1f mean %.1f max %.1f px, delay %.1f ms\n", windowHz, lo, mean, hi,
+                         double(look.delayNs()) / 1e6);
+             check(mean > 10.0f && mean < 12.3f, "the head turns as far as the mouse moved");
+             check(hi - lo <= 2.0f, "each tick turns the head by the same amount, within the mouse's 1 ms steps");
+             check(look.delayNs() <= window + 2'000'000, "the head lags the mouse by no more than one window frame");
+         }
+     }},
+    {"mouse.look-lands-whole",
+     [] {
+         // Nothing is lost or doubled, a stall is caught up at once, and releasing the mouse drops the rest.
+         MouseLook look;
+         look.push(1'000'000, 1'000'000, 3.0f, -2.0f);
+         float dx = 0.0f, dy = 0.0f;
+         look.take(1'000'000 + MouseLook::MaxDelayNs, dx, dy);
+         check(dx == 3.0f && dy == -2.0f, "motion is taken once whole");
+         look.push(200'000'000, 900'000'000, 5.0f, 0.0f);
+         dx = dy = 0.0f;
+         look.take(900'000'000, dx, dy);
+         check(dx == 5.0f, "motion that arrives after a long stall is taken at once");
+         check(look.delayNs() <= MouseLook::MaxDelayNs, "and the lag stays bounded");
+         look.push(950'000'000, 950'000'000, 7.0f, 0.0f);
+         look.clear();
+         dx = dy = 0.0f;
+         look.take(2'000'000'000, dx, dy);
+         check(dx == 0.0f, "cleared motion never turns the head");
      }},
     {"client.second-pilot-is-refused",
      [] {
