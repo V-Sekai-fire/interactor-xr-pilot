@@ -30,6 +30,7 @@ add_library(xrpilot_core STATIC
     core/src/HeadGizmo.cpp
     core/src/HumanInput.cpp
     core/src/Json.cpp
+    core/src/Launch.cpp
     core/src/Pace.cpp
     core/src/Png.cpp
     core/src/Rotation.cpp
@@ -55,7 +56,7 @@ endif()
 enable_testing()
 add_test(NAME version.tag-ladder COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/version.cmake)
 add_executable(xrpilot-core-tests core/tests/main.cpp)
-target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
+target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_net)
 foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
                       assembler.render-pose-joins-frame assembler.stale-packet-never-joins-a-frame
                       png.round-trip png.corrupt-crc-rejected
@@ -66,7 +67,10 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
-                      client.stays-with-a-streaming-runtime)
+                      client.stays-with-a-streaming-runtime
+                      launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
+                      launch.flags-keep-their-meaning client.local-runtime-wins
+                      client.local-address-is-recognised client.second-pilot-is-refused)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
@@ -248,7 +252,7 @@ if(WIN32 AND XRPILOT_BUILD_OXRSYS)
         "${XRPILOT_LICENSE_APACHE}\n\n${XRPILOT_LICENSE_MIT}\n\n${XRPILOT_LICENSE_MPL}")
     install(FILES LICENSE-APACHE LICENSE-MIT DESTINATION licenses COMPONENT xrpilot)
     install(FILES oxrsys/LICENSE DESTINATION licenses RENAME LICENSE-MPL-2.0 COMPONENT xrpilot)
-    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "OXRSys Tray")
+    set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "XR Pilot")
 
     set(CPACK_GENERATOR WIX)
     set(CPACK_COMPONENTS_ALL xrpilot)

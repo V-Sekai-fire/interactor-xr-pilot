@@ -4,6 +4,7 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
+#include "xrpilot/Launch.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
@@ -504,6 +505,113 @@ const std::map<std::string, std::function<void()>> cases = {
          check(shouldConnectOnAnnounce(false, true, true, 0, limit), "connectNow moves the client");
          check(shouldConnectOnAnnounce(true, false, false, 0, limit), "auto-connect joins the first runtime");
          check(!shouldConnectOnAnnounce(false, false, false, 0, limit), "a disconnected client stays away");
+     }},
+    {"client.local-runtime-wins",
+     [] {
+         // A pilot on a desk with SteamVR followed the first runtime it heard, which could be another
+         // machine's: the game on this PC then rendered to no one, a black view.
+         constexpr int64_t s = 1'000'000'000;
+         AnnounceContext c;
+         c.listeningNs = 10 * s;
+         c.announceIsLocal = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "an idle client takes this machine's runtime");
+         c.announceIsLocal = false;
+         c.sinceLocalAnnounceNs = 200'000'000;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "not another machine's while this one's announces");
+         c.sinceLocalAnnounceNs = INT64_MAX;
+         c.listeningNs = 200'000'000;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "nor in the first second, before this one's is heard");
+         c.listeningNs = 10 * s;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "with no runtime here, another machine's is taken");
+         c.connected = true;
+         c.connectedToLocal = false;
+         c.announceIsLocal = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "this machine's runtime takes over from another's");
+         c.connectedToLocal = true;
+         c.announceIsLocal = false;
+         c.videoSilenceNs = 60 * s;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "another machine never takes this one's session");
+         c.connectRequested = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "a connect the user asked for is kept");
+         AnnounceContext off;
+         off.autoConnect = false;
+         off.announceIsLocal = true;
+         off.listeningNs = 10 * s;
+         check(!shouldConnectToAnnounce(off, 3 * s, s), "--no-autoconnect waits for the user");
+     }},
+    {"client.local-address-is-recognised",
+     [] {
+         const auto ip = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+             const uint8_t bytes[4] = {a, b, c, d};
+             uint32_t networkOrder = 0;
+             std::memcpy(&networkOrder, bytes, 4);
+             return networkOrder;
+         };
+         check(isLocalAddress(ip(127, 0, 0, 1)), "127.0.0.1 is this machine");
+         check(!isLocalAddress(ip(192, 0, 2, 1)), "192.0.2.1 (TEST-NET-1) is not");
+     }},
+    {"client.second-pilot-is-refused",
+     [] {
+         // Two pilots bound the discovery and video ports with SO_REUSEADDR; each datagram reached one
+         // of them, so the one on screen went black with no error.
+         const uint16_t port = uint16_t(41000 + (monotonicNowNs() / 1000) % 2000);
+         std::string error;
+         const intptr_t first = bindExclusiveUdp(port, &error);
+         check(first >= 0, "the first pilot binds the port");
+         std::string second;
+         const intptr_t again = bindExclusiveUdp(port, &second);
+         check(again < 0, "a second pilot is refused");
+         check(second.find(std::to_string(port)) != std::string::npos && second.find("another XR Pilot") != std::string::npos,
+               "and told the port and why");
+         closeUdp(again);
+         closeUdp(first);
+     }},
+    {"launch.plain-start-opens-the-pilot",
+     [] {
+         // The Start Menu entry starts xr-pilot with no arguments. It ran as a tray icon alone, so a first
+         // user saw no window, nothing received the stream, and an app's frames went nowhere: a black view.
+         const char* argv[] = {"xr-pilot.exe"};
+         const LaunchOptions o = parseLaunch(1, argv, false);
+         check(o.mode == LaunchMode::PilotThenTray, "a plain start opens the pilot, then keeps the tray");
+         check(o.autoConnect, "and connects to the first runtime it hears");
+         check(ownsDesk(o.mode), "and sets up the desk");
+         const char* tray[] = {"xr-pilot.exe", "--tray"};
+         check(parseLaunch(2, tray, false).mode == LaunchMode::TrayOnly, "--tray starts the tray alone");
+         check(ownsDesk(LaunchMode::TrayOnly), "the tray alone also sets up the desk");
+     }},
+    {"launch.second-start-shows-the-first",
+     [] {
+         // A second start ran a second pilot beside the first; both bound the discovery and video ports.
+         const char* argv[] = {"xr-pilot.exe"};
+         check(parseLaunch(1, argv, true).mode == LaunchMode::ShowRunning, "a plain start shows the running pilot");
+         const char* tray[] = {"xr-pilot.exe", "--tray"};
+         check(parseLaunch(2, tray, true).mode == LaunchMode::ShowRunning, "so does a start at sign-in");
+         check(!ownsDesk(LaunchMode::ShowRunning), "and it leaves the desk to the running copy");
+         const char* agent[] = {"xr-pilot.exe", "--agent"};
+         check(parseLaunch(2, agent, true).mode == LaunchMode::Agent, "an agent's pilot still runs its own");
+         const char* window[] = {"xr-pilot.exe", "--window"};
+         check(parseLaunch(2, window, true).mode == LaunchMode::PilotOnly, "so does a scripted pilot");
+     }},
+    {"launch.flags-keep-their-meaning",
+     [] {
+         const char* argv[] = {"xr-pilot.exe", "--window", "--no-autoconnect", "--traces", "t.sqlite",
+                               "--record-stream", "r.pwrec"};
+         const LaunchOptions o = parseLaunch(7, argv, false);
+         check(o.mode == LaunchMode::PilotOnly, "--window is the pilot alone");
+         check(!o.autoConnect, "--no-autoconnect");
+         check(o.tracePath == "t.sqlite" && o.recordStreamPath == "r.pwrec", "paths kept");
+         check(!ownsDesk(LaunchMode::PilotOnly) && !ownsDesk(LaunchMode::Agent), "scripted and agent pilots leave the desk alone");
+         const char* agent[] = {"xr-pilot.exe", "--agent"};
+         check(parseLaunch(2, agent, false).mode == LaunchMode::Agent, "--agent");
+         const char* snap[] = {"xr-pilot.exe", "--snapshot", "s.png"};
+         const LaunchOptions s = parseLaunch(3, snap, false);
+         check(s.mode == LaunchMode::PilotOnly && s.snapshotPath == "s.png", "--snapshot is a scripted pilot");
+         const char* version[] = {"xr-pilot.exe", "--version"};
+         check(parseLaunch(2, version, true).mode == LaunchMode::PrintVersion, "--version prints even beside a running copy");
+         const char* bad[] = {"xr-pilot.exe", "--bogus"};
+         check(parseLaunch(2, bad, false).mode == LaunchMode::Usage, "an unknown flag prints usage");
+         const char* both[] = {"xr-pilot.exe", "--tray", "--window"};
+         check(parseLaunch(3, both, false).mode == LaunchMode::Usage, "--tray with a pilot flag prints usage");
      }},
     {"pace.ticks-evenly-at-90hz",
      [] {

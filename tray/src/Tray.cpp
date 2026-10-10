@@ -252,11 +252,45 @@ bool runElevatedPowerShell(const std::string& script)
     return exitCode == 0;
 }
 
-void* holdTrayMutex() { return CreateMutexW(nullptr, FALSE, L"Local\\OXRSysTray"); }
+const wchar_t* const TrayMutexName = L"Local\\OXRSysTray";
+const wchar_t* const ShowPilotEventName = L"Local\\XRPilotShowPilot";
+
+void* holdTrayMutex() { return CreateMutexW(nullptr, FALSE, TrayMutexName); }
 void releaseTrayMutex(void* handle)
 {
     if (handle != nullptr)
         CloseHandle(handle);
+}
+bool trayMutexHeld()
+{
+    HANDLE h = OpenMutexW(SYNCHRONIZE, FALSE, TrayMutexName);
+    if (h == nullptr)
+        return false;
+    CloseHandle(h);
+    return true;
+}
+void* openShowRequest() { return CreateEventW(nullptr, FALSE, FALSE, ShowPilotEventName); }
+bool signalShowRequest()
+{
+    HANDLE h = OpenEventW(EVENT_MODIFY_STATE, FALSE, ShowPilotEventName);
+    if (h == nullptr)
+        return false;
+    const bool ok = SetEvent(h) != 0;
+    CloseHandle(h);
+    return ok;
+}
+bool takeShowRequest(void* handle) { return handle != nullptr && WaitForSingleObject(handle, 0) == WAIT_OBJECT_0; }
+
+std::string pilotExePath()
+{
+    wchar_t path[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (length == 0 || length >= MAX_PATH)
+        return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, path, int(length), nullptr, 0, nullptr, nullptr);
+    std::string out(size_t(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path, int(length), out.data(), bytes, nullptr, nullptr);
+    return out;
 }
 
 void recordPilotPath()
@@ -287,6 +321,11 @@ void reveal(const std::string& folder) { SDL_OpenURL(("file://" + folder).c_str(
 bool runElevatedPowerShell(const std::string&) { return false; }
 void* holdTrayMutex() { return nullptr; }
 void releaseTrayMutex(void*) {}
+bool trayMutexHeld() { return false; }
+std::string pilotExePath() { return {}; }
+void* openShowRequest() { return nullptr; }
+bool signalShowRequest() { return false; }
+bool takeShowRequest(void*) { return false; }
 void recordPilotPath() {}
 
 #endif
@@ -328,10 +367,14 @@ bool installRuntime(std::string* error)
     return xrpilot::installOxrsys(source, fs::path(installBase()), error);
 }
 
-void installPackagedFiles()
+// Returns why the packaged runtime or driver could not be copied, or nothing. SteamVR holds the driver
+// open while it runs, so an update made then would leave the old driver in place, unseen.
+std::string installPackagedFiles()
 {
-    if (xrpilot::isOxrsysSource(packageRoot()))
-        xrpilot::installOxrsys(packageRoot(), fs::path(installBase()), nullptr);
+    std::string error;
+    if (xrpilot::isOxrsysSource(packageRoot()) && !xrpilot::installOxrsys(packageRoot(), fs::path(installBase()), &error))
+        return error.empty() ? std::string("the OXRSys files could not be copied") : error;
+    return {};
 }
 
 Json openVrPaths()
@@ -451,6 +494,20 @@ std::string quoted(const std::string& s)
     return out;
 }
 
+// A runtime on another machine reaches the pilot on the discovery and video ports. Windows asks once
+// per program path, and a dismissed prompt blocks it unseen, so binding allows them for the subnet.
+const char* const FirewallRule = "XR Pilot stream";
+
+std::string firewallScript(bool allow)
+{
+    std::string script = std::string("Remove-NetFirewallRule -DisplayName '") + FirewallRule + "' -ErrorAction SilentlyContinue; ";
+    const std::string exe = pilotExePath();
+    if (allow && !exe.empty())
+        script += std::string("New-NetFirewallRule -DisplayName '") + FirewallRule + "' -Direction Inbound -Action Allow -Program '" +
+                  quoted(exe) + "' -Protocol UDP -LocalPort 9943,9944 -RemoteAddress LocalSubnet -Profile Any | Out-Null; ";
+    return script;
+}
+
 // The runtime's status file: streaming or idle, and to which device and app.
 std::string activityText(bool& streaming)
 {
@@ -512,12 +569,29 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 
 Tray::Tray(bool setUpDesk)
 {
-    instance_ = holdTrayMutex();
+    // Only the desk copy holds the tray, so an agent's pilot never stands in for it.
     if (setUpDesk)
     {
+        instance_ = holdTrayMutex();
+        showRequest_ = openShowRequest();
         recordPilotPath();
-        installPackagedFiles();
+        const std::string installError = installPackagedFiles();
+        if (!installError.empty())
+        {
+            const std::string text = "OXRSys was not updated: " + installError +
+                                     "\n\nQuit SteamVR, then start XR Pilot again.";
+            setMessage("OXRSys not updated: quit SteamVR and start XR Pilot again");
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "XR Pilot", text.c_str(), nullptr);
+        }
         registerSteamVrDriver();
+        // A first start binds OXRSys once (one administrator prompt), so SteamVR streams its headset
+        // to the pilot rather than to another driver. An unbind or a later runtime pick is kept.
+        if (!settingFlag(L"firstRunDone"))
+        {
+            setSettingFlag(L"firstRunDone", true);
+            if (bindingWanted() && !sameText(native(openXrValue(L"ActiveRuntime")), installedRuntimeManifest()))
+                bind();
+        }
     }
     idleIcon_ = loadIcon("tray_idle.png");
     streamingIcon_ = loadIcon("tray_streaming.png");
@@ -561,6 +635,7 @@ Tray::Tray(bool setUpDesk)
 Tray::~Tray()
 {
     releaseTrayMutex(instance_);
+    releaseTrayMutex(showRequest_);
     if (tray_ != nullptr)
         SDL_DestroyTray(tray_);
     SDL_DestroySurface(idleIcon_);
@@ -569,8 +644,38 @@ Tray::~Tray()
 
 void Tray::poll()
 {
+    if (takeShowRequest(showRequest_))
+        showPilot();
     if (tray_ != nullptr)
         refresh();
+}
+
+bool Tray::deskCopyRunning()
+{
+    return trayMutexHeld();
+}
+
+bool Tray::askRunningToShowPilot()
+{
+    return signalShowRequest();
+}
+
+void Tray::showPilot()
+{
+    int count = 0;
+    SDL_Window** windows = SDL_GetWindows(&count);
+    if (count == 0)
+    {
+        SDL_Event show{};
+        show.type = showPilotEvent();
+        SDL_PushEvent(&show);
+    }
+    for (int i = 0; i < count; ++i)
+    {
+        SDL_RestoreWindow(windows[i]);
+        SDL_RaiseWindow(windows[i]);
+    }
+    SDL_free(windows);
 }
 
 void Tray::refresh()
@@ -708,7 +813,7 @@ void Tray::makeDefaultRuntimeNow(const std::string& manifest)
     }
     const std::string key = "HKLM:\\SOFTWARE\\Khronos\\OpenXR\\1";
     const std::string active = openXrValue(L"ActiveRuntime");
-    std::string script = "New-Item -Force -Path '" + key + "\\AvailableRuntimes' | Out-Null; Set-ItemProperty -Path '" + key +
+    std::string script = (ours ? firewallScript(true) : std::string()) + "New-Item -Force -Path '" + key + "\\AvailableRuntimes' | Out-Null; Set-ItemProperty -Path '" + key +
                          "\\AvailableRuntimes' -Name '" + quoted(manifest) + "' -Value 0 -Type DWord; ";
     if (!active.empty() && !sameText(active, manifest))
         script += "Set-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -Value '" + quoted(active) + "'; ";
@@ -767,7 +872,7 @@ void Tray::unbindNow(const std::string&)
     if (activeIsOurs || listed || previousIsOurs)
     {
         const std::string key = "HKLM:\\SOFTWARE\\Khronos\\OpenXR\\1";
-        std::string script = "Remove-ItemProperty -Path '" + key + "\\AvailableRuntimes' -Name '" + quoted(ours) +
+        std::string script = firewallScript(false) + "Remove-ItemProperty -Path '" + key + "\\AvailableRuntimes' -Name '" + quoted(ours) +
                              "' -ErrorAction SilentlyContinue; ";
         if (previousIsOurs)
             script += "Remove-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -ErrorAction SilentlyContinue; ";
@@ -861,23 +966,8 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
         self->uninstall();
         break;
     case CommandShowPilot:
-    {
-        int count = 0;
-        SDL_Window** windows = SDL_GetWindows(&count);
-        if (count == 0)
-        {
-            SDL_Event show{};
-            show.type = showPilotEvent();
-            SDL_PushEvent(&show);
-        }
-        for (int i = 0; i < count; ++i)
-        {
-            SDL_RestoreWindow(windows[i]);
-            SDL_RaiseWindow(windows[i]);
-        }
-        SDL_free(windows);
+        showPilot();
         break;
-    }
     case CommandLogs:
         reveal(stateFolder());
         break;

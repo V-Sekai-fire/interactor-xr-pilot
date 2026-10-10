@@ -14,6 +14,7 @@
 #include "xrpilot/Commands.h"
 #include "xrpilot/GpuDecoder.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/Launch.h"
 #include "xrpilot/SpanLog.h"
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
@@ -670,6 +671,15 @@ private:
     int64_t lastTrayNs_ = 0;
 };
 
+// xr-pilot.exe is a Windows GUI app, so stderr goes nowhere: a person sees errors in a box. An agent
+// reads stderr, so it gets them there alone.
+void reportError(bool agent, const std::string& message)
+{
+    std::fprintf(stderr, "xr-pilot: %s\n", message.c_str());
+    if (!agent)
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "XR Pilot", message.c_str(), nullptr);
+}
+
 int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool readCommands)
 {
     Window* windowPtr = nullptr;
@@ -698,7 +708,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", error.c_str());
+        reportError(agent, "The pilot window cannot open: " + error);
         return 1;
     }
     windowPtr = window.get();
@@ -709,7 +719,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
     if (!client.start(&error))
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", error.c_str());
+        reportError(agent, error);
         return 1;
     }
 
@@ -789,44 +799,38 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
 int main(int argc, char** argv)
 {
-    Shared shared;
-    bool autoConnect = true;
-    bool agent = false;
-    bool window = false;
-    std::string tracePath;
-    for (int i = 1; i < argc; ++i)
+    const LaunchOptions launch = parseLaunch(argc, argv, Tray::deskCopyRunning());
+    switch (launch.mode)
     {
-        if (!std::strcmp(argv[i], "--version"))
-        {
-            std::printf("xr-pilot %s\n", Version);
+    case LaunchMode::PrintVersion:
+        std::printf("xr-pilot %s\n", Version);
+        return 0;
+    case LaunchMode::Usage:
+        std::fprintf(stderr,
+                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
+                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
+        return 2;
+    case LaunchMode::ShowRunning:
+        // One desk copy: a second start brings the running pilot forward instead of binding the ports again.
+        if (Tray::askRunningToShowPilot())
             return 0;
-        }
-        if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
-            shared.snapshotPath = argv[++i];
-        else if (!std::strcmp(argv[i], "--record-stream") && i + 1 < argc)
-        {
-            if (!shared.stream.open(argv[++i]))
-            {
-                std::fprintf(stderr, "xr-pilot: cannot write %s\n", argv[i]);
-                return 2;
-            }
-        }
-        else if (!std::strcmp(argv[i], "--no-autoconnect"))
-            autoConnect = false;
-        else if (!std::strcmp(argv[i], "--agent"))
-            agent = true;
-        else if (!std::strcmp(argv[i], "--window"))
-            window = true;
-        else if (!std::strcmp(argv[i], "--traces") && i + 1 < argc)
-            tracePath = argv[++i];
-        else
-        {
-            std::fprintf(stderr,
-                         "usage: xr-pilot [--version] [--window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
-                         "With none of --window, --agent or --snapshot it runs as the OXRSys tray alone.\n");
-            return 2;
-        }
+        // A copy from before this release holds the tray but cannot be asked; say so rather than exit unseen.
+        reportError(false, "XR Pilot is already running in the tray. Quit it from its tray icon, then start XR Pilot again.");
+        return 1;
+    default:
+        break;
     }
+
+    Shared shared;
+    shared.snapshotPath = launch.snapshotPath;
+    if (!launch.recordStreamPath.empty() && !shared.stream.open(launch.recordStreamPath))
+    {
+        reportError(launch.mode == LaunchMode::Agent, "cannot write " + launch.recordStreamPath);
+        return 2;
+    }
+    const bool autoConnect = launch.autoConnect;
+    const bool agent = launch.mode == LaunchMode::Agent;
+    std::string tracePath = launch.tracePath;
 
     if (tracePath.empty())
     {
@@ -848,16 +852,16 @@ int main(int argc, char** argv)
 
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", SDL_GetError());
+        reportError(launch.mode == LaunchMode::Agent, std::string("no display: ") + SDL_GetError());
         return 1;
     }
-    // An agent's pilot leaves the desk's install alone at start.
-    Tray tray(!agent);
+    // Agent and scripted pilots leave the desk's install alone at start.
+    Tray tray(ownsDesk(launch.mode));
     if (!tray.ok())
         std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
 
     int rc = 0;
-    if (window || agent || !shared.snapshotPath.empty())
+    if (launch.mode == LaunchMode::PilotOnly || agent)
         rc = runPilot(shared, autoConnect, agent, tray, true);
     else
     {
@@ -870,10 +874,13 @@ int main(int argc, char** argv)
                 return true;
             },
             &quitting);
+        // A first start opens the pilot; closing it leaves the tray, which can show it again.
+        if (launch.mode == LaunchMode::PilotThenTray)
+            rc = runPilot(shared, autoConnect, false, tray, false);
         while (!quitting)
         {
             SDL_Event e;
-            if (SDL_WaitEventTimeout(&e, 2000) && e.type == Tray::showPilotEvent())
+            if (SDL_WaitEventTimeout(&e, 500) && e.type == Tray::showPilotEvent())
                 rc = runPilot(shared, autoConnect, false, tray, false);
             tray.poll();
         }
