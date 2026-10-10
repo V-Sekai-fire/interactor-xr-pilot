@@ -21,6 +21,7 @@
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/StreamRecord.h"
 #include "xrpilot/Tray.h"
+#include "xrpilot/Version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -686,7 +687,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     layout.dock("stats", "eye", Side::Bottom, 0.07);
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
     WindowConfig config;
-    config.title = "OXRSys XR Pilot";
+    config.title = std::string("OXRSys XR Pilot ") + Version;
     config.width = 1600;
     config.height = 900;
     config.vulkanAllFeatures = true;
@@ -795,6 +796,11 @@ int main(int argc, char** argv)
     std::string tracePath;
     for (int i = 1; i < argc; ++i)
     {
+        if (!std::strcmp(argv[i], "--version"))
+        {
+            std::printf("xr-pilot %s\n", Version);
+            return 0;
+        }
         if (!std::strcmp(argv[i], "--snapshot") && i + 1 < argc)
             shared.snapshotPath = argv[++i];
         else if (!std::strcmp(argv[i], "--record-stream") && i + 1 < argc)
@@ -816,7 +822,7 @@ int main(int argc, char** argv)
         else
         {
             std::fprintf(stderr,
-                         "usage: xr-pilot [--window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
+                         "usage: xr-pilot [--version] [--window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
                          "With none of --window, --agent or --snapshot it runs as the OXRSys tray alone.\n");
             return 2;
         }

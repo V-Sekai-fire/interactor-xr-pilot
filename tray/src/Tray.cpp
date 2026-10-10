@@ -4,6 +4,7 @@
 
 #include "xrpilot/Install.h"
 #include "xrpilot/Json.h"
+#include "xrpilot/Version.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -577,7 +578,7 @@ void Tray::refresh()
     bool streaming = false;
     const std::string status = activityText(streaming);
     SDL_SetTrayEntryLabel(status_, status.c_str());
-    SDL_SetTrayTooltip(tray_, ("OXRSys: " + status).c_str());
+    SDL_SetTrayTooltip(tray_, ("XR Pilot " + std::string(xrpilot::Version) + "\nOXRSys: " + status).c_str());
     if (streaming != streaming_ && (streaming ? streamingIcon_ : idleIcon_) != nullptr)
         SDL_SetTrayIcon(tray_, streaming ? streamingIcon_ : idleIcon_);
     streaming_ = streaming;

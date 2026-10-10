@@ -6,6 +6,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The version comes from the release tag; see cmake/XrPilotVersion.cmake.
+include(cmake/XrPilotVersion.cmake)
+set(XRPILOT_BASE_VERSION ${PROJECT_VERSION})
+xrpilot_read_version(${CMAKE_CURRENT_SOURCE_DIR})
+message(STATUS "XR Pilot ${XRPILOT_VERSION} (installer ${XRPILOT_MSI_VERSION})")
+configure_file(core/include/xrpilot/Version.h.in ${CMAKE_CURRENT_BINARY_DIR}/generated/xrpilot/Version.h @ONLY)
+
 option(XRPILOT_BUILD_APP "Build the xr-pilot window (needs a display and Vulkan)" ON)
 
 option(XRPILOT_BUILD_OXRSYS "Build the OXRSys runtime and SteamVR driver in oxrsys/ (needs Vulkan)" ${XRPILOT_BUILD_APP})
@@ -32,7 +39,7 @@ add_library(xrpilot_core STATIC
     third_party/sqlite/sqlite3.c
     core/src/Sparkline.cpp
 )
-target_include_directories(xrpilot_core PUBLIC core/include ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite
+target_include_directories(xrpilot_core PUBLIC core/include ${CMAKE_CURRENT_BINARY_DIR}/generated ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite
     PRIVATE third_party/sinew-align)
 target_compile_definitions(xrpilot_core PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_FOREIGN_KEYS=1)
 
@@ -46,6 +53,7 @@ else()
 endif()
 
 enable_testing()
+add_test(NAME version.tag-ladder COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/version.cmake)
 add_executable(xrpilot-core-tests core/tests/main.cpp)
 target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
@@ -208,6 +216,12 @@ target_link_libraries(xrpilot_tray PUBLIC xrpilot_install panelspun)
 # A GUI program, so a launch from the shell or a shortcut starts the tray and no console; the
 # MCP server still talks to it over the stdin and stdout pipes it hands over.
 add_executable(xr-pilot WIN32 app/main.cpp)
+if(WIN32)
+    # Explorer's Details tab shows the version.
+    string(REPLACE "." "," XRPILOT_RC_VERSION "${XRPILOT_MSI_VERSION},0")
+    configure_file(app/xr-pilot.rc.in ${CMAKE_CURRENT_BINARY_DIR}/generated/xr-pilot.rc @ONLY)
+    target_sources(xr-pilot PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/xr-pilot.rc)
+endif()
 target_link_libraries(xr-pilot PRIVATE xrpilot_net xrpilot_gpu xrpilot_tray panelspun)
 add_custom_command(TARGET xr-pilot POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tray/resources $<TARGET_FILE_DIR:xr-pilot>/resources)
@@ -236,17 +250,16 @@ if(WIN32 AND XRPILOT_BUILD_OXRSYS)
     install(FILES oxrsys/LICENSE DESTINATION licenses RENAME LICENSE-MPL-2.0 COMPONENT xrpilot)
     set_property(INSTALL "bin/xr-pilot.exe" PROPERTY CPACK_START_MENU_SHORTCUTS "OXRSys Tray")
 
-    file(STRINGS oxrsys/config/OXRSysVersion.xcconfig XRPILOT_OXRSYS_VERSION REGEX "^OXRSYS_VERSION *=")
-    string(REGEX REPLACE "^OXRSYS_VERSION *= *" "" XRPILOT_OXRSYS_VERSION "${XRPILOT_OXRSYS_VERSION}")
     set(CPACK_GENERATOR WIX)
     set(CPACK_COMPONENTS_ALL xrpilot)
     set(CPACK_COMPONENTS_ALL_IN_ONE_PACKAGE ON)
     set(CPACK_PACKAGE_NAME "XR Pilot")
     set(CPACK_PACKAGE_VENDOR "V-Sekai")
-    set(CPACK_PACKAGE_VERSION ${XRPILOT_OXRSYS_VERSION})
+    # XR Pilot's own version, not OXRSys's (always 1.2.0), so each release upgrades the install before it.
+    set(CPACK_PACKAGE_VERSION ${XRPILOT_MSI_VERSION})
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Install OXRSys, pick the OpenXR runtime, and see and drive what an app shows")
     set(CPACK_PACKAGE_INSTALL_DIRECTORY "Programs/XR Pilot")
-    set(CPACK_PACKAGE_FILE_NAME "xr-pilot-${XRPILOT_OXRSYS_VERSION}-x64")
+    set(CPACK_PACKAGE_FILE_NAME "xr-pilot-${XRPILOT_VERSION}-x64")
     set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_CURRENT_BINARY_DIR}/package/LICENSE.txt)
     set(CPACK_WIX_VERSION 4)
     set(CPACK_WIX_ARCHITECTURE x64)

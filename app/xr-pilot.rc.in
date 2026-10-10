@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Generated into the build tree by CMake; the version comes from the release tag.
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @XRPILOT_RC_VERSION@
+PRODUCTVERSION @XRPILOT_RC_VERSION@
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "V-Sekai"
+            VALUE "FileDescription", "XR Pilot"
+            VALUE "FileVersion", "@XRPILOT_VERSION@"
+            VALUE "ProductName", "XR Pilot"
+            VALUE "ProductVersion", "@XRPILOT_VERSION@"
+            VALUE "OriginalFilename", "xr-pilot.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
