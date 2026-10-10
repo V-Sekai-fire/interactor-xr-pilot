@@ -119,4 +119,16 @@ private:
 
 int64_t monotonicNowNs();
 
+// Whether an announce should (re)connect the client. A connected client stays with its runtime while
+// video flows, whoever else announces; it moves when asked (connectNow) or when its runtime went silent.
+inline bool shouldConnectOnAnnounce(bool autoConnect, bool connectRequested, bool connected, int64_t videoSilenceNs,
+                                    int64_t silenceLimitNs)
+{
+    if (connectRequested)
+        return true;
+    if (!connected)
+        return autoConnect;
+    return videoSilenceNs > silenceLimitNs;
+}
+
 } // namespace xrpilot

@@ -253,10 +253,10 @@ void Client::discoveryLoop()
                 status_.server = inet_ntoa(text);
                 status_.serverName.assign(announce.serverName, strnlen(announce.serverName, sizeof(announce.serverName)));
             }
-            // The runtime keeps announcing while it streams; a new runtime, or one that went silent, reconnects.
-            const bool wanted = status_.autoConnect || connectRequested_ || status_.connected;
-            reconnect = wanted && (!status_.connected || from.sin_addr.s_addr != serverAddress_ ||
-                                   monotonicNowNs() - lastVideoNs_ > VideoSilenceReconnectNs);
+            // Runtimes keep announcing while they stream. With two on the network, answering every other
+            // runtime's announce moved the client back and forth between them; it now stays while video flows.
+            reconnect = shouldConnectOnAnnounce(status_.autoConnect, connectRequested_, status_.connected,
+                                                monotonicNowNs() - lastVideoNs_, VideoSilenceReconnectNs);
         }
         if (reconnect)
             connectTo(from.sin_addr.s_addr, announce);

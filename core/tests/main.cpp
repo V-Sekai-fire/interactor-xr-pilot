@@ -3,6 +3,7 @@
 // Core tests, one case per ctest entry. Each negative case asserts that broken input is rejected.
 
 #include "xrpilot/Agent.h"
+#include "xrpilot/Client.h"
 #include "xrpilot/Body.h"
 #include "xrpilot/Commands.h"
 #include "xrpilot/FrameAssembler.h"
@@ -491,6 +492,16 @@ const std::map<std::string, std::function<void()>> cases = {
          oxr::protocol::TrackingPacket p;
          check(nextTrackingPacket(s, 10, last, p) && p.timestampNs == 10, "a head with no sample time goes out now");
          check(nextTrackingPacket(s, 20, last, p) && p.timestampNs == 20, "and again on the next tick");
+     }},
+    {"client.stays-with-a-streaming-runtime",
+     [] {
+         constexpr int64_t limit = 3'000'000'000;
+         check(!shouldConnectOnAnnounce(true, false, true, 10'000'000, limit),
+               "another runtime's announce does not take a client whose video flows");
+         check(shouldConnectOnAnnounce(true, false, true, limit + 1, limit), "a silent runtime is left");
+         check(shouldConnectOnAnnounce(false, true, true, 0, limit), "connectNow moves the client");
+         check(shouldConnectOnAnnounce(true, false, false, 0, limit), "auto-connect joins the first runtime");
+         check(!shouldConnectOnAnnounce(false, false, false, 0, limit), "a disconnected client stays away");
      }},
     {"commands.malformed-rejected",
      [] {
