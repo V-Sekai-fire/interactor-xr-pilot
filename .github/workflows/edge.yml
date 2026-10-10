@@ -89,6 +89,8 @@ jobs:
         with:
           name: edge-windows
       - name: Run on Windows (a missing certificate must fail)
+        env:
+          MSYS_NO_PATHCONV: '1'   # keep Git Bash from rewriting -subj /CN=... into a path
         run: |
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout k.pem -out c.pem -days 1 -subj /CN=smoke
           ./smoke.exe c.pem k.pem
