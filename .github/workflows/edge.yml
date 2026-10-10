@@ -1,0 +1,98 @@
+# The MCP edge: the mutual-TLS gate on Linux, the llvm-mingw cross build, and the
+# Windows executable run on a Windows runner.
+name: edge
+
+on:
+  push:
+    branches: [main]
+    paths: ['edge/**', 'third_party/picoquic/**', 'third_party/picotls/**', '.github/workflows/edge.yml']
+  pull_request:
+    paths: ['edge/**', 'third_party/picoquic/**', 'third_party/picotls/**', '.github/workflows/edge.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  LLVM_MINGW: llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64
+  LLVM_MINGW_TAG: '20260826'
+  OPENSSL_VERSION: 3.5.4
+
+jobs:
+  gate-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build libssl-dev
+      - name: Build
+        run: |
+          cmake -S edge -B build-edge -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C build-edge mcp_edge smoke
+      - name: Link gate (a missing certificate must fail)
+        run: |
+          cd edge/test && bash mkpki.sh && cd ../..
+          build-edge/smoke edge/test/server.pem edge/test/server-key.pem
+          if build-edge/smoke /nonexistent.pem edge/test/server-key.pem; then echo "control passed"; exit 1; fi
+      - name: Mutual-TLS gate (one admitted call, four refusals, overload)
+        run: E=$PWD/build-edge/mcp_edge bash edge/test/run.sh
+
+  windows-cross:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build
+      - name: llvm-mingw
+        run: |
+          curl -fsSL -o t.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_TAG/$LLVM_MINGW.tar.xz
+          tar xf t.tar.xz -C $RUNNER_TEMP && rm t.tar.xz
+          echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> $GITHUB_PATH
+      - name: Cache OpenSSL for mingw
+        id: ossl
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ossl
+          key: openssl-${{ env.OPENSSL_VERSION }}-${{ env.LLVM_MINGW }}-static
+      - name: OpenSSL for mingw (libcrypto, static)
+        if: steps.ossl.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz | tar xz
+          cd openssl-$OPENSSL_VERSION
+          ./Configure mingw64 --cross-compile-prefix=x86_64-w64-mingw32- CC=clang no-shared no-tests no-docs no-apps \
+            --prefix=$RUNNER_TEMP/ossl --libdir=lib > /dev/null
+          make -j4 build_libs > /dev/null
+          make install_dev > /dev/null
+      - name: Build
+        run: |
+          cmake -S edge -B build-win -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-clang -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR=$RUNNER_TEMP/ossl
+          ninja -C build-win mcp_edge smoke
+      - name: Static OpenSSL (no crypto or ssl DLL may be imported)
+        run: |
+          llvm-objdump -p build-win/mcp_edge.exe | grep 'DLL Name' | tee dlls.txt
+          if grep -i -E 'crypto|ssl' dlls.txt; then exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: edge-windows
+          path: |
+            build-win/mcp_edge.exe
+            build-win/smoke.exe
+
+  windows-smoke:
+    needs: windows-cross
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: edge-windows
+      - name: Run on Windows (a missing certificate must fail)
+        env:
+          MSYS_NO_PATHCONV: '1'   # keep Git Bash from rewriting -subj /CN=... into a path
+        run: |
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout k.pem -out c.pem -days 1 -subj /CN=smoke
+          ./smoke.exe c.pem k.pem
+          if ./smoke.exe nope.pem k.pem; then echo "control passed"; exit 1; fi
+          rc=0; ./mcp_edge.exe || rc=$?; test $rc = 2   # usage error, not a crash
