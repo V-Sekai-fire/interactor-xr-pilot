@@ -671,6 +671,15 @@ private:
     int64_t lastTrayNs_ = 0;
 };
 
+// xr-pilot.exe is a Windows GUI app, so stderr goes nowhere: a person sees errors in a box. An agent
+// reads stderr, so it gets them there alone.
+void reportError(bool agent, const std::string& message)
+{
+    std::fprintf(stderr, "xr-pilot: %s\n", message.c_str());
+    if (!agent)
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "XR Pilot", message.c_str(), nullptr);
+}
+
 int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool readCommands)
 {
     Window* windowPtr = nullptr;
@@ -699,7 +708,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", error.c_str());
+        reportError(agent, "The pilot window cannot open: " + error);
         return 1;
     }
     windowPtr = window.get();
@@ -710,7 +719,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
     if (!client.start(&error))
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", error.c_str());
+        reportError(agent, error);
         return 1;
     }
 
@@ -803,7 +812,11 @@ int main(int argc, char** argv)
         return 2;
     case LaunchMode::ShowRunning:
         // One desk copy: a second start brings the running pilot forward instead of binding the ports again.
-        return Tray::askRunningToShowPilot() ? 0 : 1;
+        if (Tray::askRunningToShowPilot())
+            return 0;
+        // A copy from before this release holds the tray but cannot be asked; say so rather than exit unseen.
+        reportError(false, "XR Pilot is already running in the tray. Quit it from its tray icon, then start XR Pilot again.");
+        return 1;
     default:
         break;
     }
@@ -812,7 +825,7 @@ int main(int argc, char** argv)
     shared.snapshotPath = launch.snapshotPath;
     if (!launch.recordStreamPath.empty() && !shared.stream.open(launch.recordStreamPath))
     {
-        std::fprintf(stderr, "xr-pilot: cannot write %s\n", launch.recordStreamPath.c_str());
+        reportError(launch.mode == LaunchMode::Agent, "cannot write " + launch.recordStreamPath);
         return 2;
     }
     const bool autoConnect = launch.autoConnect;
@@ -839,7 +852,7 @@ int main(int argc, char** argv)
 
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
     {
-        std::fprintf(stderr, "xr-pilot: %s\n", SDL_GetError());
+        reportError(launch.mode == LaunchMode::Agent, std::string("no display: ") + SDL_GetError());
         return 1;
     }
     // Agent and scripted pilots leave the desk's install alone at start.

@@ -506,6 +506,66 @@ const std::map<std::string, std::function<void()>> cases = {
          check(shouldConnectOnAnnounce(true, false, false, 0, limit), "auto-connect joins the first runtime");
          check(!shouldConnectOnAnnounce(false, false, false, 0, limit), "a disconnected client stays away");
      }},
+    {"client.local-runtime-wins",
+     [] {
+         // A pilot on a desk with SteamVR followed the first runtime it heard, which could be another
+         // machine's: the game on this PC then rendered to no one, a black view.
+         constexpr int64_t s = 1'000'000'000;
+         AnnounceContext c;
+         c.listeningNs = 10 * s;
+         c.announceIsLocal = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "an idle client takes this machine's runtime");
+         c.announceIsLocal = false;
+         c.sinceLocalAnnounceNs = 200'000'000;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "not another machine's while this one's announces");
+         c.sinceLocalAnnounceNs = INT64_MAX;
+         c.listeningNs = 200'000'000;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "nor in the first second, before this one's is heard");
+         c.listeningNs = 10 * s;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "with no runtime here, another machine's is taken");
+         c.connected = true;
+         c.connectedToLocal = false;
+         c.announceIsLocal = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "this machine's runtime takes over from another's");
+         c.connectedToLocal = true;
+         c.announceIsLocal = false;
+         c.videoSilenceNs = 60 * s;
+         check(!shouldConnectToAnnounce(c, 3 * s, s), "another machine never takes this one's session");
+         c.connectRequested = true;
+         check(shouldConnectToAnnounce(c, 3 * s, s), "a connect the user asked for is kept");
+         AnnounceContext off;
+         off.autoConnect = false;
+         off.announceIsLocal = true;
+         off.listeningNs = 10 * s;
+         check(!shouldConnectToAnnounce(off, 3 * s, s), "--no-autoconnect waits for the user");
+     }},
+    {"client.local-address-is-recognised",
+     [] {
+         const auto ip = [](uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
+             const uint8_t bytes[4] = {a, b, c, d};
+             uint32_t networkOrder = 0;
+             std::memcpy(&networkOrder, bytes, 4);
+             return networkOrder;
+         };
+         check(isLocalAddress(ip(127, 0, 0, 1)), "127.0.0.1 is this machine");
+         check(!isLocalAddress(ip(192, 0, 2, 1)), "192.0.2.1 (TEST-NET-1) is not");
+     }},
+    {"client.second-pilot-is-refused",
+     [] {
+         // Two pilots bound the discovery and video ports with SO_REUSEADDR; each datagram reached one
+         // of them, so the one on screen went black with no error.
+         const uint16_t port = uint16_t(41000 + (monotonicNowNs() / 1000) % 2000);
+         std::string error;
+         const intptr_t first = bindExclusiveUdp(port, &error);
+         check(first >= 0, "the first pilot binds the port");
+         std::string second;
+         const intptr_t again = bindExclusiveUdp(port, &second);
+         check(again < 0, "a second pilot is refused");
+         check(second.find(std::to_string(port)) != std::string::npos && second.find("another XR Pilot") != std::string::npos,
+               "and told the port and why");
+         closeUdp(again);
+         closeUdp(first);
+     }},
     {"launch.plain-start-opens-the-pilot",
      [] {
          // The Start Menu entry starts xr-pilot with no arguments. It ran as a tray icon alone, so a first

@@ -9,10 +9,12 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 using SocketLength = int;
 using NativeSocket = SOCKET;
 #else
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -25,7 +27,9 @@ using NativeSocket = int;
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <climits>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace xrpilot
@@ -35,6 +39,8 @@ namespace
 {
 
 constexpr int64_t VideoSilenceReconnectNs = 3'000'000'000;
+// Runtimes announce every 100 ms; a second without one from this machine means none runs here.
+constexpr int64_t LocalRuntimeGraceNs = 1'000'000'000;
 
 #if defined(_WIN32)
 void closeSocket(intptr_t s)
@@ -61,6 +67,18 @@ void setReceiveTimeout(intptr_t s, int milliseconds)
 
 intptr_t openUdp(uint16_t bindPort, int receiveBuffer, std::string* error)
 {
+    if (bindPort != 0)
+    {
+        // The discovery and video ports: one pilot per machine receives them.
+        const intptr_t s = bindExclusiveUdp(bindPort, error);
+        if (s < 0)
+            return -1;
+        if (receiveBuffer > 0)
+            setsockopt(NativeSocket(s), SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receiveBuffer),
+                       sizeof(receiveBuffer));
+        setReceiveTimeout(s, 200);
+        return s;
+    }
     const NativeSocket native = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     const intptr_t s = intptr_t(native);
     if (s < 0 || native == NativeSocket(~0))
@@ -102,6 +120,117 @@ void sendTo(intptr_t s, uint32_t address, uint16_t port, const void* data, size_
 
 } // namespace
 
+bool shouldConnectToAnnounce(const AnnounceContext& c, int64_t silenceLimitNs, int64_t localGraceNs)
+{
+    if (c.connectRequested)
+        return true;
+    if (!c.autoConnect)
+        return false;
+    if (c.announceIsLocal)
+    {
+        if (c.connected && !c.connectedToLocal)
+            return true; // this machine's runtime takes over from another's
+        return shouldConnectOnAnnounce(true, false, c.connected, c.videoSilenceNs, silenceLimitNs);
+    }
+    if (c.connected && c.connectedToLocal)
+        return false;
+    if (c.listeningNs < localGraceNs || c.sinceLocalAnnounceNs < localGraceNs)
+        return false;
+    return shouldConnectOnAnnounce(true, false, c.connected, c.videoSilenceNs, silenceLimitNs);
+}
+
+namespace
+{
+
+// This machine's IPv4 addresses, network order; refreshed every few seconds as interfaces change.
+std::vector<uint32_t> localAddresses()
+{
+    static std::mutex mutex;
+    static std::vector<uint32_t> cached;
+    static int64_t cachedAtNs = INT64_MIN / 2;
+    std::lock_guard<std::mutex> lock(mutex);
+    const int64_t now = monotonicNowNs();
+    if (now - cachedAtNs < 5'000'000'000)
+        return cached;
+    cachedAtNs = now;
+    cached.clear();
+#if defined(_WIN32)
+    char host[256] = {};
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    addrinfo* found = nullptr;
+    if (gethostname(host, sizeof(host)) == 0 && getaddrinfo(host, nullptr, &hints, &found) == 0)
+    {
+        for (addrinfo* a = found; a != nullptr; a = a->ai_next)
+            cached.push_back(reinterpret_cast<sockaddr_in*>(a->ai_addr)->sin_addr.s_addr);
+        freeaddrinfo(found);
+    }
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) == 0)
+    {
+        for (ifaddrs* i = list; i != nullptr; i = i->ifa_next)
+        {
+            if (i->ifa_addr != nullptr && i->ifa_addr->sa_family == AF_INET)
+                cached.push_back(reinterpret_cast<sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr);
+        }
+        freeifaddrs(list);
+    }
+#endif
+    return cached;
+}
+
+} // namespace
+
+bool isLocalAddress(uint32_t address)
+{
+    if ((ntohl(address) >> 24) == 127)
+        return true;
+    const std::vector<uint32_t> mine = localAddresses();
+    return std::find(mine.begin(), mine.end(), address) != mine.end();
+}
+
+intptr_t bindExclusiveUdp(uint16_t port, std::string* error)
+{
+    const NativeSocket native = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    const intptr_t s = intptr_t(native);
+    if (s < 0 || native == NativeSocket(~0))
+    {
+        if (error)
+            *error = "socket() failed";
+        return -1;
+    }
+#if defined(_WIN32)
+    // Without it Windows lets a second socket share the port, and each datagram reaches only one.
+    const BOOL one = TRUE;
+    setsockopt(native, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&one), sizeof(one));
+#endif
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(native, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+    {
+        if (error)
+            *error = "UDP port " + std::to_string(port) +
+                     " is in use: another XR Pilot is already receiving the stream. Close it, or quit it from its tray icon, and start again.";
+        closeUdp(s);
+        return -1;
+    }
+    return s;
+}
+
+void closeUdp(intptr_t s)
+{
+    if (s < 0)
+        return;
+#if defined(_WIN32)
+    closesocket(SOCKET(s));
+#else
+    close(int(s));
+#endif
+}
+
 int64_t monotonicNowNs()
 {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -137,6 +266,7 @@ bool Client::start(std::string* error)
         stop();
         return false;
     }
+    listeningSinceNs_ = monotonicNowNs();
     running_ = true;
     discovery_ = std::thread([this] { discoveryLoop(); });
     video_ = std::thread([this] { videoLoop(); });
@@ -205,8 +335,10 @@ void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& an
     std::strncpy(connect.deviceName, "OXRSys XR Pilot", sizeof(connect.deviceName) - 1);
     sendTo(sendSocket_, address, oxr::protocol::CONTROL_PORT, &connect, sizeof(connect));
 
+    const bool local = isLocalAddress(address);
     std::lock_guard<std::mutex> lock(mutex_);
     serverAddress_ = address;
+    connectedToLocal_ = local;
     in_addr text{};
     text.s_addr = address;
     status_.connected = true;
@@ -241,6 +373,8 @@ void Client::discoveryLoop()
         std::memcpy(&announce, buffer.data(), std::min<size_t>(size_t(got), sizeof(announce)));
         if (announce.type != oxr::protocol::MessageType::ServerAnnounce)
             continue;
+        const bool local = isLocalAddress(from.sin_addr.s_addr);
+        const int64_t now = monotonicNowNs();
         bool reconnect = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -256,8 +390,19 @@ void Client::discoveryLoop()
             }
             // Runtimes keep announcing while they stream. With two on the network, answering every other
             // runtime's announce moved the client back and forth between them; it now stays while video flows.
-            reconnect = shouldConnectOnAnnounce(status_.autoConnect, connectRequested_, status_.connected,
-                                                monotonicNowNs() - lastVideoNs_, VideoSilenceReconnectNs);
+            // This machine's runtime wins over others on the network, so a game here streams to this pilot.
+            AnnounceContext c;
+            c.autoConnect = status_.autoConnect;
+            c.connectRequested = connectRequested_;
+            c.connected = status_.connected;
+            c.connectedToLocal = connectedToLocal_;
+            c.announceIsLocal = local;
+            c.listeningNs = now - listeningSinceNs_;
+            c.sinceLocalAnnounceNs = lastLocalAnnounceNs_ == 0 ? INT64_MAX : now - lastLocalAnnounceNs_;
+            c.videoSilenceNs = now - lastVideoNs_;
+            if (local)
+                lastLocalAnnounceNs_ = now;
+            reconnect = shouldConnectToAnnounce(c, VideoSilenceReconnectNs, LocalRuntimeGraceNs);
         }
         if (reconnect)
             connectTo(from.sin_addr.s_addr, announce);

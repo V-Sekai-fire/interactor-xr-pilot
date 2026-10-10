@@ -56,7 +56,7 @@ endif()
 enable_testing()
 add_test(NAME version.tag-ladder COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/version.cmake)
 add_executable(xrpilot-core-tests core/tests/main.cpp)
-target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_core)
+target_link_libraries(xrpilot-core-tests PRIVATE xrpilot_net)
 foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss assembler.two-losses-drop
                       assembler.render-pose-joins-frame assembler.stale-packet-never-joins-a-frame
                       png.round-trip png.corrupt-crc-rejected
@@ -69,7 +69,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
                       client.stays-with-a-streaming-runtime
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
-                      launch.flags-keep-their-meaning)
+                      launch.flags-keep-their-meaning client.local-runtime-wins
+                      client.local-address-is-recognised client.second-pilot-is-refused)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.

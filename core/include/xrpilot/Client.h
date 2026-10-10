@@ -107,6 +107,9 @@ private:
     bool connectRequested_ = false;
     std::optional<AssembledVideoFrame> latest_;
     int64_t lastVideoNs_ = 0;
+    int64_t listeningSinceNs_ = 0;
+    int64_t lastLocalAnnounceNs_ = 0; // 0: none heard
+    bool connectedToLocal_ = false;
     int64_t lastKeyframeRequestNs_ = 0;
     VideoFrameAssembler assembler_;
     // The newest MotionBricks frame, and the body composed from it on the tracking thread.
@@ -130,5 +133,30 @@ inline bool shouldConnectOnAnnounce(bool autoConnect, bool connectRequested, boo
         return autoConnect;
     return videoSilenceNs > silenceLimitNs;
 }
+
+// What the client knows when a runtime announces itself.
+struct AnnounceContext
+{
+    bool autoConnect = true;
+    bool connectRequested = false;
+    bool connected = false;
+    bool connectedToLocal = false;   // the runtime streaming to us runs on this machine
+    bool announceIsLocal = false;    // the announcing runtime runs on this machine
+    int64_t listeningNs = 0;         // since the client started listening
+    int64_t sinceLocalAnnounceNs = INT64_MAX;
+    int64_t videoSilenceNs = 0;
+};
+
+// The desk's own runtime wins: a game on this PC streams to this pilot, never to a runtime elsewhere
+// on the network. Another machine's runtime is taken only when none runs here.
+bool shouldConnectToAnnounce(const AnnounceContext& c, int64_t silenceLimitNs, int64_t localGraceNs);
+
+// Whether an IPv4 address (network order) is this machine: loopback or one of its interfaces.
+bool isLocalAddress(uint32_t address);
+
+// Binds a UDP port that no other socket may share, so a second pilot is refused rather than
+// silently taking the stream. Returns the socket, or -1 with an error naming the port.
+intptr_t bindExclusiveUdp(uint16_t port, std::string* error);
+void closeUdp(intptr_t socket);
 
 } // namespace xrpilot
