@@ -37,6 +37,16 @@ namespace
 
 int failures = 0;
 
+// A UDP port the system reports free: bind port 0, read what it got, let it go.
+uint16_t freeUdpPort()
+{
+    std::string error;
+    const intptr_t s = xrpilot::bindExclusiveUdp(0, &error);
+    const uint16_t port = xrpilot::boundUdpPort(s);
+    xrpilot::closeUdp(s);
+    return port;
+}
+
 int64_t countRows(sqlite3* db, const char* sql)
 {
     sqlite3_stmt* s = nullptr;
@@ -555,7 +565,10 @@ const std::map<std::string, std::function<void()>> cases = {
      [] {
          // Two pilots bound the discovery and video ports with SO_REUSEADDR; each datagram reached one
          // of them, so the one on screen went black with no error.
-         const uint16_t port = uint16_t(41000 + (monotonicNowNs() / 1000) % 2000);
+         // A port the system says is free: a fixed range is not, on every desk (on one, Windows
+         // refused 41890 and up with no endpoint listed).
+         const uint16_t port = freeUdpPort();
+         check(port != 0, "the system offers a free port");
          std::string error;
          const intptr_t first = bindExclusiveUdp(port, &error);
          check(first >= 0, "the first pilot binds the port");

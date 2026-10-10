@@ -157,6 +157,8 @@ bool isLocalAddress(uint32_t address);
 // Binds a UDP port that no other socket may share, so a second pilot is refused rather than
 // silently taking the stream. Returns the socket, or -1 with an error naming the port.
 intptr_t bindExclusiveUdp(uint16_t port, std::string* error);
-void closeUdp(intptr_t socket);
+void closeUdp(intptr_t s);
+// The port a bound UDP socket holds (0 on error), for a socket bound to port 0.
+uint16_t boundUdpPort(intptr_t s);
 
 } // namespace xrpilot
