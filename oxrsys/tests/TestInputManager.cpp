@@ -587,3 +587,40 @@ TEST_CASE("InputManager — the index controller's left A and B read X and Y", "
     CHECK_THAT(im.GetFloatComponentForProfile(InputManager::Hand::Left, "squeeze/force", IndexProfile),
                WithinAbs(0.7f, 0.001f));
 }
+
+TEST_CASE("TrackingReceiver — a new client's clock starts ordering again", "[input]")
+{
+    // A client whose clock reads later (another machine's uptime) leaves a large timestamp behind. The next
+    // client's packets, on its own clock, must not be dropped as reordered once it connects.
+    TrackingReceiver receiver;
+    oxr::protocol::TrackingPacket first = {};
+    first.timestampNs = 900'000'000'000'000LL;
+    first.headPosition[1] = 1.0f;
+    first.headOrientation[3] = 1.0f;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&first), sizeof(first));
+
+    receiver.BeginClient(0);
+    oxr::protocol::TrackingPacket next = first;
+    next.timestampNs = 5'000'000'000LL;
+    next.headPosition[1] = 1.7f;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&next), sizeof(next));
+
+    oxr::protocol::TrackingPacket latest = {};
+    REQUIRE(receiver.GetLatestPose(latest));
+    CHECK(latest.timestampNs == next.timestampNs);
+    CHECK_THAT(latest.headPosition[1], WithinAbs(1.7f, 1e-6f));
+    CHECK(receiver.GetReorderedDropCount() == 0);
+
+    // Within one client, a packet older than the newest is still dropped.
+    oxr::protocol::TrackingPacket old = next;
+    old.timestampNs = next.timestampNs - 1;
+    receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&old), sizeof(old));
+    CHECK(receiver.GetReorderedDropCount() == 1);
+}
+
+TEST_CASE("TrackingReceiver — only the connected client's address is taken", "[input]")
+{
+    CHECK(TrackingReceiver::AcceptsSource(0, 0x0100007f));
+    CHECK(TrackingReceiver::AcceptsSource(0xc201a8c0, 0xc201a8c0));
+    CHECK_FALSE(TrackingReceiver::AcceptsSource(0xc201a8c0, 0xe601a8c0));
+}

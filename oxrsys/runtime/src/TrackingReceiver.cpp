@@ -212,9 +212,18 @@ void TrackingReceiver::ReceiveThread()
     {
         oxrsys::runtime_socket::SetReceiveTimeout(socket_, 0, 5000);
 
-        int received = oxrsys::runtime_socket::Receive(socket_, buffer, sizeof(buffer), 0);
+        sockaddr_in from = {};
+        oxrsys::runtime_socket::SocketLength fromLength = sizeof(from);
+        int received = oxrsys::runtime_socket::ReceiveFrom(socket_, buffer, sizeof(buffer), 0,
+                                                           reinterpret_cast<sockaddr*>(&from), &fromLength);
         if (received < static_cast<int>(sizeof(oxr::protocol::TrackingPacket)))
         {
+            continue;
+        }
+        // Another client on the network (a second pilot still sending) must not mix its poses in.
+        if (!AcceptsSource(sourceAddress_.load(), from.sin_addr.s_addr))
+        {
+            foreignDropCount_.fetch_add(1);
             continue;
         }
 
@@ -393,6 +402,15 @@ bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket
     }
 
     return true;
+}
+
+void TrackingReceiver::BeginClient(uint32_t sourceAddress)
+{
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    sourceAddress_.store(sourceAddress);
+    // The last pose stays for InputManager; its timestamp and the history were on the old client's clock.
+    latestPacket_.timestampNs = 0;
+    history_.clear();
 }
 
 void TrackingReceiver::SetPredictionHorizonMs(float predictionHorizonMs)

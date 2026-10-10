@@ -1594,6 +1594,11 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
     targetRefreshRateHz_.store(negotiatedRefresh);
     UpdatePredictionHorizon();
 
+    if (trackingReceiver_ != nullptr)
+    {
+        trackingReceiver_->BeginClient(clientAddr.sin_addr.s_addr);
+    }
+
     state_.store(State::Connected);
 
     {
@@ -1735,6 +1740,11 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         : refreshRateHz_;
     targetRefreshRateHz_.store(negotiatedRefresh);
     UpdatePredictionHorizon();
+
+    if (trackingReceiver_ != nullptr)
+    {
+        trackingReceiver_->BeginClient(0);
+    }
 
     state_.store(State::Connected);
 
