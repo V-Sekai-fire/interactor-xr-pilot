@@ -142,6 +142,18 @@ bool shouldConnectToAnnounce(const AnnounceContext& c, int64_t silenceLimitNs, i
 namespace
 {
 
+// Winsock needs starting before any socket call; these helpers may run before a Client does.
+void ensureSockets()
+{
+#if defined(_WIN32)
+    static std::once_flag once;
+    std::call_once(once, [] {
+        WSADATA data;
+        WSAStartup(MAKEWORD(2, 2), &data);
+    });
+#endif
+}
+
 // This machine's IPv4 addresses, network order; refreshed every few seconds as interfaces change.
 std::vector<uint32_t> localAddresses()
 {
@@ -154,6 +166,7 @@ std::vector<uint32_t> localAddresses()
         return cached;
     cachedAtNs = now;
     cached.clear();
+    ensureSockets();
 #if defined(_WIN32)
     char host[256] = {};
     addrinfo hints{};
@@ -192,6 +205,7 @@ bool isLocalAddress(uint32_t address)
 
 intptr_t bindExclusiveUdp(uint16_t port, std::string* error)
 {
+    ensureSockets();
     const NativeSocket native = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     const intptr_t s = intptr_t(native);
     if (s < 0 || native == NativeSocket(~0))
