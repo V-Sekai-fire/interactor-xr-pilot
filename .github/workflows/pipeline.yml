@@ -1,7 +1,5 @@
-# The repo's whole CI, one job at a time, in one concurrency slot per repo: a repo takes one runner from
-# the org's shared pool. The slot keeps one waiting run; slot-keeper.yml brings back dropped tag runs
-# (oldest version first) and the newest dropped run of main and of each open PR. See
-# https://github.com/V-Sekai-fire/.github/blob/main/slot/README.md
+# The repo's whole CI, one job at a time. Each pull request and branch runs on its own: a newer push
+# cancels the run it supersedes on the same ref, and tag builds always finish.
 name: pipeline
 
 on:
@@ -12,8 +10,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: slot-${{ github.repository }}
-  cancel-in-progress: false
+  group: pipeline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: write # the tag builds attach their packages to the release
@@ -55,7 +53,7 @@ jobs:
             if [ "$GITHUB_EVENT_NAME" != pull_request ] || touches "$@"; then echo true; else echo false; fi
           }
           {
-            echo "core=$(platform '.' '^oxrsys/clients/|^edge/|^third_party/(picoquic|picotls)/|^\.github/workflows/(linux-runtime|macos|android|edge|slot-keeper)\.yml$')"
+            echo "core=$(platform '.' '^oxrsys/clients/|^edge/|^third_party/(picoquic|picotls)/|^\.github/workflows/(linux-runtime|macos|android|edge)\.yml$')"
             echo "linux-runtime=$(platform '^oxrsys/|^\.github/workflows/linux-runtime\.yml$' '^oxrsys/clients/')"
             echo "macos=$(platform '^oxrsys/|^\.github/workflows/macos\.yml$' '^oxrsys/clients/Android/')"
             echo "android=$(platform '^oxrsys/(clients/Android|config)/|^\.github/workflows/android\.yml$')"
