@@ -101,6 +101,7 @@ private:
     bool OpenUsbSpatialSocket(uint16_t spatialPort);
     void CloseSpatialSocket();
     void SendClientConnect(const char* serverIp);
+    void SendSpectatorHeartbeat();
     void StartControlReceiver();
     void StopControlReceiver();
     void ControlReceiveThreadMain();
@@ -225,6 +226,9 @@ private:
     std::atomic<ConnectionState> connectionState_{ConnectionState::Disconnected};
     std::atomic<bool> needsReconnect_{false};
     std::atomic<bool> shellPendingNetworkReset_{false};
+    // Another client owns the session: this headset only watches its video (oxrsys/protocol/Spectator.h).
+    std::atomic<bool> spectating_{false};
+    int64_t lastSpectatorHeartbeatNs_ = 0;
     std::chrono::steady_clock::time_point lastUsbAdbRetryTime_;
     uint32_t usbAdbRetryAttempts_ = 0;
     char serverIp_[64] = {};
