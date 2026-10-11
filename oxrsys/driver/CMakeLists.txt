@@ -41,7 +41,7 @@ target_compile_definitions(driver_oxrsys PRIVATE
 if(MSVC)
     target_compile_options(driver_oxrsys PRIVATE /utf-8)
 endif()
-target_link_libraries(driver_oxrsys PRIVATE spdlog::spdlog glm::glm oxrsys_pyrowave ws2_32 d3d11 dxgi d3dcompiler)
+target_link_libraries(driver_oxrsys PRIVATE spdlog::spdlog glm::glm oxrsys_pyrowave ws2_32 iphlpapi d3d11 dxgi d3dcompiler)
 set_target_properties(driver_oxrsys PROPERTIES
     PREFIX ""
     RUNTIME_OUTPUT_DIRECTORY ${OXRSYS_DRIVER_ROOT}/bin/win64

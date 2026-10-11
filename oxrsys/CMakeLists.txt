@@ -193,6 +193,7 @@ add_executable(oxrsys_runtime_tests
     tests/TestControllerLayout.cpp
     tests/TestStreamingReconfigure.cpp
     tests/TestStreamingSpectators.cpp
+    tests/TestStreamingDiscovery.cpp
     tests/TestVulkanDispatch.cpp
     tests/TestCompositionLayerAlpha.cpp
     tests/TestProtocolLayout.cpp
@@ -224,7 +225,7 @@ target_link_libraries(oxrsys_runtime_tests PRIVATE
     ${CMAKE_DL_LIBS}
 )
 if(WIN32)
-    target_link_libraries(oxrsys_runtime_tests PRIVATE ws2_32)
+    target_link_libraries(oxrsys_runtime_tests PRIVATE ws2_32 iphlpapi)
     target_compile_definitions(oxrsys_runtime_tests PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 if(APPLE)
