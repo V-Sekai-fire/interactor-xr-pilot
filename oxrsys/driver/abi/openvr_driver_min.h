@@ -124,7 +124,7 @@ public:
     virtual void Pad1_SetBool() = 0;
     virtual void Pad2_SetInt32() = 0;
     virtual void Pad3_SetFloat() = 0;
-    virtual void Pad4_SetString() = 0;
+    virtual void SetString(const char *pchSection, const char *pchSettingsKey, const char *pchValue, EVRSettingsError *peError) = 0;
     virtual void Pad5_GetBool() = 0;
     virtual int32_t GetInt32(const char *pchSection, const char *pchSettingsKey, EVRSettingsError *peError) = 0;
     virtual void Pad7_GetFloat() = 0;
@@ -199,7 +199,7 @@ inline const SlotProbe kSlotProbes[] = {
     {"IVRSettings", "Pad1_SetBool", 1, [](void *o) { static_cast<IVRSettings *>(o)->Pad1_SetBool(); }},
     {"IVRSettings", "Pad2_SetInt32", 2, [](void *o) { static_cast<IVRSettings *>(o)->Pad2_SetInt32(); }},
     {"IVRSettings", "Pad3_SetFloat", 3, [](void *o) { static_cast<IVRSettings *>(o)->Pad3_SetFloat(); }},
-    {"IVRSettings", "Pad4_SetString", 4, [](void *o) { static_cast<IVRSettings *>(o)->Pad4_SetString(); }},
+    {"IVRSettings", "SetString", 4, [](void *o) { static_cast<IVRSettings *>(o)->SetString({}, {}, {}, {}); }},
     {"IVRSettings", "Pad5_GetBool", 5, [](void *o) { static_cast<IVRSettings *>(o)->Pad5_GetBool(); }},
     {"IVRSettings", "GetInt32", 6, [](void *o) { static_cast<IVRSettings *>(o)->GetInt32({}, {}, {}); }},
     {"IVRSettings", "Pad7_GetFloat", 7, [](void *o) { static_cast<IVRSettings *>(o)->Pad7_GetFloat(); }},

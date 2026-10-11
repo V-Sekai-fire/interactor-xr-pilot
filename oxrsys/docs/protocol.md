@@ -48,6 +48,8 @@ TCP payloads are framed with `TcpRecordHeader`, which contains the record magic,
 
 The runtime broadcasts `ServerAnnounce` messages. Clients answer with `ClientConnect`.
 
+It sends each announce to the subnet broadcast address of every IPv4 adapter that is up, then to `255.255.255.255`. On Windows the limited broadcast leaves by one adapter only, so a headset reached through another one, such as the Steam Frame on its USB dongle beside the router's Ethernet, would never hear it. Loopback, link-local and point-to-point (/31, /32) adapters are skipped.
+
 The handshake exposes:
 
 - protocol version

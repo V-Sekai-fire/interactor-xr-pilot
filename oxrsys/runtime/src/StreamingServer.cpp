@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "RuntimeSockets.h"
 #include "RuntimeStatus.h"
+#include "StreamingDiscovery.h"
 #include "StreamingTransportPolicy.h"
 #include "Swapchain.h"
 #include "TrackingReceiver.h"
@@ -786,19 +787,23 @@ void StreamingServer::BroadcastThread()
 {
     oxr::protocol::ServerAnnounce announce = BuildServerAnnounce(false);
 
-    sockaddr_in broadcastAddr = {};
-    broadcastAddr.sin_family = AF_INET;
-    broadcastAddr.sin_port = htons(oxr::protocol::DISCOVERY_PORT);
-    broadcastAddr.sin_addr.s_addr = INADDR_BROADCAST;
-
     while (running_.load() && state_.load() == State::Broadcasting)
     {
-        oxrsys::runtime_socket::SendTo(broadcastSocket_,
-                                       &announce,
-                                       sizeof(announce),
-                                       0,
-                                       (sockaddr*)&broadcastAddr,
-                                       sizeof(broadcastAddr));
+        // Every adapter's subnet each second, so a headset reached through another one (the Steam Frame's
+        // dongle beside the router's Ethernet) hears it and streams over that link.
+        for (uint32_t target : oxrsys::streaming_discovery::AnnounceTargets(oxrsys::streaming_discovery::LocalAdapters()))
+        {
+            sockaddr_in broadcastAddr = {};
+            broadcastAddr.sin_family = AF_INET;
+            broadcastAddr.sin_port = htons(oxr::protocol::DISCOVERY_PORT);
+            broadcastAddr.sin_addr.s_addr = htonl(target);
+            oxrsys::runtime_socket::SendTo(broadcastSocket_,
+                                           &announce,
+                                           sizeof(announce),
+                                           0,
+                                           (sockaddr*)&broadcastAddr,
+                                           sizeof(broadcastAddr));
+        }
 
         for (int i = 0; i < 10 && running_.load() && state_.load() == State::Broadcasting; i++)
         {

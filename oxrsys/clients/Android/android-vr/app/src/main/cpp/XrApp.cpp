@@ -3663,6 +3663,20 @@ void XrApp::RunFrame()
 
         // Send tracking data
         SendTracking(trackingPacket);
+        lastTrackingPacket_ = trackingPacket;
+        haveLastTrackingPacket_ = true;
+    }
+    else if (haveLastTrackingPacket_)
+    {
+        // Hidden (the dashboard is up, or the headset is off the face): the runtime asks for no frame, but the
+        // server drops a client it hears no tracking from for 5 s. Repeat the last pose at this frame's time,
+        // with every button, trigger, grip and stick released, so the session survives and nothing stays held.
+        protocol::TrackingPacket held = lastTrackingPacket_;
+        held.timestampNs = frameState.predictedDisplayTime;
+        held.buttonState = 0;
+        held.leftTrigger = held.rightTrigger = held.leftGrip = held.rightGrip = 0.0f;
+        held.leftThumbstick[0] = held.leftThumbstick[1] = held.rightThumbstick[0] = held.rightThumbstick[1] = 0.0f;
+        SendTracking(held);
     }
 
     // xrEndFrame

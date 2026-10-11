@@ -71,6 +71,10 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- The SteamVR driver renders the headset's own field of view. It rendered a fixed 90 degree square into a 0.9-wide eye, which the Steam Frame (about 109 degrees, lopsided) showed magnified and squashed. A connected headset's view is saved to `driver_oxrsys.eyeFov` and used from the next SteamVR start; `driver_oxrsys.eyeHeight` sets the eye height (default 1680), and the width keeps pixels square.
+- The runtime announces on every network adapter, so the Steam Frame finds it over its dongle and streams over that direct link, not through the router.
+- The Android client keeps sending its last pose, with buttons released, while the runtime hides it (the dashboard is up, or the headset is off the face). The server dropped it after 5 s without tracking, and the headset looped between black and reconnecting.
+
 - Fixed the Android headset client showing no video where R8 `AHardwareBuffer`s cannot be allocated, as in the Steam Frame's Android container: PyroWave planes now reach GLES through a mapped buffer and R8 texture uploads instead of shared hardware buffers, one path on every device.
 - Fixed the Android headset client crashing on runtimes that list `XR_FB_foveation` but refuse its scaled-bin swapchains, as SteamVR on the Steam Frame does: the swapchain is created again without foveation.
 - Fixed Metal streaming frame snapshots so the async encoder reads a release-time staging texture instead of a swapchain slot that the app may already have reused.

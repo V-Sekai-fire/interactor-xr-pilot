@@ -93,7 +93,7 @@ if(WIN32)
     if(MSVC)
         target_compile_options(oxrsys_runtime PRIVATE /utf-8)
     endif()
-    list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES ws2_32 d3d11 dxgi d3dcompiler)
+    list(APPEND OXRSYS_RUNTIME_LINK_LIBRARIES ws2_32 iphlpapi d3d11 dxgi d3dcompiler)
 endif()
 
 # NOTE: We intentionally do NOT link against Vulkan::Vulkan.
