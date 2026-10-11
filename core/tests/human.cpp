@@ -270,11 +270,9 @@ const std::map<std::string, std::function<void()>> cases = {
          const TrackingPacket packet = packetOf(s);
          check(packet.rightTrigger == 1.0f, "the trigger pulls once the hand has hovered");
 
-         const float* p = packet.rightControllerPos;
-         const float* q = packet.rightControllerRot;
-         const float fx = -2.0f * (q[0] * q[2] + q[3] * q[1]);
-         const float fy = -2.0f * (q[1] * q[2] - q[3] * q[0]);
-         const float fz = -(1.0f - 2.0f * (q[0] * q[0] + q[1] * q[1]));
+         const Pose aim = handPose(s, 1);
+         const float* p = aim.position;
+         const float fx = -aim.rotation.m[2], fy = -aim.rotation.m[5], fz = -aim.rotation.m[8];
          const float ux = -std::sin(1.2f) * std::cos(-0.4f), uy = std::sin(-0.4f), uz = -std::cos(1.2f) * std::cos(-0.4f);
          const float hx = p[0] - 3.0f, hy = p[1] - 1.6f, hz = p[2];
          const float onLine = hx * ux + hy * uy + hz * uz;
@@ -297,13 +295,38 @@ const std::map<std::string, std::function<void()>> cases = {
          AgentState s;
          ClientStatus status;
          runCommand("hand right 0.5 1.2 -0.4 1 0 0 0 1 0 0 0 1", s, status, 0);
-         const TrackingPacket placed = packetOf(s);
-         check(placed.rightControllerPos[0] == 0.5f && placed.rightControllerPos[1] == 1.2f,
+         const Pose placed = handPose(s, 1);
+         check(placed.position[0] == 0.5f && placed.position[1] == 1.2f,
                "an agent-placed hand is sent where the agent put it");
          runCommand("release", s, status, 0);
          s.head.position[0] = 2.0f;
-         const TrackingPacket released = packetOf(s);
-         check(std::abs(released.rightControllerPos[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
+         check(std::abs(handPose(s, 1).position[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
+     }},
+    {"agent.packet-carries-the-controller-pose-its-tip-aims-from",
+     [] {
+         AgentState s;
+         s.hands[1].manual = true;
+         s.hands[1].pose.position[0] = 0.1f;
+         s.hands[1].pose.position[1] = 1.3f;
+         s.hands[1].pose.position[2] = -0.4f;
+         s.hands[1].pose.rotation = fromEuler(EulerOrder::YXZ, 20.0f, -10.0f, 0.0f);
+         const TrackingPacket packet = packetOf(s);
+         Rotation raw;
+         check(fromQuaternion(packet.rightControllerRot, raw), "the packet's rotation is a quaternion");
+         // SteamVR's frame_controller tip: raw pitched -40 degrees, 1-3 cm forward of the raw origin.
+         const Rotation tip = multiply(raw, fromEuler(EulerOrder::XYZ, -40.0f, 0.0f, 0.0f));
+         const float origin[3] = {-0.012694f, -0.02522f, 0.020687f};
+         float offset[3];
+         apply(raw, origin, offset);
+         float worst = 0.0f;
+         for (int i = 0; i < 9; ++i)
+             worst = std::max(worst, std::abs(tip.m[i] - s.hands[1].pose.rotation.m[i]));
+         for (int i = 0; i < 3; ++i)
+             worst = std::max(worst, std::abs(packet.rightControllerPos[i] + offset[i] - s.hands[1].pose.position[i]));
+         check(worst < 1e-5f, "the app's tip lands on the hand the agent aimed");
+         // Control: sending the aim itself as the raw pose leaves the tip pitched 40 degrees down.
+         const Rotation wrong = multiply(s.hands[1].pose.rotation, fromEuler(EulerOrder::XYZ, -40.0f, 0.0f, 0.0f));
+         check(std::abs(wrong.m[5] - s.hands[1].pose.rotation.m[5]) > 0.1f, "the uncorrected tip misses");
      }},
     {"human.seated-lowers-head-and-hands",
      [] {

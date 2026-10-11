@@ -79,6 +79,10 @@ constexpr float SeatedEyeDrop = 0.4f;
 // Sits or stands: the head and any placed hand move by SeatedEyeDrop; body-relative hands follow the head.
 void setSeated(AgentState& state, bool seated);
 
+// A hand is placed by where it points; the packet carries the controller's raw pose, whose tip the app aims
+// along, so hand 0 or 1's aim becomes that raw pose.
+Pose controllerFromAim(const Pose& aim, int hand);
+
 // Quaternion (x, y, z, w) of a pose's rotation, for the tracking packet.
 void poseQuaternion(const Pose& pose, float out[4]);
 
