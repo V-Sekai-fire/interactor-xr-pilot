@@ -65,6 +65,10 @@ def check (failures : IO.Ref Nat) (ok : Bool) (what : String) : IO Unit := do
     IO.eprintln s!"FAIL {what}"
     failures.modify (· + 1)
 
+def memoryStream (text : String) : IO (IO.Ref IO.FS.Stream.Buffer × IO.FS.Stream) := do
+  let buffer ← IO.mkRef { data := text.toUTF8 : IO.FS.Stream.Buffer }
+  return (buffer, IO.FS.Stream.ofBuffer buffer)
+
 def main : IO UInt32 := do
   let failures ← IO.mkRef 0
   let c := check failures
@@ -416,6 +420,27 @@ def main : IO UInt32 := do
   c ((admit tok 9947 bearer (some "127.0.0.1:9948") absent) == some .foreignHost) "another port's host is refused"
   c ((admit "" 9947 (some "Bearer ") host absent) == some .unauthorized) "an empty token admits nothing"
   c (sameSecret "abc" "abc" && !sameSecret "abc" "abd" && !sameSecret "abc" "abcd") "sameSecret compares whole strings"
+
+  -- The tray's pipe: a command leaves as a line on stdout, its reply is the next line on stdin.
+  let (_, parentIn) ← memoryStream "{\"ok\":true,\"connected\":false}
+"
+  let (sentBuf, parentOut) ← memoryStream ""
+  let ended ← IO.mkRef false
+  let link ← ParentLink.start parentIn parentOut (ended.set true)
+  let reply ← link.ask "state"
+  c (reply == some "{\"ok\":true,\"connected\":false}") s!"the tray's reply line answers the command, got {reply}"
+  c (String.fromUTF8! (← sentBuf.get).data == "state
+") "the command leaves as one line on stdout"
+  c ((← link.ask "state") == Option.none) "control: once the tray closes the pipe, a command has no reply"
+  let mut waited := 0
+  while !(← ended.get) && waited < 100 do
+    IO.sleep 10
+    waited := waited + 1
+  c (← ended.get) "a closed pipe ends the server, so it never outlives the tray"
+  let (_, silentIn) ← memoryStream ""
+  let (_, silentOut) ← memoryStream ""
+  let silent ← ParentLink.start silentIn silentOut (pure ())
+  c ((← silent.ask "state") == Option.none) "control: a tray that never answers gives no reply"
 
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"

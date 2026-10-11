@@ -6,6 +6,7 @@
 #include "xrpilot/Client.h"
 #include "xrpilot/CommandLoop.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/McpLink.h"
 #include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
@@ -28,12 +29,27 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <aclapi.h>
+#undef far
+#undef near
+#else
+#include <sys/stat.h>
+#endif
 
 using namespace xrpilot;
 
@@ -185,6 +201,30 @@ void check(bool ok, const char* what)
         std::fprintf(stderr, "FAIL %s\n", what);
         ++failures;
     }
+}
+
+// Whether only the current user can open the file: a protected DACL whose one entry is this user, or
+// no group or other bits.
+bool userOnly(const std::string& path)
+{
+#if defined(_WIN32)
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    PACL dacl = nullptr;
+    if (GetNamedSecurityInfoA(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                              nullptr, &descriptor) != ERROR_SUCCESS)
+        return false;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    GetSecurityDescriptorControl(descriptor, &control, &revision);
+    ACL_SIZE_INFORMATION size{};
+    const bool one =
+        dacl != nullptr && GetAclInformation(dacl, &size, sizeof(size), AclSizeInformation) && size.AceCount == 1;
+    LocalFree(descriptor);
+    return one && (control & SE_DACL_PROTECTED) != 0;
+#else
+    struct stat st{};
+    return stat(path.c_str(), &st) == 0 && (st.st_mode & 077) == 0;
+#endif
 }
 
 // A frame of `count` full packets, each byte its packet index.
@@ -739,6 +779,60 @@ const std::map<std::string, std::function<void()>> cases = {
          check(parseLaunch(2, bad, false).mode == LaunchMode::Usage, "an unknown flag prints usage");
          const char* both[] = {"xr-pilot.exe", "--tray", "--window"};
          check(parseLaunch(3, both, false).mode == LaunchMode::Usage, "--tray with a pilot flag prints usage");
+     }},
+    {"launch.mcp-flags",
+     [] {
+         const char* plain[] = {"xr-pilot.exe"};
+         check(parseLaunch(1, plain, false).mcpPort == 9950, "the desk serves MCP on 9950 by default");
+         const char* config[] = {"xr-pilot.exe", "--mcp-config", "--mcp-port", "9960"};
+         const LaunchOptions o = parseLaunch(4, config, true);
+         check(o.mode == LaunchMode::PrintMcpConfig && o.mcpPort == 9960, "--mcp-config prints, even beside a running copy");
+         const char* off[] = {"xr-pilot.exe", "--tray", "--mcp-port", "0"};
+         const LaunchOptions t = parseLaunch(4, off, false);
+         check(t.mode == LaunchMode::TrayOnly && t.mcpPort == 0, "--mcp-port 0 starts no server");
+         for (const char* bad : {"abc", "65536", "-1", "", "99x"})
+         {
+             const char* argv[] = {"xr-pilot.exe", "--mcp-port", bad};
+             check(parseLaunch(3, argv, false).mode == LaunchMode::Usage, bad);
+         }
+         const char* agent[] = {"xr-pilot.exe", "--mcp-config", "--agent"};
+         check(parseLaunch(3, agent, false).mode == LaunchMode::Usage, "--mcp-config with a pilot flag prints usage");
+     }},
+    {"mcp.token-is-random-and-kept",
+     [] {
+         namespace fs = std::filesystem;
+         const fs::path dir =
+             fs::temp_directory_path() /
+             ("xrpilot-mcp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+         const std::string a = (dir / "a" / "mcp-token").string();
+         const std::string b = (dir / "b" / "mcp-token").string();
+         std::string first, again, other, error;
+         check(loadOrCreateMcpToken(a, first, &error), error.c_str());
+         check(first.size() == 64 && first.find_first_not_of("0123456789abcdef") == std::string::npos,
+               "a token is 64 hex digits");
+         check(loadOrCreateMcpToken(a, again) && again == first, "the token is kept across starts");
+         check(loadOrCreateMcpToken(b, other) && other != first, "control: another install draws another token");
+         {
+             std::ofstream broken(fs::path(a), std::ios::trunc);
+             broken << "short";
+         }
+         check(loadOrCreateMcpToken(a, again) && again != first && again.size() == 64, "a damaged token is replaced");
+         check(userOnly(a), "only this user can open the token");
+         const std::string plain = (dir / "plain").string();
+         std::ofstream(fs::path(plain)) << first;
+         check(!userOnly(plain), "control: a file written the ordinary way is caught as readable by others");
+         std::error_code ignored;
+         fs::remove_all(dir, ignored);
+     }},
+    {"mcp.client-config-names-the-port-and-token",
+     [] {
+         const std::string token(64, 'a');
+         const std::string config = mcpClientConfig(9950, token);
+         check(config == "{\"type\":\"http\",\"url\":\"http://127.0.0.1:9950/mcp\",\"headers\":{\"Authorization\":"
+                         "\"Bearer " + token + "\"}}",
+               "Claude Code's entry: the loopback URL and the bearer token");
+         check(mcpClientConfig(9960, token).find("127.0.0.1:9960/mcp") != std::string::npos,
+               "a moved port moves the URL");
      }},
     {"pace.ticks-evenly-at-90hz",
      [] {
