@@ -75,8 +75,7 @@ public:
     void setAutoConnect(bool on);
     // Spectator: watches this machine's runtime, whose session a headset owns, without taking it. The
     // client sends its ClientConnect with CLIENT_CAPABILITY_SPECTATOR to loopback every SpectatorHeartbeatNs,
-    // ignores announces, and sends no keyframe requests, latency reports or body. Its tracking is co-pilot
-    // input: the runtime takes its controllers for the hands the headset leaves free.
+    // ignores announces, and sends no tracking, keyframe requests or latency reports.
     void setSpectator(bool on);
     bool spectator() const { return spectator_.load(); }
 

@@ -526,8 +526,7 @@ void Client::trackingLoop()
             connected = status_.connected;
             if (spectator_.load())
             {
-                // Watching: the heartbeat keeps this spectator on the server's list. Its tracking is
-                // co-pilot input, its controllers for the hands the headset leaves free; its body is not.
+                // Watching: the heartbeat keeps this spectator on the server's list; it sends no tracking.
                 const bool wanted = status_.connected || status_.autoConnect || connectRequested_;
                 if (wanted && now - lastSpectatorConnectNs_ >= SpectatorHeartbeatNs)
                 {
@@ -536,19 +535,12 @@ void Client::trackingLoop()
                     status_.connected = true;
                     sendConnect(serverAddress_, status_.refreshHz, true);
                 }
-                connected = status_.connected;
+                connected = false;
             }
-            if (connected && fresh)
+            else if (connected && fresh)
                 ++status_.trackingSent;
         }
-        if (connected && spectator_.load())
-        {
-            if (fresh)
-            {
-                sendTo(sendSocket_, address, oxr::protocol::TRACKING_PORT, &packet, sizeof(packet));
-            }
-        }
-        else if (connected)
+        if (connected)
         {
             // A headset sample already sent is not sent again; the body still steps every tick.
             if (fresh)
