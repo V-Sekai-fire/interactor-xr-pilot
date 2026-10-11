@@ -475,6 +475,18 @@ bool useSteamVrHeadset(bool ours)
     return bool(file);
 }
 
+// Whether steamvr.vrsettings makes OXRSys SteamVR's headset.
+bool steamVrForcesOxrsys()
+{
+    const std::string config = firstString(openVrPaths().find("config"));
+    if (config.empty())
+        return false;
+    const Json settings = readJson(fs::path(config) / "steamvr.vrsettings");
+    const Json* steamvr = settings.find("steamvr");
+    const Json* forced = steamvr != nullptr ? steamvr->find("forcedDriver") : nullptr;
+    return forced != nullptr && forced->str() == "oxrsys";
+}
+
 // SteamVR's own OpenXR runtime manifest, the way back when the desk had no runtime before OXRSys.
 std::string steamVrRuntimeManifest()
 {
@@ -559,6 +571,9 @@ enum Command : intptr_t
     CommandDriverFolder,
     CommandDeveloperMode,
     CommandAddRuntime,
+    CommandModePcvr,
+    CommandModeSteamVr,
+    CommandModeStream,
     CommandQuit,
 };
 
@@ -621,6 +636,18 @@ Tray::Tray(bool setUpDesk, xrpilot::UiTrace* ui)
     SDL_InsertTrayEntryAt(menu_, -1, nullptr, 0);
     SDL_TrayEntry* runtimes = SDL_InsertTrayEntryAt(menu_, -1, "Default OpenXR runtime", SDL_TRAYENTRY_SUBMENU);
     runtimeMenu_ = SDL_CreateTraySubmenu(runtimes);
+    SDL_TrayMenu* modeMenu = SDL_CreateTraySubmenu(SDL_InsertTrayEntryAt(menu_, -1, "Mode", SDL_TRAYENTRY_SUBMENU));
+    const std::pair<const char*, Command> modes[] = {
+        {"PCVR on OXRSys", CommandModePcvr},
+        {"SteamVR on OXRSys", CommandModeSteamVr},
+        {"Stream to a headset (Steam Frame, Quest 3)", CommandModeStream},
+    };
+    for (size_t i = 0; i < 3; ++i)
+    {
+        modeEntries_[i] = SDL_InsertTrayEntryAt(modeMenu, -1, modes[i].first, SDL_TRAYENTRY_CHECKBOX);
+        commandTargets().push_back(std::make_unique<CommandTarget>(CommandTarget{this, modes[i].second}));
+        SDL_SetTrayEntryCallback(modeEntries_[i], &Tray::onCommand, commandTargets().back().get());
+    }
 
     const std::pair<const char*, Command> commands[] = {
         {"Bind OXRSys", CommandBind},
@@ -722,6 +749,31 @@ void Tray::refresh()
         }
     }
     rebuildRuntimeMenu();
+    refreshModeEntries();
+}
+
+// The mode the desk is in, as lean/XrPilot/Ui.lean's Desk.inMode reads it: OXRSys the runtime and
+// SteamVR's headset; SteamVR the runtime with OXRSys its headset, the pilot owning or watching.
+void Tray::refreshModeEntries()
+{
+    const std::string active = native(openXrValue(L"ActiveRuntime"));
+    const bool forced = steamVrForcesOxrsys();
+    const bool onSteamVr = !active.empty() && sameText(active, steamVrRuntimeManifest());
+    const bool in[3] = {
+        forced && sameText(active, installedRuntimeManifest()) && !streamsToHeadset(),
+        forced && onSteamVr && !streamsToHeadset(),
+        forced && onSteamVr && streamsToHeadset(),
+    };
+    for (size_t i = 0; i < 3; ++i)
+    {
+        if (modeEntries_[i] != nullptr)
+            SDL_SetTrayEntryChecked(modeEntries_[i], in[i]);
+    }
+}
+
+bool Tray::streamsToHeadset()
+{
+    return settingFlag(L"streamToHeadset");
 }
 
 // Runtimes the desk has shown or the user added: the loader's list, the active and previous ones,
@@ -851,6 +903,7 @@ void Tray::makeDefaultRuntimeNow(const std::string& manifest)
         return;
     }
     const bool headsetChanged = useSteamVrHeadset(ours);
+    setSettingFlag(L"streamToHeadset", false);
     record(xrpilot::UiAction::ElevatedDone, true, runtimeName(manifest));
     setMessage("Default runtime: " + runtimeName(manifest) + (headsetChanged ? "; restart SteamVR for its headset to follow" : ""));
 }
@@ -874,6 +927,48 @@ void Tray::bindNow(const std::string&)
     }
     shownRuntimes_.clear();
     makeDefaultRuntimeNow(installedRuntimeManifest());
+}
+
+// SteamVR stays (or becomes) the OpenXR runtime, and OXRSys is its headset with multiple drivers on.
+// Installs OXRSys first, as Bind does; the prompt comes only when SteamVR is not already the runtime.
+void Tray::useSteamVrModeNow(const std::string& mode)
+{
+    std::string error;
+    const std::string manifest = steamVrRuntimeManifest();
+    if (manifest.empty())
+        error = "SteamVR's OpenXR runtime was not found";
+    if (error.empty() && !installRuntime(&error))
+        error = error.empty() ? "the runtime did not install" : error;
+    if (!error.empty())
+    {
+        setMessage("Not installed: " + error);
+        record(xrpilot::UiAction::InstallFailed, false, error);
+        return;
+    }
+    shownRuntimes_.clear();
+    setSettingFlag(L"unbound", false);
+    registerSteamVrDriver();
+    const std::string key = "HKLM:\\SOFTWARE\\Khronos\\OpenXR\\1";
+    const std::string active = openXrValue(L"ActiveRuntime");
+    if (!sameText(native(active), manifest))
+    {
+        std::string script;
+        if (!active.empty())
+            script += "Set-ItemProperty -Path '" + key + "' -Name PreviousActiveRuntime -Value '" + psQuoted(active) + "'; ";
+        script += "Set-ItemProperty -Path '" + key + "' -Name ActiveRuntime -Value '" + psQuoted(manifest) + "'";
+        if (!runElevatedPowerShell(script))
+        {
+            setMessage("Mode unchanged: the administrator prompt was declined");
+            record(xrpilot::UiAction::ElevatedDeclined, false, mode);
+            return;
+        }
+    }
+    const bool headsetChanged = useSteamVrHeadset(true);
+    const bool stream = mode == "stream";
+    setSettingFlag(L"streamToHeadset", stream);
+    record(xrpilot::UiAction::ElevatedDone, true, mode);
+    setMessage(std::string(stream ? "Streaming to a headset: start OXRSys on it" : "SteamVR on OXRSys") +
+               (headsetChanged ? "; restart SteamVR for its headset to follow" : ""));
 }
 
 void Tray::unbind()
@@ -925,6 +1020,8 @@ void Tray::unbindQuietly(bool recordIt)
         else
             runtime = "unchanged: the administrator prompt was declined";
     }
+    if (!declined)
+        setSettingFlag(L"streamToHeadset", false);
     if (recordIt)
         record(declined ? xrpilot::UiAction::ElevatedDeclined : xrpilot::UiAction::ElevatedDone, !declined, runtime);
     setMessage("Unbound: default runtime " + runtime + "; " + std::to_string(drivers) +
@@ -1041,6 +1138,20 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
         self->rebuildDeveloperEntries();
         break;
     }
+    case CommandModePcvr:
+        self->record(xrpilot::UiAction::ModePcvr);
+        self->bind();
+        break;
+    case CommandModeSteamVr:
+        self->record(xrpilot::UiAction::ModeSteamVr);
+        self->setMessage("Installing OXRSys...");
+        self->runInBackground(&Tray::useSteamVrModeNow, "steamvr");
+        break;
+    case CommandModeStream:
+        self->record(xrpilot::UiAction::ModeStream);
+        self->setMessage("Installing OXRSys...");
+        self->runInBackground(&Tray::useSteamVrModeNow, "stream");
+        break;
     case CommandAddRuntime:
         self->record(xrpilot::UiAction::AddRuntime);
         self->addRuntimeManifest();

@@ -641,10 +641,18 @@ public:
     void update(const VulkanContext&) override
     {
         const int64_t now = nowNs();
-        if (tray_ != nullptr && now - lastTrayNs_ >= 2'000'000'000)
+        if (now - lastTrayNs_ >= 2'000'000'000)
         {
             lastTrayNs_ = now;
-            tray_->poll();
+            if (tray_ != nullptr)
+            {
+                tray_->poll();
+            }
+            // The tray's Stream to a headset mode: the headset owns the session, and this pilot watches.
+            if (client_.spectator() != Tray::streamsToHeadset())
+            {
+                client_.setSpectator(Tray::streamsToHeadset());
+            }
         }
     }
 
@@ -714,6 +722,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
             windowPtr->requestRedrawFromAnyThread();
     });
     client.setAutoConnect(autoConnect);
+    client.setSpectator(Tray::streamsToHeadset());
 
     // Panels on the left, the view on the right.
     SplitTree layout("eye");

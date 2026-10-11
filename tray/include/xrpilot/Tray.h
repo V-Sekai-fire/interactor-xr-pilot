@@ -40,6 +40,9 @@ public:
     static bool askRunningToShowPilot();
     // Shows the pilot: raises its window, or asks the tray loop to open one.
     static void showPilot();
+    // The tray's mode is Stream to a headset: a headset owns this machine's session, and any pilot here
+    // watches as a spectator, lending its controllers to the hands the headset leaves free.
+    static bool streamsToHeadset();
 
 private:
     struct Choice
@@ -55,6 +58,9 @@ private:
     void bind();
     void bindNow(const std::string& unused);
     void unbind();
+    // SteamVR on OXRSys, with the desk's pilot owning the session ("steamvr") or watching it ("stream").
+    void useSteamVrModeNow(const std::string& mode);
+    void refreshModeEntries();
     void uninstall();
     void addRuntimeManifest();
     void setMessage(const std::string& message);
@@ -74,6 +80,7 @@ private:
     SDL_TrayEntry* status_ = nullptr;
     SDL_TrayEntry* message_ = nullptr;
     SDL_TrayMenu* runtimeMenu_ = nullptr;
+    SDL_TrayEntry* modeEntries_[3] = {};
     SDL_TrayEntry* developerMode_ = nullptr;
     std::vector<SDL_TrayEntry*> developerEntries_;
     SDL_Surface* idleIcon_ = nullptr;
