@@ -39,7 +39,8 @@ std::vector<ControllerLayout> MakeLayouts()
     std::vector<ControllerLayout> layouts;
     // The left hand's d-pad mirrors the right hand's face buttons, so X and Y sit where A and B do.
     layouts.push_back({"frame", "frame_controller", "{frame_controller}/input/frame_controller_profile.json",
-                       "/interaction_profiles/meta/touch_plus_controller",
+                       "/interaction_profiles/meta/touch_plus_controller", "{oxrsys}oxrsys_hidden_frame_left",
+                       "{oxrsys}oxrsys_hidden_frame_right",
                        With(Common("thumbstick", true), {{"/input/dpad_down/click", S::Lower, false, false},
                                                          {"/input/dpad_down/touch", S::Lower, false, false},
                                                          {"/input/dpad_right/click", S::Upper, false, false},
@@ -61,10 +62,12 @@ std::vector<ControllerLayout> MakeLayouts()
                                                      {"/input/finger/ring", S::Grip, true, false},
                                                      {"/input/finger/pinky", S::Grip, true, false}};
     layouts.push_back({"index", "knuckles", "{indexcontroller}/input/index_controller_profile.json",
-                       "/interaction_profiles/valve/index_controller", With(Common("thumbstick", false), indexExtra),
+                       "/interaction_profiles/valve/index_controller", "{oxrsys}oxrsys_hidden_index_left",
+                       "{oxrsys}oxrsys_hidden_index_right", With(Common("thumbstick", false), indexExtra),
                        With(Common("thumbstick", false), indexExtra)});
     layouts.push_back({"touch_plus", "oculus_touch", "{oculus}/input/touch_profile.json",
-                       "/interaction_profiles/meta/touch_plus_controller",
+                       "/interaction_profiles/meta/touch_plus_controller", "{oxrsys}oxrsys_hidden_touch_plus_left",
+                       "{oxrsys}oxrsys_hidden_touch_plus_right",
                        With(Common("joystick", false), {{"/input/x/click", S::Lower, false, false},
                                                         {"/input/x/touch", S::Lower, false, false},
                                                         {"/input/y/click", S::Upper, false, false},

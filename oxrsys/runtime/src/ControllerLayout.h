@@ -42,6 +42,10 @@ struct ControllerLayout
     const char* controllerType;
     const char* inputProfilePath;
     const char* interactionProfile;
+    // Hidden render models carrying the real controller's pose components (tip, grip), so SteamVR's
+    // own pointer leaves from where apps expect that controller's to.
+    const char* renderModelLeft;
+    const char* renderModelRight;
     std::vector<ControllerInput> left;
     std::vector<ControllerInput> right;
 };
