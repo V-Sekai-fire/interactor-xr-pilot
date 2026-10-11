@@ -126,7 +126,13 @@ enum ClientCapabilityFlags : uint32_t
     CLIENT_CAPABILITY_DEPTH_OCCLUSION = 0x00000080,
     CLIENT_CAPABILITY_SPATIAL_ENTITY = 0x00000100,
     CLIENT_CAPABILITY_SCENE_CAPTURE = 0x00000200,
+    // Watches the session's video without owning it: the server also sends every video packet to it,
+    // and never takes its tracking, keyframe requests or latency reports. It repeats its ClientConnect
+    // as a heartbeat and is dropped after SPECTATOR_TIMEOUT_MS without one, or on its ServerDisconnect.
+    CLIENT_CAPABILITY_SPECTATOR = 0x00000400,
 };
+
+constexpr uint32_t SPECTATOR_TIMEOUT_MS = 5000;
 
 enum class FoveationPreset : uint32_t
 {

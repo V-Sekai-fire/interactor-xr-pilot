@@ -192,6 +192,7 @@ add_executable(oxrsys_runtime_tests
     tests/TestBodyOverlay.cpp
     tests/TestControllerLayout.cpp
     tests/TestStreamingReconfigure.cpp
+    tests/TestStreamingSpectators.cpp
     tests/TestVulkanDispatch.cpp
     tests/TestCompositionLayerAlpha.cpp
     tests/TestProtocolLayout.cpp
