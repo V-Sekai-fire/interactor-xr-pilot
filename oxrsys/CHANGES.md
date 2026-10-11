@@ -71,6 +71,8 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- Fixed the Android headset client showing no video where R8 `AHardwareBuffer`s cannot be allocated, as in the Steam Frame's Android container: PyroWave planes now reach GLES through a mapped buffer and R8 texture uploads instead of shared hardware buffers, one path on every device.
+- Fixed the Android headset client crashing on runtimes that list `XR_FB_foveation` but refuse its scaled-bin swapchains, as SteamVR on the Steam Frame does: the swapchain is created again without foveation.
 - Fixed Metal streaming frame snapshots so the async encoder reads a release-time staging texture instead of a swapchain slot that the app may already have reused.
 - Fixed server-side foveated encoding on Metal by running the AADT pass through a compute shader into a private GPU scratch texture before blitting into the VideoToolbox pixel buffer, avoiding render-encoder validation aborts on the first encoded frame.
 - Fixed Quest connection recovery when a server is discovered but no first video frame arrives, returning the client to discovery/retry instead of leaving the standby/loading screen stuck.
