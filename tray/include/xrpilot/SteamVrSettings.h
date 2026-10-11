@@ -3,7 +3,8 @@
 // The two tracks of steamvr.vrsettings, as lean/XrPilot/Ui.lean models them (Desk.swapToOxrsys and
 // Desk.handBackHeadset): swapping to OXRSys forces its headset and turns on multiple drivers, so
 // trackers and other drivers still load; handing back removes the forced headset and puts multiple
-// drivers back as the desk had it.
+// drivers back as the desk had it. The swap also turns OXRSys's driver on (driver_oxrsys.enable) and the
+// hand-back turns it off: loaded, it offers a headset and holds the stream's control port.
 
 #pragma once
 
