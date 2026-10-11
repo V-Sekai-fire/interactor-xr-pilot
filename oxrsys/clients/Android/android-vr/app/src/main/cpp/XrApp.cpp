@@ -1842,8 +1842,17 @@ bool XrApp::CreateSwapchains()
         swapchainCreateInfo.arraySize = 1;
         swapchainCreateInfo.mipCount = 1;
 
-        XR_CHECK(xrCreateSwapchain(session_, &swapchainCreateInfo, &swapchains_[eye]),
-                 "xrCreateSwapchain");
+        XrResult created = xrCreateSwapchain(session_, &swapchainCreateInfo, &swapchains_[eye]);
+        if (XR_FAILED(created) && swapchainCreateInfo.next != nullptr)
+        {
+            // A runtime can list XR_FB_foveation and still refuse its swapchains: SteamVR on the Steam Frame
+            // fails a scaled-bin swapchain ("Foveation scaled bin not supported"). Stream without foveation.
+            LOGW("xrCreateSwapchain with foveation failed: %d; creating it without, foveation off", created);
+            foveationAvailable_ = false;
+            swapchainCreateInfo.next = nullptr;
+            created = xrCreateSwapchain(session_, &swapchainCreateInfo, &swapchains_[eye]);
+        }
+        XR_CHECK(created, "xrCreateSwapchain");
 
         // Enumerate swapchain images
         uint32_t imageCount = 0;
@@ -3537,7 +3546,9 @@ void XrApp::RunFrame()
     const XrCompositionLayerBaseHeader* layers[2] = {};
     uint32_t layerCount = 0;
 
-    if (frameState.shouldRender == XR_TRUE)
+    // Without both swapchains there is nothing to render into: the frame ends with no layers.
+    if (frameState.shouldRender == XR_TRUE && swapchains_[0] != XR_NULL_HANDLE &&
+        swapchains_[1] != XR_NULL_HANDLE)
     {
         // Sync actions (controller input)
         if (actionSet_ != XR_NULL_HANDLE)
