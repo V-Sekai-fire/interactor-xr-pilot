@@ -31,6 +31,7 @@ add_library(xrpilot_core STATIC
     core/src/HumanInput.cpp
     core/src/Json.cpp
     core/src/Launch.cpp
+    core/src/MouseLook.cpp
     core/src/UiTrace.cpp
     core/src/Pace.cpp
     core/src/Png.cpp
@@ -72,7 +73,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
                       launch.flags-keep-their-meaning client.local-runtime-wins
                       client.local-address-is-recognised client.second-pilot-is-refused
-                      ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run)
+                      ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
+                      mouse.look-turns-evenly mouse.look-lands-whole)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.

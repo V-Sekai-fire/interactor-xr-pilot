@@ -473,9 +473,12 @@ void Client::trackingLoop()
         {
             std::lock_guard<std::mutex> lock(mutex_);
             period = trackingPeriodNs(status_.refreshHz);
-            // Held keys walk here, at the rate the runtime renders, so every packet carries a new pose.
+            // Held keys walk and the mouse turns the head here, at the rate the runtime renders, so
+            // every packet carries a new pose and each turns by what the mouse did since the last.
             const int64_t now = monotonicNowNs();
-            advanceHuman(agent_, 0.0f, 0.0f, std::clamp(float(now - last) * 1e-9f, 0.0f, 0.05f));
+            float mouseDx = 0.0f, mouseDy = 0.0f;
+            mouseLook_.take(now, mouseDx, mouseDy);
+            advanceHuman(agent_, mouseDx, mouseDy, std::clamp(float(now - last) * 1e-9f, 0.0f, 0.05f));
             last = now;
             fresh = nextTrackingPacket(agent_, now, lastSampleNs, packet);
             agent = agent_;

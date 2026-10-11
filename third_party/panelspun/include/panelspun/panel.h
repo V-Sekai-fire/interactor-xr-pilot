@@ -57,6 +57,8 @@ struct PointerEvent {
     float dy = 0.0f;
     std::uint64_t pointerId = 0;
     PointerSource source = PointerSource::Mouse;
+    // When the input happened, on SDL_GetTicksNS's clock; 0 for events made without one.
+    std::uint64_t timestampNs = 0;
 };
 
 // An SDL scancode, so keys keep their place whatever the layout; mod is SDL's SDL_Keymod.

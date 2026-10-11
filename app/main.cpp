@@ -120,8 +120,11 @@ public:
         }
         else if (e.action == PointerAction::Move && (captured || dragging_))
         {
-            mouseDx_ += e.dx;
-            mouseDy_ += e.dy;
+            // The tracking thread turns the head, at the time the mouse moved (SDL's event timestamp
+            // moved onto monotonicNowNs's clock), not when this window frame read it.
+            const int64_t arrived = monotonicNowNs();
+            const int64_t at = e.timestampNs != 0 ? arrived - int64_t(SDL_GetTicksNS() - e.timestampNs) : arrived;
+            client_.pushMouse(std::min(at, arrived), arrived, e.dx, e.dy);
             dragDistance_ += std::abs(e.dx) + std::abs(e.dy);
         }
         else if (e.action == PointerAction::Wheel)
@@ -156,6 +159,7 @@ public:
     {
         shared_.captured = false;
         dragging_ = false;
+        client_.clearMouse();
         keys_.clear();
         pressedThisTick_.clear();
         releaseNextTick_.clear();
@@ -237,18 +241,21 @@ private:
         window_.setRelativeMouse(on);
         shared_.captured = on && window_.relativeMouse();
         if (!shared_.captured)
+        {
             keys_.erase(key::TriggerMouse);
+            client_.clearMouse();
+        }
     }
 
     void applyHumanInput()
     {
         const std::set<int> keys = keys_;
-        const float dx = mouseDx_, dy = mouseDy_, wheel = wheel_;
-        mouseDx_ = mouseDy_ = wheel_ = 0.0f;
+        const float wheel = wheel_;
+        wheel_ = 0.0f;
         client_.updateAgent([&](AgentState& s) {
             s.keys = keys;
-            // Mouse look lands now; held keys walk on the client's tracking thread.
-            advanceHuman(s, dx, dy, 0.0f);
+            // Mouse look and held keys act on the client's tracking thread; this only raises pointing.
+            advanceHuman(s, 0.0f, 0.0f, 0.0f);
             applyWheel(s, wheel);
         });
         pressedThisTick_.clear();
@@ -315,8 +322,6 @@ private:
     std::set<int> keys_;
     std::set<int> pressedThisTick_;
     std::set<int> releaseNextTick_;
-    float mouseDx_ = 0.0f;
-    float mouseDy_ = 0.0f;
     float wheel_ = 0.0f;
     bool dragging_ = false;
     float dragDistance_ = 0.0f;

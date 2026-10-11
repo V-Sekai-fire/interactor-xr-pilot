@@ -67,6 +67,7 @@ struct Window::Impl {
     void handleFinger(const SDL_TouchFingerEvent& f, Uint32 type);
     bool forwardKey(const SDL_KeyboardEvent& k);
     void handle(const SDL_Event& e);
+    std::uint64_t eventTimeNs = 0; // the event being handled
     enum class Frame { Presented, Skipped, Failed };
     Frame render();
 };
@@ -233,7 +234,7 @@ bool Window::Impl::forward(const std::string& id, PointerAction action, float px
     for (const LeafRect& l : leaves) {
         if (l.id != id) continue;
         Rect c = contentRect(l.rect);
-        PointerEvent e{action, px - c.x, py - c.y, button, dx, dy, pointerId, source};
+        PointerEvent e{action, px - c.x, py - c.y, button, dx, dy, pointerId, source, eventTimeNs};
         return it->second->pointer(e);
     }
     return false;
@@ -275,6 +276,7 @@ void Window::Impl::handleFinger(const SDL_TouchFingerEvent& f, Uint32 type) {
 }
 
 void Window::Impl::handle(const SDL_Event& e) {
+    eventTimeNs = e.common.timestamp;
     float density = SDL_GetWindowPixelDensity(window);
     switch (e.type) {
     case SDL_EVENT_QUIT:
