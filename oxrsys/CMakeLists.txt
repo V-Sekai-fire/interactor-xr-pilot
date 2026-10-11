@@ -194,6 +194,7 @@ add_executable(oxrsys_runtime_tests
     tests/TestStreamingReconfigure.cpp
     tests/TestStreamingSpectators.cpp
     tests/TestStreamingDiscovery.cpp
+    tests/TestEyeFov.cpp
     tests/TestVulkanDispatch.cpp
     tests/TestCompositionLayerAlpha.cpp
     tests/TestProtocolLayout.cpp

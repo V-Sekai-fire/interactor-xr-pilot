@@ -10,6 +10,7 @@
 #include "ControllerLayout.h"
 #include "D3D11Interop.h"
 #include "GraphicsTypes.h"
+#include "EyeFov.h"
 #include "StreamingServer.h"
 #include "TrackingReceiver.h"
 #include "VulkanDispatch.h"
@@ -43,8 +44,7 @@ VulkanDispatch gVulkanDispatch;
 namespace
 {
 
-constexpr uint32_t kEyeWidth = 1512;
-constexpr uint32_t kEyeHeight = 1680;
+constexpr uint32_t kDefaultEyeHeight = 1680;
 constexpr float kRefreshHz = 90.0f;
 constexpr float kIpdMeters = 0.063f;
 constexpr char kSettingsSection[] = "driver_oxrsys";
@@ -62,6 +62,12 @@ IVRServerDriverHost* gHost = nullptr;
 IVRProperties* gProperties = nullptr;
 IVRDriverLog* gLog = nullptr;
 IVRSettings* gSettings = nullptr;
+
+// The view SteamVR renders, read once at start: SteamVR asks the display for it only then. A headset's own
+// view is saved to driver_oxrsys.eyeFov when it connects and used from the next start.
+oxrsys::eye_fov::Angles gEyeAngles = oxrsys::eye_fov::kDefault;
+uint32_t gEyeWidth = kDefaultEyeHeight;
+uint32_t gEyeHeight = kDefaultEyeHeight;
 IVRDriverInput* gInput = nullptr;
 
 void Log(const char* format, ...)
@@ -240,8 +246,8 @@ public:
         OXRSYS_HIT("IVRDisplayComponent::GetWindowBounds");
         *pnX = 0;
         *pnY = 0;
-        *pnWidth = kEyeWidth * 2;
-        *pnHeight = kEyeHeight;
+        *pnWidth = gEyeWidth * 2;
+        *pnHeight = gEyeHeight;
     }
     bool IsDisplayOnDesktop() override
     {
@@ -256,25 +262,28 @@ public:
     void GetRecommendedRenderTargetSize(uint32_t* pnWidth, uint32_t* pnHeight) override
     {
         OXRSYS_HIT("IVRDisplayComponent::GetRecommendedRenderTargetSize");
-        *pnWidth = kEyeWidth;
-        *pnHeight = kEyeHeight;
+        *pnWidth = gEyeWidth;
+        *pnHeight = gEyeHeight;
     }
     void GetEyeOutputViewport(EVREye eEye, uint32_t* pnX, uint32_t* pnY, uint32_t* pnWidth,
                               uint32_t* pnHeight) override
     {
         OXRSYS_HIT("IVRDisplayComponent::GetEyeOutputViewport");
-        *pnX = eEye == Eye_Left ? 0 : kEyeWidth;
+        *pnX = eEye == Eye_Left ? 0 : gEyeWidth;
         *pnY = 0;
-        *pnWidth = kEyeWidth;
-        *pnHeight = kEyeHeight;
+        *pnWidth = gEyeWidth;
+        *pnHeight = gEyeHeight;
     }
-    void GetProjectionRaw(EVREye /*eEye*/, float* pfLeft, float* pfRight, float* pfTop, float* pfBottom) override
+    void GetProjectionRaw(EVREye eEye, float* pfLeft, float* pfRight, float* pfTop, float* pfBottom) override
     {
         OXRSYS_HIT("IVRDisplayComponent::GetProjectionRaw");
-        *pfLeft = -1.0f;
-        *pfRight = 1.0f;
-        *pfTop = -1.0f;
-        *pfBottom = 1.0f;
+        const oxrsys::eye_fov::Tangents left = oxrsys::eye_fov::ToTangents(gEyeAngles);
+        const oxrsys::eye_fov::ProjectionRaw raw =
+            oxrsys::eye_fov::ToProjectionRaw(eEye == Eye_Left ? left : oxrsys::eye_fov::Mirror(left));
+        *pfLeft = raw.left;
+        *pfRight = raw.right;
+        *pfTop = raw.top;
+        *pfBottom = raw.bottom;
     }
     DistortionCoordinates_t ComputeDistortion(EVREye /*eEye*/, float fU, float fV) override
     {
@@ -903,6 +912,7 @@ private:
             direct_.SetNextVsync(next);
             oxr::protocol::TrackingPacket packet = {};
             const DriverPose_t pose = CurrentPose(&packet);
+            RememberHeadsetView(packet);
             gHost->TrackedDevicePoseUpdated(id_, pose, sizeof(pose));
             gHost->VsyncEvent(0.0);
             if (gInput != nullptr)
@@ -918,7 +928,27 @@ private:
         }
     }
 
+    // Saves the view a headset reports when SteamVR renders another, once per new view, for the next start.
+    void RememberHeadsetView(const oxr::protocol::TrackingPacket& packet)
+    {
+        const oxrsys::eye_fov::Angles seen = oxrsys::eye_fov::FromPacket(packet.eyeFov);
+        if (!oxrsys::eye_fov::Valid(seen) || !oxrsys::eye_fov::Differs(seen, gEyeAngles) ||
+            !oxrsys::eye_fov::Differs(seen, savedView_))
+        {
+            return;
+        }
+        savedView_ = seen;
+        const std::string text = oxrsys::eye_fov::Format(seen);
+        EVRSettingsError error = VRSettingsError_None;
+        gSettings->SetString(kSettingsSection, "eyeFov", text.c_str(), &error);
+        Log("oxrsys: the headset sees %s (radians); SteamVR renders %s. %s", text.c_str(),
+            oxrsys::eye_fov::Format(gEyeAngles).c_str(),
+            error == VRSettingsError_None ? "Saved: restart SteamVR to render the headset's view"
+                                          : "It could not be saved");
+    }
+
     uint32_t id_ = 0;
+    oxrsys::eye_fov::Angles savedView_ = oxrsys::eye_fov::kDefault;
     VRInputComponentHandle_t systemClick_ = 0;
     std::array<Controller*, 2> hands_ = {nullptr, nullptr};
     std::atomic_bool active_{false};
@@ -927,6 +957,24 @@ private:
     DisplayComponent display_;
     DirectModeComponent direct_;
 };
+
+// driver_oxrsys.eyeFov ("left,right,up,down" radians, the left eye) and eyeHeight, else the 90 degree square;
+// the width keeps pixels square.
+void LoadEyeView()
+{
+    char text[96] = {};
+    EVRSettingsError error = VRSettingsError_None;
+    gSettings->GetString(kSettingsSection, "eyeFov", text, sizeof(text), &error);
+    oxrsys::eye_fov::Angles angles = oxrsys::eye_fov::kDefault;
+    const bool fromSettings = error == VRSettingsError_None && oxrsys::eye_fov::Parse(text, &angles);
+    gEyeAngles = angles;
+    const int32_t height = gSettings->GetInt32(kSettingsSection, "eyeHeight", &error);
+    gEyeHeight = error == VRSettingsError_None && height >= 512 && height <= 4096 ? static_cast<uint32_t>(height)
+                                                                                    : kDefaultEyeHeight;
+    gEyeWidth = oxrsys::eye_fov::EyeWidth(oxrsys::eye_fov::ToTangents(gEyeAngles), gEyeHeight);
+    Log("oxrsys: renders %ux%u per eye, view %s (%s)", gEyeWidth, gEyeHeight, oxrsys::eye_fov::Format(gEyeAngles).c_str(),
+        fromSettings ? "the headset's, saved" : "default");
+}
 
 class Provider final : public IServerTrackedDeviceProvider
 {
@@ -942,6 +990,7 @@ public:
         if (gHost == nullptr || gProperties == nullptr || gLog == nullptr || gSettings == nullptr)
             return VRInitError_Init_InterfaceNotFound;
 
+        LoadEyeView();
         hmd_ = std::make_unique<Hmd>();
         if (!hmd_->Direct().Initialize())
             return VRInitError_Init_InterfaceNotFound;
@@ -960,10 +1009,12 @@ public:
         d3d11.encoderDevice = true;
         server_ = std::make_unique<StreamingServer>();
         server_->SetGraphicsContext(GraphicsContext::D3D11(d3d11));
-        // The compositor renders with GetProjectionRaw's tangents and this IPD, so the hologram does too.
-        const float tangents[4] = {-1.0f, 1.0f, 1.0f, -1.0f};
+        // The compositor renders with GetProjectionRaw's tangents and this IPD, so the hologram does too, and
+        // the announce tells the client the view it renders.
+        const oxrsys::eye_fov::Tangents view = oxrsys::eye_fov::ToTangents(gEyeAngles);
+        const float tangents[4] = {view.left, view.right, view.up, view.down};
         server_->SetRenderEyes(tangents, kIpdMeters);
-        if (server_->Start(kEyeWidth, kEyeHeight, static_cast<uint32_t>(kRefreshHz)))
+        if (server_->Start(gEyeWidth, gEyeHeight, static_cast<uint32_t>(kRefreshHz)))
         {
             hmd_->SetStreaming(server_.get());
             Log("oxrsys: streaming server started");
