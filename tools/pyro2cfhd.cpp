@@ -101,11 +101,21 @@ struct Decoder
         ew = (w / 2) & ~1;
         eh = h;
         rgba.resize(size_t(ew) * eh * 4);
+        // Half-size chroma, centred between luma pairs: repeating it doubled the width of colour edges.
+        const int cw = w / 2, ch = h / 2, eyeCw = ew / 2;
+        auto chroma = [&](const std::vector<uint8_t>& p, int i, int j) {
+            const float fx = std::clamp(i * 0.5f - 0.25f, 0.0f, float(eyeCw - 1));
+            const float fy = std::clamp(j * 0.5f - 0.25f, 0.0f, float(ch - 1));
+            const int x0 = int(fx), y0 = int(fy), x1 = std::min(x0 + 1, eyeCw - 1), y1 = std::min(y0 + 1, ch - 1);
+            const float tx = fx - x0, ty = fy - y0;
+            const float top = p[size_t(y0) * cw + x0] * (1 - tx) + p[size_t(y0) * cw + x1] * tx;
+            const float bottom = p[size_t(y1) * cw + x0] * (1 - tx) + p[size_t(y1) * cw + x1] * tx;
+            return top * (1 - ty) + bottom * ty;
+        };
         for (int j = 0; j < eh; ++j)
             for (int i = 0; i < ew; ++i)
             {
-                const size_t c = size_t(j / 2) * (w / 2) + size_t(i / 2);
-                const float Y = y[size_t(j) * w + i], Cb = cb[c] - 128.0f, Cr = cr[c] - 128.0f;
+                const float Y = y[size_t(j) * w + i], Cb = chroma(cb, i, j) - 128.0f, Cr = chroma(cr, i, j) - 128.0f;
                 uint8_t* o = &rgba[(size_t(j) * ew + i) * 4];
                 o[0] = uint8_t(std::clamp(Y + 1.5748f * Cr + 0.5f, 0.0f, 255.0f));
                 o[1] = uint8_t(std::clamp(Y - 0.1873f * Cb - 0.4681f * Cr + 0.5f, 0.0f, 255.0f));

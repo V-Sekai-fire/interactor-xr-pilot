@@ -6,9 +6,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef _WIN32
@@ -19,34 +21,99 @@
 namespace cfhdclip
 {
 
-// Fits src into a W x H canvas, bilinear, letterboxed on black, as BGRA stored bottom row first (AVI).
+inline double catmullRom(double x)
+{
+    x = std::abs(x);
+    if (x < 1.0)
+        return 1.5 * x * x * x - 2.5 * x * x + 1.0;
+    if (x < 2.0)
+        return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
+    return 0.0;
+}
+
+// Catmull-Rom taps from src samples to dst: output i reads src[first[i] + k] with weight w[i * n + k].
+struct Taps
+{
+    std::vector<int> first;
+    std::vector<float> w;
+    int n = 0;
+};
+
+inline Taps resampleTaps(int src, int dst)
+{
+    Taps t;
+    const double scale = double(src) / dst, widen = std::max(1.0, scale), support = 2.0 * widen;
+    t.n = 2 * int(std::ceil(support)) + 1;
+    t.first.resize(size_t(dst));
+    t.w.assign(size_t(dst) * t.n, 0.0f);
+    for (int i = 0; i < dst; i++)
+    {
+        const double c = (i + 0.5) * scale - 0.5;
+        const int f0 = int(std::floor(c - support)) + 1;
+        double sum = 0.0;
+        for (int k = 0; k < t.n; k++)
+            sum += catmullRom((f0 + k - c) / widen);
+        for (int k = 0; k < t.n; k++)
+            t.w[size_t(i) * t.n + k] = float(catmullRom((f0 + k - c) / widen) / sum);
+        t.first[size_t(i)] = f0;
+    }
+    return t;
+}
+
+template <typename Body> void parallelRows(int count, const Body& body)
+{
+    const int threads = std::max(1, std::min(int(std::thread::hardware_concurrency()), count));
+    std::vector<std::thread> pool;
+    for (int t = 0; t < threads; t++)
+        pool.emplace_back([&, t] { body(count * t / threads, count * (t + 1) / threads); });
+    for (std::thread& th : pool)
+        th.join();
+}
+
+// Fits src into a W x H canvas, letterboxed, BGRA bottom row first (AVI); Catmull-Rom was the most faithful on Alyx.
 inline void fitBgraBottomUp(const std::vector<uint8_t>& src, int sw, int sh, int W, int H, std::vector<uint8_t>& out)
 {
     out.assign(size_t(W) * size_t(H) * 4, 0);
     const double s = std::min(double(W) / sw, double(H) / sh);
     const int dw = std::max(2, int(sw * s) & ~1), dh = std::max(2, int(sh * s) & ~1);
     const int ox = (W - dw) / 2, oy = (H - dh) / 2;
-    for (int y = 0; y < dh; y++)
-    {
-        const double fy = std::clamp((y + 0.5) * sh / dh - 0.5, 0.0, double(sh - 1));
-        const int y0 = int(fy), y1 = std::min(y0 + 1, sh - 1);
-        const double ty = fy - y0;
-        uint8_t* row = &out[size_t(H - 1 - (oy + y)) * size_t(W) * 4];
-        for (int x = 0; x < dw; x++)
+    const Taps tx = resampleTaps(sw, dw), ty = resampleTaps(sh, dh);
+    std::vector<float> rows(size_t(sh) * dw * 3);
+    parallelRows(sh, [&](int begin, int end) {
+        for (int y = begin; y < end; y++)
+            for (int x = 0; x < dw; x++)
+                for (int c = 0; c < 3; c++)
+                {
+                    float v = 0.0f;
+                    for (int k = 0; k < tx.n; k++)
+                    {
+                        const int sx = std::clamp(tx.first[size_t(x)] + k, 0, sw - 1);
+                        v += tx.w[size_t(x) * tx.n + k] * src[(size_t(y) * sw + sx) * 4 + c];
+                    }
+                    rows[(size_t(y) * dw + x) * 3 + c] = v;
+                }
+    });
+    parallelRows(dh, [&](int begin, int end) {
+        for (int y = begin; y < end; y++)
         {
-            const double fx = std::clamp((x + 0.5) * sw / dw - 0.5, 0.0, double(sw - 1));
-            const int x0 = int(fx), x1 = std::min(x0 + 1, sw - 1);
-            const double tx = fx - x0;
-            uint8_t* d = row + size_t(ox + x) * 4;
-            for (int c = 0; c < 3; c++)
+            uint8_t* row = &out[size_t(H - 1 - (oy + y)) * size_t(W) * 4];
+            for (int x = 0; x < dw; x++)
             {
-                const double v = (1 - ty) * ((1 - tx) * src[(size_t(y0) * sw + x0) * 4 + c] + tx * src[(size_t(y0) * sw + x1) * 4 + c]) +
-                                 ty * ((1 - tx) * src[(size_t(y1) * sw + x0) * 4 + c] + tx * src[(size_t(y1) * sw + x1) * 4 + c]);
-                d[2 - c] = uint8_t(std::clamp(v + 0.5, 0.0, 255.0));
+                uint8_t* d = row + size_t(ox + x) * 4;
+                for (int c = 0; c < 3; c++)
+                {
+                    float v = 0.0f;
+                    for (int k = 0; k < ty.n; k++)
+                    {
+                        const int sy = std::clamp(ty.first[size_t(y)] + k, 0, sh - 1);
+                        v += ty.w[size_t(y) * ty.n + k] * rows[(size_t(sy) * dw + x) * 3 + c];
+                    }
+                    d[2 - c] = uint8_t(std::clamp(v + 0.5f, 0.0f, 255.0f));
+                }
+                d[3] = 255;
             }
-            d[3] = 255;
         }
-    }
+    });
 }
 
 struct Avi
