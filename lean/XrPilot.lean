@@ -6,3 +6,4 @@ import XrPilot.Plan
 import XrPilot.Mcp
 import XrPilot.Http
 import XrPilot.Ui
+import XrPilot.Spark

@@ -6,14 +6,19 @@
 #include "xrpilot/Commands.h"
 #include "xrpilot/HeadGizmo.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/Pump.h"
 #include "xrpilot/Sparkline.h"
 
+#include "SparkModelCases.h"
+
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace xrpilot;
@@ -352,7 +357,71 @@ const std::map<std::string, std::function<void()>> cases = {
          s.sample(total += 1000);
          const std::vector<Sparkline::Segment> seg = s.segments(390.0f, 30.0f, false);
          check(seg.back().colour == Sparkline::Colour::Clipped && seg.back().y1 == 0.0f, "the spike clips to the top");
-         check(std::abs(seg[seg.size() - 2].y1 - 10.0f) < 0.01f, "steady samples stay at 2/3 height, not flattened");
+         check(std::abs(seg[seg.size() - 2].y1 - 29.0f / 3.0f) < 0.01f,
+               "steady samples stay at 2/3 of the span, not flattened");
+     }},
+    {"sparkline.model-runs",
+     [] {
+         for (const spark_model::Run& run : spark_model::runs)
+         {
+             Sparkline s;
+             for (const spark_model::Op& op : run.ops)
+                 s.sample(op.total, op.expecting);
+             std::string colours;
+             for (const Sparkline::Segment& seg : s.segments(390.0f, 20.0f, run.faultSeries))
+                 colours += seg.colour == Sparkline::Colour::Fault     ? 'F'
+                            : seg.colour == Sparkline::Colour::Clipped ? 'C'
+                                                                       : 'N';
+             if (colours != run.colours)
+                 std::fprintf(stderr, "  %s: %s, the model says %s\n", run.name, colours.c_str(), run.colours);
+             check(colours == run.colours, "each segment's colour is what lean/XrPilot/Spark.lean works out");
+         }
+     }},
+    {"sparkline.zero-clears-the-base",
+     [] {
+         Sparkline zeros;
+         for (int i = 0; i < 50; ++i)
+             zeros.sample(7);
+         const std::vector<Sparkline::Segment> seg = zeros.segments(390.0f, 12.0f, false);
+         check(!seg.empty() && seg.back().y1 == 11.0f, "zero sits a unit above the base rule");
+         check(seg.back().y1 != 12.0f, "control: not on the base rule, where it would vanish");
+         check(Sparkline().segments(390.0f, 12.0f, false).empty(), "a line with no samples draws nothing");
+         check(std::abs(seg.back().x1 - 390.0f) < 0.01f, "the newest sample is at the right edge");
+     }},
+    {"sparkline.ticks-move-every-sample",
+     [] {
+         Sparkline s;
+         for (int i = 0; i < 50; ++i)
+             s.sample(0);
+         const std::vector<float> before = s.ticks(390.0f);
+         s.sample(0);
+         const std::vector<float> after = s.ticks(390.0f);
+         check(before.size() == 10 && after.size() == 10, "one tick a second over 10 s");
+         check(before != after, "the ticks move with each sample, so a strip of zeros still scrolls");
+         for (int i = 0; i < Sparkline::TickEvery - 1; ++i)
+             s.sample(0);
+         check(s.ticks(390.0f) == before, "control: a whole second later they are back where they were");
+     }},
+    {"sparkline.pump-samples-without-frames",
+     [] {
+         // Nothing renders or calls update here: the pump alone takes the samples.
+         Sparkline s;
+         std::mutex m;
+         uint64_t total = 0;
+         {
+             Pump pump(25'000'000, [&] {
+                 std::lock_guard<std::mutex> lock(m);
+                 s.sample(total, true);
+             });
+             std::this_thread::sleep_for(std::chrono::milliseconds(260));
+         }
+         std::lock_guard<std::mutex> lock(m);
+         check(s.deltas().size() >= 8, "the pump takes a sample each period with no frame drawn");
+         const std::vector<Sparkline::Segment> seg = s.segments(390.0f, 20.0f, false);
+         check(!seg.empty() && seg.back().colour == Sparkline::Colour::Fault, "and the stalled stream shows red");
+         const size_t stopped = s.deltas().size();
+         std::this_thread::sleep_for(std::chrono::milliseconds(60));
+         check(s.deltas().size() == stopped, "control: a stopped pump takes none");
      }},
 };
 

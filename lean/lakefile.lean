@@ -19,6 +19,10 @@ lean_exe tests where
 lean_exe emit_ui_spans where
   root := `EmitUiSpans
 
+-- Writes core/tests/SparkModelCases.h from the sparkline model.
+lean_exe emit_spark_cases where
+  root := `EmitSparkCases
+
 -- Checks a pilot's recorded UI spans against the UI model.
 lean_exe ui_check where
   root := `UiCheck

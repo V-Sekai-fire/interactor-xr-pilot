@@ -45,6 +45,7 @@ add_library(xrpilot_core STATIC
     core/src/MouseLook.cpp
     core/src/UiTrace.cpp
     core/src/Pace.cpp
+    core/src/Pump.cpp
     core/src/Png.cpp
     core/src/Rotation.cpp
     core/src/SpanLog.cpp
@@ -140,7 +141,8 @@ foreach(name IN ITEMS human.gizmo-straight-up-and-down human.gizmo-arcs-measure-
                       human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
                       human.seated-lowers-head-and-hands
                       sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample
-                      sparkline.p90-scale-clips-a-spike)
+                      sparkline.p90-scale-clips-a-spike sparkline.model-runs sparkline.zero-clears-the-base
+                      sparkline.ticks-move-every-sample sparkline.pump-samples-without-frames)
     add_test(NAME ${name} COMMAND xrpilot-human-tests ${name})
 endforeach()
 

@@ -19,6 +19,7 @@
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
 #include "xrpilot/HeadGizmo.h"
+#include "xrpilot/Pump.h"
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/StreamRecord.h"
 #include "xrpilot/Tray.h"
@@ -339,7 +340,7 @@ public:
     {
     }
 
-    void sample(uint64_t total) { line_.sample(total); }
+    void sample(uint64_t total, bool expecting) { line_.sample(total, expecting); }
     float height(float scale) const override { return 14.0f * scale; }
 
     void draw(DrawContext& ctx, float x, float y, float w) override
@@ -352,13 +353,29 @@ public:
         const float width = std::max(0.0f, w - labelWidth);
         const float base[4] = {left, y + h - 1.0f, left + width, y + h - 1.0f};
         drawPolyline(ctx, base, 2, Color{65, 78, 94, 255}, 1.0f);
-        for (const Sparkline::Segment& s : line_.segments(width, h - 2.0f, fault_))
+        // Once-a-second ticks scroll with the samples, so a strip of zeros still visibly moves.
+        for (float tx : line_.ticks(width))
+        {
+            const float tick[4] = {left + tx, y + h - 1.0f, left + tx, y + h - 4.0f * ctx.scale};
+            drawPolyline(ctx, tick, 2, Color{65, 78, 94, 255}, 1.0f);
+        }
+        // The box's bottom edge is the base rule; zero sits a pixel above it.
+        const std::vector<Sparkline::Segment> segments = line_.segments(width, h - 2.0f, fault_);
+        for (const Sparkline::Segment& s : segments)
         {
             const Color c = s.colour == Sparkline::Colour::Fault     ? Color{240, 98, 98, 255}
                             : s.colour == Sparkline::Colour::Clipped ? Color{242, 204, 96, 255}
                                                                      : Color{126, 231, 135, 255};
             const float xy[4] = {left + s.x0, y + 1.0f + s.y0, left + s.x1, y + 1.0f + s.y1};
             drawPolyline(ctx, xy, 2, c, 1.25f * ctx.scale);
+        }
+        if (!segments.empty())
+        {
+            // The newest sample, at the right edge.
+            const Sparkline::Segment& s = segments.back();
+            const float r = 1.5f * ctx.scale;
+            const float dot[4] = {left + s.x1 - r, y + 1.0f + s.y1, left + s.x1 + r, y + 1.0f + s.y1};
+            drawPolyline(ctx, dot, 2, Color{230, 237, 243, 255}, 2.0f * r);
         }
     }
 
@@ -523,16 +540,22 @@ private:
     Shared& shared_;
 };
 
-// The stream's counters as a status bar of sparklines side by side, sampled every 250 ms: the last 10 s.
+// The stream's counters as a status bar of sparklines side by side, the last 10 s. A pump samples them
+// every 250 ms on its own thread, so they keep moving while the window stalls, is minimized or lost its
+// device; pkt and fps draw red while connected and silent (lean/XrPilot/Spark.lean).
 class StatsPanel final : public Panel
 {
 public:
-    StatsPanel(Client& client, Shared& shared)
+    StatsPanel(Client& client, Shared& shared, Window& window)
         : Panel("Stream")
         , client_(client)
         , shared_(shared)
         , rows_{SparkRow("pkt", false), SparkRow("fps", false), SparkRow("drop", true), SparkRow("fec", true),
                 SparkRow("err", true)}
+        , pump_(250'000'000, [this, &window] {
+            sample();
+            window.requestRedrawFromAnyThread();
+        })
     {
     }
 
@@ -544,28 +567,29 @@ public:
         if (width <= 0.0f)
             return;
         const float y = (ctx.height - rows_[0].height(ctx.scale)) * 0.5f;
+        std::lock_guard<std::mutex> lock(mutex_);
         for (int i = 0; i < 5; ++i)
             rows_[i].draw(ctx, pad + float(i) * (width + gap), y, width);
     }
 
-    void update(const VulkanContext&) override
+private:
+    // On the pump's thread. pkt and fps expect data while connected; the fault series count faults.
+    void sample()
     {
-        const int64_t now = nowNs();
-        if (now - lastSampleNs_ < 250'000'000)
-            return;
-        lastSampleNs_ = now;
         const ClientStatus s = client_.status();
         const uint64_t totals[5] = {s.videoPackets, shared_.decoded.load(), s.framesDropped, s.fecRecoveries,
                                     shared_.decodeErrors.load()};
+        std::lock_guard<std::mutex> lock(mutex_);
         for (int i = 0; i < 5; ++i)
-            rows_[i].sample(totals[i]);
+            rows_[i].sample(totals[i], i < 2 && s.connected);
     }
 
-private:
     Client& client_;
     Shared& shared_;
+    std::mutex mutex_;
     SparkRow rows_[5];
-    int64_t lastSampleNs_ = 0;
+    // Last, so it stops before the rows it samples go.
+    Pump pump_;
 };
 
 std::string fixed(float value, int digits)
@@ -750,7 +774,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     windowPtr = window.get();
     window->setPanel("eye", std::make_unique<EyePanel>(client, shared, *window));
     window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, &tray));
-    window->setPanel("stats", std::make_unique<StatsPanel>(client, shared));
+    window->setPanel("stats", std::make_unique<StatsPanel>(client, shared, *window));
     window->setPanel("trace", std::make_unique<TracePanel>(shared));
 
     if (!client.start(&error))
