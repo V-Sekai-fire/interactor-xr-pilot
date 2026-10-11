@@ -138,6 +138,9 @@ private:
     void UpdateReprojectionWarp(bool reusingFrame);
     protocol::TrackingPacket BuildTrackingPacket(XrTime predictedDisplayTime);
     void SendTracking(const protocol::TrackingPacket& packet);
+    // The last tracking sent while rendering, repeated while the runtime hides the app.
+    protocol::TrackingPacket lastTrackingPacket_ = {};
+    bool haveLastTrackingPacket_ = false;
     void UpdateShellPose();
     void UpdateShellInteractions();
     bool SetShellPassthroughActive(bool active);
