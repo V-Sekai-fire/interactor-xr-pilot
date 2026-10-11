@@ -134,6 +134,8 @@ const std::map<std::string, std::function<void()>> cases = {
          check(sv && sv->find("activateMultipleDrivers") && sv->find("activateMultipleDrivers")->boolean, "multiple drivers is on");
          check(before.has_value() && !*before, "multiple drivers was off before the swap");
          check(sv && sv->find("enableHomeApp") && settings.find("driver_null"), "everything else is kept");
+         const Json* drv = settings.find("driver_oxrsys");
+         check(drv && drv->find("enable") && drv->find("enable")->boolean, "OXRSys's driver is on");
          check(!applySteamVrHeadset(settings, true, before), "a second swap changes nothing");
          check(before.has_value() && !*before, "and still remembers the desk's own value");
      }},
@@ -153,7 +155,10 @@ const std::map<std::string, std::function<void()>> cases = {
              const Json* multi = sv ? sv->find("activateMultipleDrivers") : nullptr;
              check(had ? (multi && multi->boolean) : multi == nullptr, "multiple drivers is as the desk had it");
              check(!before.has_value(), "nothing is remembered after");
-             check(writeJson(settings) == original, "the round trip leaves the file as it was");
+             const Json* drv = settings.find("driver_oxrsys");
+             check(drv && drv->find("enable") && !drv->find("enable")->boolean, "OXRSys's driver is off");
+             settings.erase("driver_oxrsys");
+             check(writeJson(settings) == original, "apart from that driver, the round trip leaves the file as it was");
          }
          // A desk that set multiple drivers itself, with no swap in effect: the hand-back leaves it on.
          Json own;
@@ -163,6 +168,31 @@ const std::map<std::string, std::function<void()>> cases = {
          const Json* sv = own.find("steamvr");
          check(sv && sv->find("activateMultipleDrivers") && sv->find("activateMultipleDrivers")->boolean,
                "control: the desk's own multiple drivers is not turned off");
+     }},
+    {"steamvr.oxrsys-driver-follows-the-headset",
+     [] {
+         // Desk.oxrsysDriver: loaded, OXRSys's driver offers a headset and holds the stream's control port, so it
+         // is on only while it is SteamVR's headset. A desk on SteamVR keeps it off for the Steam Frame's Steam
+         // Link and a standalone OXRSys runtime; the swap turns it back on, whatever the desk set.
+         Json settings;
+         check(parseJson("{\"steamvr\":{},\"driver_oxrsys\":{\"enable\":false,\"frameDumpFrame\":3}}", settings), "parses");
+         MultipleDriversBefore before;
+         check(applySteamVrHeadset(settings, true, before), "the swap changes the settings");
+         const Json* drv = settings.find("driver_oxrsys");
+         check(drv && drv->find("enable") && drv->find("enable")->boolean, "the swap turns a disabled driver on");
+         check(drv && drv->find("frameDumpFrame"), "and keeps the driver's other settings");
+         check(applySteamVrHeadset(settings, false, before), "the hand-back changes the settings");
+         drv = settings.find("driver_oxrsys");
+         check(drv && drv->find("enable") && !drv->find("enable")->boolean, "the hand-back turns it off");
+         check(!applySteamVrHeadset(settings, false, before), "a second hand-back changes nothing");
+         // A desk already on SteamVR, never swapped, with the driver left on (tonight's desk): the way back
+         // still turns it off.
+         Json desk;
+         check(parseJson("{\"steamvr\":{\"activateMultipleDrivers\":true}}", desk), "parses");
+         MultipleDriversBefore none;
+         check(applySteamVrHeadset(desk, false, none), "control: a desk with the driver on is changed");
+         drv = desk.find("driver_oxrsys");
+         check(drv && drv->find("enable") && !drv->find("enable")->boolean, "and its OXRSys driver is off");
      }},
     {"install.stale-manifest-is-not-an-install",
      [] {

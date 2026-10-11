@@ -42,6 +42,10 @@ structure Desk where
   multipleDrivers : Bool := false
   /-- What `activateMultipleDrivers` was before the swap to OXRSys turned it on; going back restores it. -/
   multipleDriversBefore : Option Bool := none
+  /-- SteamVR's `driver_oxrsys.enable`: whether SteamVR loads OXRSys's driver at all. Once loaded it
+  offers a headset and holds the stream's control port, so a desk on SteamVR keeps it off: the Steam
+  Frame's Steam Link gets the headset, and a standalone OXRSys runtime gets the port. -/
+  oxrsysDriver : Bool := true
   /-- Developer mode is on (kept in the registry). -/
   developerMode : Bool := false
   /-- Windows shows the tray icon; it can fail, as on a shell with no notification area. -/
@@ -54,22 +58,24 @@ inductive Mode where
 
 /-- The swap track's end: OXRSys is the OpenXR runtime and SteamVR's headset, with SteamVR's other
 drivers (trackers, a Quest link) still loading. -/
-def Desk.onOxrsys (d : Desk) : Bool := d.runtime == .oxrsys && d.forcedOxrsys && d.multipleDrivers
+def Desk.onOxrsys (d : Desk) : Bool := d.runtime == .oxrsys && d.forcedOxrsys && d.multipleDrivers && d.oxrsysDriver
 
-/-- The other track's end: SteamVR is the OpenXR runtime and picks its own headset. -/
-def Desk.onSteamVr (d : Desk) : Bool := d.runtime == .steamVr && !d.forcedOxrsys
+/-- The other track's end: SteamVR is the OpenXR runtime and picks its own headset, with OXRSys's
+driver off so it neither offers a headset nor holds the stream's port. -/
+def Desk.onSteamVr (d : Desk) : Bool := d.runtime == .steamVr && !d.forcedOxrsys && !d.oxrsysDriver
 
 /-- Swap to OXRSys: the runtime, the forced headset and multiple drivers, remembering what to restore. -/
 def Desk.swapToOxrsys (d : Desk) : Desk :=
   { d with runtime := .oxrsys,
            previous := if d.runtime == .oxrsys then d.previous else d.runtime,
-           forcedOxrsys := true, multipleDrivers := true,
+           forcedOxrsys := true, multipleDrivers := true, oxrsysDriver := true,
            multipleDriversBefore := some (d.multipleDriversBefore.getD d.multipleDrivers) }
 
-/-- SteamVR picks its own headset again, and multiple drivers is as it was before the swap. -/
+/-- SteamVR picks its own headset again, multiple drivers is as it was before the swap, and OXRSys's
+driver is off. -/
 def Desk.handBackHeadset (d : Desk) : Desk :=
   { d with forcedOxrsys := false, multipleDrivers := d.multipleDriversBefore.getD d.multipleDrivers,
-           multipleDriversBefore := none }
+           multipleDriversBefore := none, oxrsysDriver := false }
 
 /-- Back to SteamVR from the runtime menu: SteamVR is the runtime and picks its own headset. -/
 def Desk.pickSteamVr (d : Desk) : Desk :=
@@ -102,6 +108,13 @@ theorem unbind_restores_the_runtime (d : Desk) (h : d.runtime ≠ .oxrsys) :
 theorem unbind_from_steamvr_ends_on_steamvr (d : Desk) (h : d.runtime = .steamVr) :
     d.swapToOxrsys.unbind.onSteamVr = true := by
   simp [Desk.swapToOxrsys, Desk.unbind, Desk.handBackHeadset, Desk.onSteamVr, h]
+
+/-- Every way back to SteamVR turns OXRSys's driver off, from any desk, swapped or not: nothing of
+OXRSys is left to take the headset from the Steam Frame or the port from a standalone runtime. -/
+theorem way_back_turns_the_driver_off (d : Desk) :
+    d.pickSteamVr.oxrsysDriver = false ∧ d.unbind.oxrsysDriver = false ∧
+    d.handBackHeadset.oxrsysDriver = false := by
+  simp [Desk.pickSteamVr, Desk.unbind, Desk.handBackHeadset]
 
 /-- A swap and a way back leave multiple drivers as the desk had it. -/
 theorem round_trip_restores_multiple_drivers (d : Desk) (fresh : d.multipleDriversBefore = none) :
@@ -520,10 +533,11 @@ def Desk.all : List Desk := Id.run do
             for forcedOxrsys in [false, true] do
               for multipleDrivers in [false, true] do
                 for multipleDriversBefore in [Option.none, some false, some true] do
-                  for developerMode in [false, true] do
-                    for trayIcon in [false, true] do
-                      out := { packaged, runningCopy, firstRunDone, runtime, previous, forcedOxrsys, multipleDrivers,
-                               multipleDriversBefore, developerMode, trayIcon } :: out
+                  for oxrsysDriver in [false, true] do
+                    for developerMode in [false, true] do
+                      for trayIcon in [false, true] do
+                        out := { packaged, runningCopy, firstRunDone, runtime, previous, forcedOxrsys, multipleDrivers,
+                                 multipleDriversBefore, oxrsysDriver, developerMode, trayIcon } :: out
   return out.reverse
 
 /-- Replays one session's spans, in the order they started, from every desk at once; accepts the

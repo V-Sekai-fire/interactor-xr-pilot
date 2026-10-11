@@ -62,9 +62,22 @@ bool applySteamVrHeadset(Json& settings, bool ours, MultipleDriversBefore& befor
             before.reset();
         }
     }
+    // OXRSys's driver loads only while it is SteamVR's headset: once loaded it offers a headset and holds the
+    // stream's control port, which the Steam Frame's Steam Link and a standalone OXRSys runtime need.
+    Json driver;
+    driver.kind = Json::Kind::Object;
+    if (const Json* existing = settings.find("driver_oxrsys"))
+        driver = *existing;
+    const Json* enable = driver.find("enable");
+    const bool driverChanged = enable == nullptr || enable->kind != Json::Kind::Bool || enable->boolean != ours;
+    if (driverChanged)
+    {
+        driver.set("enable", boolean(ours));
+        settings.set("driver_oxrsys", driver);
+    }
     if (changed)
         settings.set("steamvr", steamvr);
-    return changed;
+    return changed || driverChanged;
 }
 
 } // namespace xrpilot
