@@ -89,7 +89,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
                       mouse.look-turns-evenly mouse.look-lands-whole
                       commands.loop-normalizes-lines bridge.wakes-the-tray-and-waits bridge.no-pilot-is-an-error
-                      bridge.detach-waits-for-the-command)
+                      bridge.detach-waits-for-the-command
+                      tracks.pick-keeps-the-rest-of-the-file tracks.pick-adds-what-is-missing tracks.named-not-numbered)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.

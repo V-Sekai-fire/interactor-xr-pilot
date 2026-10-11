@@ -165,6 +165,7 @@ inductive Action where
   | modePcvr | modeSteamVr | modeStream
   | addRuntime | addRuntimeChosen | trayUninstall | uninstallConfirm | uninstallCancel
   | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit
+  | streamBitrate | streamAbr
   -- How a background change ends.
   | installFailed | elevatedDone | elevatedDeclined
   -- The pilot window and its controls.
@@ -180,6 +181,7 @@ def Action.all : List Action :=
    .modePcvr, .modeSteamVr, .modeStream,
    .addRuntime, .addRuntimeChosen, .trayUninstall, .uninstallConfirm, .uninstallCancel,
    .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit,
+   .streamBitrate, .streamAbr,
    .installFailed, .elevatedDone, .elevatedDeclined,
    .windowOpen, .windowError, .windowClose,
    .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated]
@@ -215,6 +217,8 @@ def Action.spanName : Action → String
   | .openRuntimeFolder => "ui.tray.open-runtime-folder"
   | .openDriverFolder => "ui.tray.open-driver-folder"
   | .trayQuit => "ui.tray.quit"
+  | .streamBitrate => "ui.tray.stream-bitrate"
+  | .streamAbr => "ui.tray.stream-abr"
   | .installFailed => "ui.tray.install-failed"
   | .elevatedDone => "ui.tray.elevated-done"
   | .elevatedDeclined => "ui.tray.elevated-declined"
@@ -260,6 +264,8 @@ def Action.cppName : Action → String
   | .openRuntimeFolder => "OpenRuntimeFolder"
   | .openDriverFolder => "OpenDriverFolder"
   | .trayQuit => "TrayQuit"
+  | .streamBitrate => "StreamBitrate"
+  | .streamAbr => "StreamAbr"
   | .installFailed => "InstallFailed"
   | .elevatedDone => "ElevatedDone"
   | .elevatedDeclined => "ElevatedDeclined"
@@ -403,6 +409,9 @@ def step (s : State) : Action → Option State
   | .openDriverFolder => if s.trayAnswers && s.desk.developerMode then some { s with warningDue := false } else none
   -- Quitting ends the process; an open pilot window then records its close.
   | .trayQuit => if s.trayAnswers then some { s with exited := true } else none
+  -- Picking a track writes the runtime's config file; the desk itself does not change.
+  | .streamBitrate => if s.trayAnswers then some { s with warningDue := false } else none
+  | .streamAbr => if s.trayAnswers then some { s with warningDue := false } else none
   -- A background change may finish after a quit: its prompt was already up.
   | .installFailed =>
     if s.pending.isSome && s.installing then some { s with pending := none, installing := false } else none
@@ -476,6 +485,8 @@ def witness : Action → Desk × List Action
   | .openDriverFolder =>
     ({ firstRunDone := true }, [.launchTray, .deskSetup, .developerMode, .openDriverFolder])
   | .trayQuit => ({ firstRunDone := true }, [.launchTray, .deskSetup, .trayQuit])
+  | .streamBitrate => ({ firstRunDone := true }, [.launchTray, .deskSetup, .streamBitrate])
+  | .streamAbr => ({ firstRunDone := true }, [.launchTray, .deskSetup, .streamAbr])
   | .installFailed => ({}, [.launchPilot, .deskSetup, .firstRunBind, .installFailed])
   | .elevatedDone => ({ firstRunDone := true }, [.launchTray, .deskSetup, .runtimeOurs, .elevatedDone])
   | .elevatedDeclined => ({ firstRunDone := true }, [.launchTray, .deskSetup, .runtimeOurs, .elevatedDeclined])

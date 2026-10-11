@@ -111,12 +111,48 @@ enum AbrModeSetting: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .off:
-            return "Off"
+            return "Fixed"
         case .bitrate:
-            return "Bitrate"
+            return "Adapt the bitrate"
         case .full:
-            return "Full"
+            return "Adapt the bitrate and resolution"
         }
+    }
+}
+
+/// The stream's bitrate as named tracks, the same as XR Pilot's tray (core/include/xrpilot/StreamTracks.h).
+enum BitrateTrack: Int, CaseIterable, Identifiable {
+    case low
+    case medium
+    case high
+    case veryHigh
+    case highest
+
+    var id: Int { rawValue }
+
+    var mbps: Int {
+        switch self {
+        case .low: return 25
+        case .medium: return 50
+        case .high: return 100
+        case .veryHigh: return 150
+        case .highest: return 200
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .veryHigh: return "Very high"
+        case .highest: return "Highest"
+        }
+    }
+
+    /// The track a configured bitrate falls on: the nearest, the lower one on a tie.
+    static func nearest(to mbps: Int) -> BitrateTrack {
+        allCases.min { abs($0.mbps - mbps) < abs($1.mbps - mbps) } ?? .medium
     }
 }
 

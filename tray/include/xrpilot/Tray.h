@@ -61,6 +61,9 @@ private:
     // SteamVR on OXRSys, with the desk's pilot owning the session ("steamvr") or watching it ("stream").
     void useSteamVrModeNow(const std::string& mode);
     void refreshModeEntries();
+    // Bitrate and adaptive bitrate as named tracks, kept in the runtime's config file.
+    void refreshTrackEntries();
+    void pickTrack(bool abr, size_t index);
     void uninstall();
     void addRuntimeManifest();
     void setMessage(const std::string& message);
@@ -73,6 +76,7 @@ private:
 
     static void onRuntime(void* userdata, SDL_TrayEntry* entry);
     static void onCommand(void* userdata, SDL_TrayEntry* entry);
+    static void onTrack(void* userdata, SDL_TrayEntry* entry);
     static void onFileChosen(void* userdata, const char* const* files, int filter);
 
     SDL_Tray* tray_ = nullptr;
@@ -82,6 +86,8 @@ private:
     SDL_TrayMenu* runtimeMenu_ = nullptr;
     SDL_TrayEntry* modeEntries_[3] = {};
     SDL_TrayEntry* developerMode_ = nullptr;
+    std::vector<SDL_TrayEntry*> bitrateEntries_;
+    std::vector<SDL_TrayEntry*> abrEntries_;
     std::vector<SDL_TrayEntry*> developerEntries_;
     SDL_Surface* idleIcon_ = nullptr;
     SDL_Surface* streamingIcon_ = nullptr;

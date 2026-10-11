@@ -417,18 +417,17 @@ struct ContentView: View {
                         Toggle("Write server log file", isOn: streamingBinding(\.fileLogging))
                         Toggle("Capture Quest logcat", isOn: streamingBinding(\.questLogcat))
 
-                        LabeledSlider(
+                        TrackSlider(
                             title: "Bitrate",
-                            value: Binding(
-                                get: { Double(model.serverConfig.bitrateMbps) },
-                                set: { value in
+                            tracks: BitrateTrack.allCases.map(\.displayName),
+                            index: Binding(
+                                get: { BitrateTrack.nearest(to: model.serverConfig.bitrateMbps).rawValue },
+                                set: { index in
                                     model.updateStreamingConfig {
-                                        $0.bitrateMbps = Int(value.rounded())
+                                        $0.bitrateMbps = BitrateTrack.allCases[index].mbps
                                     }
                                 }
-                            ),
-                            range: Double(OXRSysServerConfig.minBitrateMbps)...Double(OXRSysServerConfig.maxBitrateMbps),
-                            displayValue: "\(model.serverConfig.bitrateMbps) Mbps"
+                            )
                         )
 
                         Picker("Refresh rate", selection: streamingBinding(\.refreshRateHz)) {
@@ -469,11 +468,18 @@ struct ContentView: View {
                             }
                         }
 
-                        Picker("ABR mode", selection: streamingBinding(\.abrMode)) {
-                            ForEach(AbrModeSetting.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
+                        TrackSlider(
+                            title: "Adaptive bitrate",
+                            tracks: AbrModeSetting.allCases.map(\.displayName),
+                            index: Binding(
+                                get: { AbrModeSetting.allCases.firstIndex(of: model.serverConfig.abrMode) ?? 1 },
+                                set: { index in
+                                    model.updateStreamingConfig {
+                                        $0.abrMode = AbrModeSetting.allCases[index]
+                                    }
+                                }
+                            )
+                        )
 
                         Toggle("Passthrough", isOn: streamingBinding(\.passthroughEnabled))
 
@@ -1122,6 +1128,38 @@ private struct LabeledSlider<Value: BinaryFloatingPoint>: View where Value.Strid
                     .foregroundStyle(.secondary)
             }
             Slider(value: $value, in: range)
+        }
+    }
+}
+
+/// A slider that stops only on named tracks and shows the track's name, never a number.
+private struct TrackSlider: View {
+    let title: String
+    let tracks: [String]
+    @Binding var index: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(tracks[min(max(index, 0), tracks.count - 1)])
+                    .foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(index) },
+                    set: { index = min(max(Int($0.rounded()), 0), tracks.count - 1) }
+                ),
+                in: 0...Double(tracks.count - 1),
+                step: 1
+            ) {
+                Text(title)
+            } minimumValueLabel: {
+                Text(tracks.first ?? "").font(.caption)
+            } maximumValueLabel: {
+                Text(tracks.last ?? "").font(.caption)
+            }
         }
     }
 }

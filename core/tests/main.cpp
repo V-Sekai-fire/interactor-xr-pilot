@@ -35,6 +35,8 @@
 #include <thread>
 #include <vector>
 
+#include "xrpilot/StreamTracks.h"
+
 using namespace xrpilot;
 
 namespace
@@ -1236,6 +1238,53 @@ const std::map<std::string, std::function<void()>> cases = {
          bridge.detach();
          check(answered, "the window closes only after the command it is answering has its reply");
          asker.join();
+     }},
+    {"tracks.pick-keeps-the-rest-of-the-file",
+     [] {
+         // The runtime's own config: comments, other sections and other keys must survive a pick.
+         const std::string config = "# OXRSys\n[general]\nruntime_enabled = true\n\n[streaming]\n"
+                                    "# Mbps\nbitrate_mbps = 50\nrefresh_rate_hz = 72\nabr_mode = \"bitrate\"\n\n"
+                                    "[passthrough]\nenabled = false\n";
+         std::string edited = setTomlValue(config, "streaming", "bitrate_mbps",
+                                           std::to_string(bitrateTracks()[bitrateTracks().size() - 1].mbps));
+         edited = setTomlValue(edited, "streaming", "abr_mode", "\"off\"");
+         check(tomlValue(edited, "streaming", "bitrate_mbps") == "200", "the bitrate is the highest track");
+         check(tomlValue(edited, "streaming", "abr_mode") == "off", "adaptive bitrate is off");
+         check(tomlValue(edited, "streaming", "refresh_rate_hz") == "72", "the refresh rate is kept");
+         check(tomlValue(edited, "general", "runtime_enabled") == "true", "another section is kept");
+         check(tomlValue(edited, "passthrough", "enabled") == "false", "a later section is kept");
+         check(edited.find("# Mbps") != std::string::npos && edited.find("# OXRSys") != std::string::npos,
+               "comments are kept");
+         check(toml_edit::lines(edited).size() == toml_edit::lines(config).size(), "no line is added or lost");
+         check(setTomlValue(edited, "streaming", "abr_mode", "\"off\"") == edited, "picking again changes nothing");
+     }},
+    {"tracks.pick-adds-what-is-missing",
+     [] {
+         check(tomlValue(setTomlValue("", "streaming", "abr_mode", "\"full\""), "streaming", "abr_mode") == "full",
+               "an empty file gets the section and the key");
+         const std::string other = "[general]\nruntime_enabled = true\n[passthrough]\nenabled = true\n";
+         const std::string edited = setTomlValue(other, "general", "x", "1");
+         check(tomlValue(edited, "general", "x") == "1", "a key missing from a section goes into it");
+         check(edited.find("x = 1") < edited.find("[passthrough]"), "before the next section");
+         check(tomlValue("[other]\nbitrate_mbps = 9\n", "streaming", "bitrate_mbps").empty(),
+               "a key in another section is not this one");
+     }},
+    {"tracks.named-not-numbered",
+     [] {
+         // Every track is a value the runtime accepts, ordered, and any configured number shows on one.
+         uint32_t last = 0;
+         for (const BitrateTrack& t : bitrateTracks())
+         {
+             check(t.mbps > last && t.mbps >= 1 && t.mbps <= 200, "bitrate tracks rise within 1 to 200 Mbps");
+             check(std::string(t.name).find_first_of("0123456789") == std::string::npos, "and are named");
+             last = t.mbps;
+         }
+         check(bitrateTrackFor(50) == 1 && bitrateTrackFor(1) == 0 && bitrateTrackFor(200) == 4,
+               "a configured bitrate shows on its track");
+         check(bitrateTrackFor(75) == 1 && bitrateTrackFor(76) == 2, "the nearest, the lower on a tie");
+         check(abrTracks().size() == 3 && abrTrackFor("off") == 0 && abrTrackFor("full") == 2,
+               "adaptive bitrate has the runtime's three modes");
+         check(abrTrackFor("nonsense") == 1, "an unknown mode reads as the runtime reads it");
      }},
 };
 

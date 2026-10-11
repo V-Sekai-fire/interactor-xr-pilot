@@ -40,6 +40,8 @@ enum class UiAction
     OpenRuntimeFolder,
     OpenDriverFolder,
     TrayQuit,
+    StreamBitrate,
+    StreamAbr,
     InstallFailed,
     ElevatedDone,
     ElevatedDeclined,
@@ -117,6 +119,10 @@ inline const char* uiSpanName(UiAction action)
         return "ui.tray.open-driver-folder";
     case UiAction::TrayQuit:
         return "ui.tray.quit";
+    case UiAction::StreamBitrate:
+        return "ui.tray.stream-bitrate";
+    case UiAction::StreamAbr:
+        return "ui.tray.stream-abr";
     case UiAction::InstallFailed:
         return "ui.tray.install-failed";
     case UiAction::ElevatedDone:
