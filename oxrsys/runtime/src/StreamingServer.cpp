@@ -1016,40 +1016,19 @@ oxrsys::streaming_spectators::Address SpectatorAddress(const sockaddr_in& addres
 
 } // namespace
 
-// Under spectatorMutex_: a spectator's tracking is co-pilot input (streaming_spectators::MergeCopilot).
-void StreamingServer::ShareSpectatorsWithTracking()
-{
-    if (trackingReceiver_ == nullptr)
-    {
-        return;
-    }
-    std::vector<uint32_t> sources;
-    for (const oxrsys::streaming_spectators::Address& spectator : spectators_.Addresses())
-    {
-        sources.push_back(htonl(spectator.ip));
-    }
-    trackingReceiver_->SetCopilotSources(std::move(sources));
-}
-
 void StreamingServer::RefreshSpectator(const sockaddr_in& from)
 {
     std::lock_guard<std::mutex> lock(spectatorMutex_);
     if (spectators_.Refresh(SpectatorAddress(from), std::chrono::steady_clock::now()))
     {
         spdlog::info("StreamingServer: spectator {} is watching ({} now)", AddressText(from), spectators_.Size());
-        ShareSpectatorsWithTracking();
     }
 }
 
 bool StreamingServer::RemoveSpectator(const sockaddr_in& from)
 {
     std::lock_guard<std::mutex> lock(spectatorMutex_);
-    const bool removed = spectators_.Remove(SpectatorAddress(from));
-    if (removed)
-    {
-        ShareSpectatorsWithTracking();
-    }
-    return removed;
+    return spectators_.Remove(SpectatorAddress(from));
 }
 
 bool StreamingServer::IsSpectator(const sockaddr_in& from)
@@ -1061,7 +1040,6 @@ bool StreamingServer::IsSpectator(const sockaddr_in& from)
 void StreamingServer::ExpireSpectators()
 {
     std::lock_guard<std::mutex> lock(spectatorMutex_);
-    bool expiredAny = false;
     for (const oxrsys::streaming_spectators::Address& expired :
          spectators_.Expire(std::chrono::steady_clock::now(),
                             std::chrono::milliseconds(oxr::protocol::SPECTATOR_TIMEOUT_MS)))
@@ -1070,11 +1048,6 @@ void StreamingServer::ExpireSpectators()
         address.sin_addr.s_addr = htonl(expired.ip);
         address.sin_port = htons(expired.port);
         spdlog::info("StreamingServer: spectator {} timed out", AddressText(address));
-        expiredAny = true;
-    }
-    if (expiredAny)
-    {
-        ShareSpectatorsWithTracking();
     }
 }
 
