@@ -942,52 +942,67 @@ void StreamingServer::ControlThread()
                                                            0,
                                                            (sockaddr*)&clientAddr,
                                                            &addrLen);
+        // Every turn, packet or not: a spectator that vanished without its goodbye stops getting the video
+        // within SPECTATOR_TIMEOUT_MS and one receive timeout (lean/XrPilot/Stream.lean, stale_spectator_dropped).
+        ExpireSpectators();
         if (received < 1)
         {
             continue;
         }
 
-        ExpireSpectators();
-        uint8_t type = buffer[0];
+        using oxrsys::streaming_spectators::ControlPacket;
+        using oxrsys::streaming_spectators::ControlRoute;
+        const uint8_t type = buffer[0];
+        oxr::protocol::ClientConnect clientConnect = {};
+        ControlPacket packet = ControlPacket::Payload;
         if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ClientConnect) &&
             received >= static_cast<int>(oxr::protocol::CLIENT_CONNECT_BASE_SIZE))
         {
-            if (wifiEnabled_)
+            if (!wifiEnabled_)
             {
-                oxr::protocol::ClientConnect clientConnect = {};
-                memcpy(&clientConnect, buffer, std::min<size_t>(
-                    static_cast<size_t>(received), sizeof(clientConnect)));
-                // A spectator watches; it never takes the session from the client that owns it.
-                if ((clientConnect.clientCapabilities & oxr::protocol::CLIENT_CAPABILITY_SPECTATOR) != 0)
-                {
-                    RefreshSpectator(clientAddr);
-                }
-                else
-                {
-                    HandleClientConnect(clientConnect, clientAddr);
-                }
+                continue;
             }
+            memcpy(&clientConnect, buffer, std::min<size_t>(static_cast<size_t>(received), sizeof(clientConnect)));
+            packet = (clientConnect.clientCapabilities & oxr::protocol::CLIENT_CAPABILITY_SPECTATOR) != 0
+                         ? ControlPacket::SpectatorConnect
+                         : ControlPacket::Connect;
         }
         else if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ServerDisconnect))
         {
-            // Only the owner's goodbye ends the session; a spectator's ends its watching.
-            if (RemoveSpectator(clientAddr))
-            {
-                spdlog::info("StreamingServer: spectator {} left", AddressText(clientAddr));
-            }
-            else if (IsSessionOwner(clientAddr))
-            {
-                HandleClientDisconnect();
-            }
-            else
+            packet = ControlPacket::Bye;
+        }
+
+        switch (oxrsys::streaming_spectators::RouteControl(packet, IsSessionOwner(clientAddr), IsSpectator(clientAddr)))
+        {
+        case ControlRoute::TakeSession:
+            RemoveSpectator(clientAddr);
+            HandleClientConnect(clientConnect, clientAddr);
+            break;
+        case ControlRoute::Watch:
+            RefreshSpectator(clientAddr);
+            break;
+        case ControlRoute::StepDownToWatch:
+            spdlog::info("StreamingServer: the session owner {} now watches", AddressText(clientAddr));
+            HandleClientDisconnect();
+            RefreshSpectator(clientAddr);
+            break;
+        case ControlRoute::EndSession:
+            HandleClientDisconnect();
+            break;
+        case ControlRoute::LeaveWatching:
+            RemoveSpectator(clientAddr);
+            spdlog::info("StreamingServer: spectator {} left", AddressText(clientAddr));
+            break;
+        case ControlRoute::Handle:
+            HandleControlPayload(buffer, static_cast<size_t>(received));
+            break;
+        case ControlRoute::Ignore:
+            if (packet == ControlPacket::Bye)
             {
                 spdlog::info("StreamingServer: ignored a disconnect from {}, which does not own the session",
                              AddressText(clientAddr));
             }
-        }
-        else if (!IsSpectator(clientAddr))
-        {
-            HandleControlPayload(buffer, static_cast<size_t>(received));
+            break;
         }
     }
 

@@ -102,6 +102,44 @@ private:
     std::vector<Entry> entries_;
 };
 
+// What arrives on the control port, for routing.
+enum class ControlPacket
+{
+    SpectatorConnect, // ClientConnect with CLIENT_CAPABILITY_SPECTATOR
+    Connect,
+    Bye, // ServerDisconnect
+    Payload,
+};
+
+enum class ControlRoute
+{
+    TakeSession,     // the sender owns the session, and stops watching if it was
+    Watch,           // the sender watches, or keeps watching
+    StepDownToWatch, // the owner's session ends, and it watches
+    EndSession,
+    LeaveWatching,
+    Handle, // a payload, handled as before
+    Ignore,
+};
+
+// lean/XrPilot/Stream.lean's `route`: a spectator never takes the session, only the owner's goodbye ends it,
+// and the owner is never also on the spectator list, so it never gets the video twice.
+inline ControlRoute RouteControl(ControlPacket packet, bool isOwner, bool isSpectator)
+{
+    switch (packet)
+    {
+    case ControlPacket::SpectatorConnect:
+        return isOwner ? ControlRoute::StepDownToWatch : ControlRoute::Watch;
+    case ControlPacket::Connect:
+        return ControlRoute::TakeSession;
+    case ControlPacket::Bye:
+        return isSpectator ? ControlRoute::LeaveWatching : isOwner ? ControlRoute::EndSession : ControlRoute::Ignore;
+    case ControlPacket::Payload:
+        return isSpectator ? ControlRoute::Ignore : ControlRoute::Handle;
+    }
+    return ControlRoute::Ignore;
+}
+
 // Whether a control message came from the client that owns the session: the same IP, and the same port
 // when the owner's is known. A session with no owner has none.
 inline bool IsSessionOwner(const std::string& ownerIp, uint16_t ownerPort, const std::string& fromIp,

@@ -7,3 +7,4 @@ import XrPilot.Mcp
 import XrPilot.Http
 import XrPilot.Ui
 import XrPilot.Spark
+import XrPilot.Stream

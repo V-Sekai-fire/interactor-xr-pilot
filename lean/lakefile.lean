@@ -23,6 +23,10 @@ lean_exe emit_ui_spans where
 lean_exe emit_spark_cases where
   root := `EmitSparkCases
 
+-- Writes oxrsys/tests/StreamModelCases.h from the stream model.
+lean_exe emit_stream_cases where
+  root := `EmitStreamCases
+
 -- Checks a pilot's recorded UI spans against the UI model.
 lean_exe ui_check where
   root := `UiCheck

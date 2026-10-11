@@ -395,6 +395,8 @@ def main : IO UInt32 := do
     c (header == Ui.emitCpp) "core/include/xrpilot/UiSpans.h is what the model emits (lake exe emit_ui_spans)"
     let spark ← try IO.FS.readFile "../core/tests/SparkModelCases.h" catch _ => pure ""
     c (spark == Spark.emitCpp) "core/tests/SparkModelCases.h is what the model emits (lake exe emit_spark_cases)"
+    let cases ← try IO.FS.readFile "../oxrsys/tests/StreamModelCases.h" catch _ => pure ""
+    c (cases == Stream.emitCpp) "oxrsys/tests/StreamModelCases.h is what the model emits (lake exe emit_stream_cases)"
 
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"

@@ -228,6 +228,9 @@ A client that sets `CLIENT_CAPABILITY_SPECTATOR` in its `ClientConnect` watches 
 - The runtime takes no tracking, keyframe requests or latency reports from it.
 - It repeats its `ClientConnect` as a heartbeat; the runtime drops it after `SPECTATOR_TIMEOUT_MS` (5 s) without one, or when it sends `ServerDisconnect`.
 - A `ServerDisconnect` ends the session only when it comes from the session owner's address. One from another address that is not a spectator is ignored.
+- The owner is never also a spectator. A spectator `ClientConnect` from the owner ends its session first; a plain `ClientConnect` from a spectator takes it off the list as it takes the session. So no client gets the video twice, even when its goodbye was lost.
+- The runtime expires the list on every turn of its control loop, with or without a packet. So a spectator that vanished without its goodbye stops getting the video within `SPECTATOR_TIMEOUT_MS` and one receive timeout (1 s).
+- `lean/XrPilot/Stream.lean` models this routing, the list and XR Pilot's heartbeat. It proves these rules and emits `tests/StreamModelCases.h`, which `TestStreamingSpectators.cpp` replays.
 
 XR Pilot watches this way in its streaming mode: a headset (the Steam Frame or a Quest running the Android client) owns the session, and the desk's pilot sends its spectator `ClientConnect` to the runtime on its own machine over loopback every 2 s, since the runtime does not announce while a session runs.
 
