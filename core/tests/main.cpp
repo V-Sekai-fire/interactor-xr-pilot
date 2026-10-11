@@ -485,11 +485,21 @@ const std::map<std::string, std::function<void()>> cases = {
          runCommand("trigger right 1", s, status, 0);
          runCommand("button a 1", s, status, 0);
          runCommand("head 1 1.7 2 0 0 1 0 1 0 -1 0 0", s, status, 0);
+         const float fixed[4] = {-1.6547f, 1.6547f, 1.7369f, -1.7369f};
+         std::copy(fixed, fixed + 4, s.renderTangents);
          runCommand("release", s, status, 0);
          oxr::protocol::TrackingPacket p;
          fillTrackingPacket(s, 1, p);
          check(p.rightTrigger == 0.0f && p.buttonState == 0, "release lets go of every input");
          check(s.head.rotation.m[2] == 1.0f && s.head.rotation.m[6] == -1.0f, "release keeps where the head looks");
+         const std::string after = runCommand("state", s, status, 0).reply;
+         check(after.find("\"half_fov_vertical\":60.0") != std::string::npos &&
+                   after.find("\"half_fov_horizontal\":58.8") != std::string::npos,
+               "release keeps the runtime's field of view, so screenshot pixels map to the same rays");
+         // Control: without the runtime's tangents the pilot falls back to its own 100 degrees, as it did.
+         AgentState fresh;
+         check(runCommand("state", fresh, status, 0).reply.find("\"half_fov_vertical\":50") != std::string::npos,
+               "a state without the runtime's tangents reports the fallback");
      }},
     {"agent.absent-hands-clear-flags",
      [] {

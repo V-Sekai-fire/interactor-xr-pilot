@@ -64,7 +64,7 @@ interface IVRDriverLog "IVRDriverLog_001" call
 interface IVRSettings "IVRSettings_003" call
 0: pad GetSettingsErrorNameFromEnum
 1: pad SetBool
-2: pad SetInt32
+2: void SetInt32(const char *pchSection, const char *pchSettingsKey, int32_t nValue, EVRSettingsError *peError);
 3: pad SetFloat
 4: void SetString(const char *pchSection, const char *pchSettingsKey, const char *pchValue, EVRSettingsError *peError);
 5: pad GetBool

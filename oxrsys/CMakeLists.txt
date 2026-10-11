@@ -239,6 +239,7 @@ if(APPLE)
 endif()
 target_compile_definitions(oxrsys_runtime_tests PRIVATE
     XR_USE_GRAPHICS_API_VULKAN
+    OXRSYS_RENDERMODELS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/driver/resources/rendermodels"
 )
 add_test(NAME oxrsys_runtime_tests COMMAND oxrsys_runtime_tests)
 set_tests_properties(oxrsys_runtime_tests PROPERTIES
