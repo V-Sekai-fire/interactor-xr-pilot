@@ -2,7 +2,6 @@
 
 #include "XrApp.h"
 
-#include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <android_native_app_glue.h>
 #include <arpa/inet.h>
@@ -19,10 +18,6 @@
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <GLES3/gl3.h>
-#include <GLES2/gl2ext.h>
 #include <openxr/openxr_platform.h>
 #include <oxrsys/protocol/Foveation.h>
 
@@ -42,40 +37,6 @@
         }                                                           \
     } while (0)
 
-// ─── Blit shader sources ──────────────────────────────────────────────────────
-// Uses GL_OES_EGL_image_external_essl3 for zero-copy video frame rendering.
-// The GPU handles YUV→RGB conversion natively — no CPU color conversion needed.
-
-static const char* BLIT_VERTEX_SHADER = R"(#version 300 es
-layout(location = 0) in vec2 aPos;
-layout(location = 1) in vec2 aUV;
-out vec2 vUV;
-void main() {
-    vUV = aUV;
-    gl_Position = vec4(aPos, 0.0, 1.0);
-}
-)";
-
-static const char* SHELL_VERTEX_SHADER = R"(#version 300 es
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec4 aColor;
-uniform mat4 uMvp;
-out vec4 vColor;
-void main() {
-    vColor = aColor;
-    gl_Position = uMvp * vec4(aPos, 1.0);
-}
-)";
-
-static const char* SHELL_FRAGMENT_SHADER = R"(#version 300 es
-precision mediump float;
-in vec4 vColor;
-out vec4 fragColor;
-void main() {
-    fragColor = vColor;
-}
-)";
-
 namespace
 {
 
@@ -83,126 +44,6 @@ constexpr auto kUsbAdbRetryInterval = std::chrono::seconds(1);
 constexpr uint32_t kUsbAdbRetryLogInterval = 10;
 
 } // namespace
-
-// Foveated decompression follows ALVR's AADT inverse mapping (MIT licensed).
-// The upscaling branch is an OXRSys edge-aware shader path using ALVR's public defaults.
-static const char* BLIT_FRAGMENT_SHADER_YUV420 = R"(#version 300 es
-precision highp float;
-in vec2 vUV;
-out vec4 fragColor;
-uniform sampler2D uTextureY;
-uniform sampler2D uTextureCb;
-uniform sampler2D uTextureCr;
-uniform vec2 uEyeSourceMin;
-uniform vec2 uEyeSourceMax;
-uniform vec2 uLogicalTexelSize;
-uniform int uFoveatedEncodingEnabled;
-uniform int uClientUpscalingEnabled;
-uniform float uUpscaleEdgeThreshold;
-uniform float uUpscaleSharpness;
-uniform vec2 uFoveationCenterSize;
-uniform vec2 uFoveationCenterShift;
-uniform vec2 uFoveationEdgeRatio;
-uniform vec2 uFoveationEyeSizeRatio;
-uniform int uReprojectionWarpEnabled;
-uniform vec2 uReprojectionWarpOffset;
-uniform int uPassthroughAlphaEnabled;
-
-float compressAxis(float eyeUv, float centerSize, float centerShift, float edgeRatio) {
-    float c0 = (1.0 - centerSize) * 0.5;
-    float c1 = (edgeRatio - 1.0) * c0 * (centerShift + 1.0) / edgeRatio;
-    float c2 = (edgeRatio - 1.0) * centerSize + 1.0;
-    float loBound = c0 * (centerShift + 1.0) / c2;
-    float hiBound = c0 * (centerShift - 1.0) / c2 + 1.0;
-    float center = eyeUv * c2 / edgeRatio + c1;
-    float d2 = eyeUv * c2;
-    float d3 = (eyeUv - 1.0) * c2 + 1.0;
-    float g1 = loBound > 0.0 ? eyeUv / loBound : 1.0;
-    float g2 = (1.0 - hiBound) > 0.0 ? (1.0 - eyeUv) / (1.0 - hiBound) : 1.0;
-    float leftEdge = g1 * center + (1.0 - g1) * d2;
-    float rightEdge = g2 * center + (1.0 - g2) * d3;
-    if (eyeUv < loBound) {
-        return leftEdge;
-    }
-    if (eyeUv > hiBound) {
-        return rightEdge;
-    }
-    return center;
-}
-
-float decompressAxis(float targetUv, float centerSize, float centerShift, float edgeRatio) {
-    float lo = 0.0;
-    float hi = 1.0;
-    for (int i = 0; i < 10; ++i) {
-        float mid = (lo + hi) * 0.5;
-        float mapped = compressAxis(mid, centerSize, centerShift, edgeRatio);
-        if (mapped < targetUv) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    return (lo + hi) * 0.5;
-}
-
-vec2 mapEyeUvToSource(vec2 eyeUv) {
-    vec2 corrected = eyeUv;
-    if (uFoveatedEncodingEnabled != 0) {
-        corrected.x = decompressAxis(eyeUv.x, uFoveationCenterSize.x,
-                                     uFoveationCenterShift.x,
-                                     uFoveationEdgeRatio.x) * uFoveationEyeSizeRatio.x;
-        corrected.y = decompressAxis(eyeUv.y, uFoveationCenterSize.y,
-                                     uFoveationCenterShift.y,
-                                     uFoveationEdgeRatio.y) * uFoveationEyeSizeRatio.y;
-    }
-    corrected = clamp(corrected, vec2(0.0), vec2(1.0));
-    return mix(uEyeSourceMin, uEyeSourceMax, corrected);
-}
-
-// Full-range BT.709 with chroma centred on 128, as the runtime's PyroWave encode writes it.
-vec3 sampleVideo(vec2 eyeUv) {
-    vec2 uv = mapEyeUvToSource(clamp(eyeUv, vec2(0.0), vec2(1.0)));
-    float y = texture(uTextureY, uv).r;
-    float cb = texture(uTextureCb, uv).r - 128.0 / 255.0;
-    float cr = texture(uTextureCr, uv).r - 128.0 / 255.0;
-    return clamp(vec3(y + 1.5748 * cr,
-                      y - 0.1873 * cb - 0.4681 * cr,
-                      y + 1.8556 * cb), vec3(0.0), vec3(1.0));
-}
-
-float luma(vec3 color) {
-    return dot(color, vec3(0.299, 0.587, 0.114));
-}
-
-void main() {
-    vec2 eyeUv = clamp(vUV, vec2(0.0), vec2(1.0));
-    if (uReprojectionWarpEnabled != 0) {
-        vec2 centered = eyeUv - vec2(0.5);
-        float edgeWeight = 1.0 + dot(centered, centered);
-        eyeUv = clamp(eyeUv + uReprojectionWarpOffset * edgeWeight,
-                      vec2(0.0), vec2(1.0));
-    }
-    vec3 color = sampleVideo(eyeUv);
-    if (uClientUpscalingEnabled != 0) {
-        vec2 stepUv = max(uLogicalTexelSize, vec2(0.00001));
-        vec3 left = sampleVideo(eyeUv + vec2(-stepUv.x, 0.0));
-        vec3 right = sampleVideo(eyeUv + vec2(stepUv.x, 0.0));
-        vec3 up = sampleVideo(eyeUv + vec2(0.0, -stepUv.y));
-        vec3 down = sampleVideo(eyeUv + vec2(0.0, stepUv.y));
-        float edgeVote = abs(luma(left) - luma(right)) + abs(luma(up) - luma(down));
-        if (edgeVote > uUpscaleEdgeThreshold) {
-            vec3 detail = color * 4.0 - left - right - up - down;
-            color = clamp(color + detail * (0.125 * uUpscaleSharpness), vec3(0.0), vec3(1.0));
-        }
-    }
-    float alpha = 1.0;
-    if (uPassthroughAlphaEnabled != 0) {
-        float maxChannel = max(max(color.r, color.g), color.b);
-        alpha = smoothstep(0.02, 0.10, maxChannel);
-    }
-    fragColor = vec4(color, alpha);
-}
-)";
 
 namespace oxr
 {
@@ -558,16 +399,7 @@ struct ShellColor
     float a = 1.0f;
 };
 
-struct ShellVertex
-{
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float r = 1.0f;
-    float g = 1.0f;
-    float b = 1.0f;
-    float a = 1.0f;
-};
+using ShellVertex = VulkanRenderer::ShellVertex;
 
 static MetricSummary Summarize(std::vector<double>* samples)
 {
@@ -932,69 +764,6 @@ static void AppendPanelTextCentered(std::vector<ShellVertex>& triangles,
                     pixelSize, text, color);
 }
 
-// ─── GL helpers ───────────────────────────────────────────────────────────────
-
-static GLuint CompileShader(GLenum type, const char* source)
-{
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
-    glCompileShader(shader);
-
-    GLint ok = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-    if (!ok)
-    {
-        char log[512];
-        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        LOGE("Shader compile error: %s", log);
-        glDeleteShader(shader);
-        return 0;
-    }
-    return shader;
-}
-
-static GLuint CreateProgram(const char* vertexShaderSource, const char* fragmentShaderSource)
-{
-    GLuint vs = CompileShader(GL_VERTEX_SHADER, vertexShaderSource);
-    GLuint fs = CompileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
-    if (vs == 0 || fs == 0)
-    {
-        if (vs != 0)
-        {
-            glDeleteShader(vs);
-        }
-        if (fs != 0)
-        {
-            glDeleteShader(fs);
-        }
-        return 0;
-    }
-
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vs);
-    glAttachShader(program, fs);
-    glLinkProgram(program);
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-
-    GLint ok = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &ok);
-    if (!ok)
-    {
-        char log[512];
-        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        LOGE("Program link error: %s", log);
-        glDeleteProgram(program);
-        return 0;
-    }
-    return program;
-}
-
-static GLuint CreateBlitProgram(const char* fragmentShaderSource)
-{
-    return CreateProgram(BLIT_VERTEX_SHADER, fragmentShaderSource);
-}
-
 // ─── Initialization ──────────────────────────────────────────────────────────
 
 bool XrApp::Initialize(struct android_app* app)
@@ -1004,7 +773,7 @@ bool XrApp::Initialize(struct android_app* app)
         return false;
     }
 
-    if (!InitEgl())
+    if (!renderer_.CreateDevice(instance_, systemId_))
     {
         return false;
     }
@@ -1063,7 +832,7 @@ bool XrApp::CreateInstance(struct android_app* app)
         hasExtension(XR_BD_CONTROLLER_INTERACTION_EXTENSION_NAME);
 
     std::vector<const char*> extensions = {
-        XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
+        XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
     };
     if (handTrackingExtensionAvailable_)
     {
@@ -1250,97 +1019,15 @@ bool XrApp::CreateInstance(struct android_app* app)
     return true;
 }
 
-bool XrApp::InitEgl()
-{
-    eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (eglDisplay_ == EGL_NO_DISPLAY)
-    {
-        LOGE("eglGetDisplay failed");
-        return false;
-    }
-
-    EGLint major, minor;
-    if (!eglInitialize(eglDisplay_, &major, &minor))
-    {
-        LOGE("eglInitialize failed");
-        return false;
-    }
-    LOGI("EGL %d.%d initialized", major, minor);
-
-    // Choose config
-    EGLint configAttribs[] = {
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_DEPTH_SIZE, 0,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-        EGL_NONE
-    };
-
-    EGLint numConfigs = 0;
-    eglChooseConfig(eglDisplay_, configAttribs, &eglConfig_, 1, &numConfigs);
-    if (numConfigs == 0)
-    {
-        LOGE("eglChooseConfig: no matching config");
-        return false;
-    }
-
-    // Create context
-    EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 3,
-        EGL_CONTEXT_MINOR_VERSION, 0,
-        EGL_NONE
-    };
-
-    eglContext_ = eglCreateContext(eglDisplay_, eglConfig_, EGL_NO_CONTEXT, contextAttribs);
-    if (eglContext_ == EGL_NO_CONTEXT)
-    {
-        LOGE("eglCreateContext failed: 0x%x", eglGetError());
-        return false;
-    }
-
-    // Make context current with no surface (we render to XR swapchains)
-    if (!eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, eglContext_))
-    {
-        LOGE("eglMakeCurrent failed: 0x%x", eglGetError());
-        return false;
-    }
-
-    LOGI("EGL context created (OpenGL ES 3.0)");
-    return true;
-}
-
 bool XrApp::CreateSession()
 {
-    // Check OpenGL ES requirements
-    XrGraphicsRequirementsOpenGLESKHR gfxReqs = {XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};
-
-    PFN_xrGetOpenGLESGraphicsRequirementsKHR getGfxReqs = nullptr;
-    xrGetInstanceProcAddr(instance_, "xrGetOpenGLESGraphicsRequirementsKHR",
-                          (PFN_xrVoidFunction*)&getGfxReqs);
-    if (getGfxReqs != nullptr)
-    {
-        getGfxReqs(instance_, systemId_, &gfxReqs);
-        LOGI("OpenGL ES requirements: min %d.%d, max %d.%d",
-             XR_VERSION_MAJOR(gfxReqs.minApiVersionSupported),
-             XR_VERSION_MINOR(gfxReqs.minApiVersionSupported),
-             XR_VERSION_MAJOR(gfxReqs.maxApiVersionSupported),
-             XR_VERSION_MINOR(gfxReqs.maxApiVersionSupported));
-    }
-
-    // Create session with EGL binding
-    XrGraphicsBindingOpenGLESAndroidKHR gfxBinding = {XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR};
-    gfxBinding.display = eglDisplay_;
-    gfxBinding.config = eglConfig_;
-    gfxBinding.context = eglContext_;
-
+    // The Vulkan device came from the runtime in CreateDevice, which also asked its requirements.
     XrSessionCreateInfo sessionCreateInfo = {XR_TYPE_SESSION_CREATE_INFO};
-    sessionCreateInfo.next = &gfxBinding;
+    sessionCreateInfo.next = &renderer_.Binding();
     sessionCreateInfo.systemId = systemId_;
 
     XR_CHECK(xrCreateSession(instance_, &sessionCreateInfo, &session_), "xrCreateSession");
-    LOGI("XrSession created with EGL binding");
+    LOGI("XrSession created with Vulkan binding");
 
     // Create reference space (STAGE preferred, LOCAL fallback)
     XrReferenceSpaceCreateInfo spaceCreateInfo = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
@@ -1805,6 +1492,7 @@ bool XrApp::SetupActions()
 
 bool XrApp::CreateSwapchains()
 {
+    const int64_t swapchainFormat = renderer_.ChooseSwapchainFormat(session_);
     for (int eye = 0; eye < 2; eye++)
     {
         XrSwapchainCreateInfo swapchainCreateInfo = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -1817,7 +1505,7 @@ bool XrApp::CreateSwapchains()
         }
         swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
                                           XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        swapchainCreateInfo.format = GL_SRGB8_ALPHA8;
+        swapchainCreateInfo.format = swapchainFormat;
         swapchainCreateInfo.sampleCount = 1;
         swapchainCreateInfo.width = swapchainWidth_;
         swapchainCreateInfo.height = swapchainHeight_;
@@ -1837,111 +1525,13 @@ bool XrApp::CreateSwapchains()
         }
         XR_CHECK(created, "xrCreateSwapchain");
 
-        // Enumerate swapchain images
-        uint32_t imageCount = 0;
-        xrEnumerateSwapchainImages(swapchains_[eye], 0, &imageCount, nullptr);
-
-        std::vector<XrSwapchainImageOpenGLESKHR> images(imageCount,
-                                                         {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
-        xrEnumerateSwapchainImages(swapchains_[eye], imageCount, &imageCount,
-                                    (XrSwapchainImageBaseHeader*)images.data());
-
-        swapchainImages_[eye].resize(imageCount);
-        for (uint32_t i = 0; i < imageCount; i++)
+        if (!renderer_.AdoptSwapchain(eye, swapchains_[eye], swapchainFormat, swapchainWidth_, swapchainHeight_))
         {
-            swapchainImages_[eye][i] = images[i].image;
+            LOGE("Eye %d swapchain images could not be rendered into", eye);
+            return false;
         }
-
-        LOGI("Eye %d swapchain: %ux%u, %u images", eye, swapchainWidth_, swapchainHeight_, imageCount);
-    }
-
-    // Create GL resources for video blit (samples the Y, Cb and Cr planes and converts to RGB)
-    blitProgram_ = CreateBlitProgram(BLIT_FRAGMENT_SHADER_YUV420);
-    if (blitProgram_ == 0)
-    {
-        LOGE("Failed to create blit shader program with YUV 4:2:0 samplers");
-        return false;
-    }
-    const char* planeSamplers[VideoDecoder::PlaneCount] = {"uTextureY", "uTextureCb", "uTextureCr"};
-    blitEyeSourceMinUniform_ = glGetUniformLocation(blitProgram_, "uEyeSourceMin");
-    blitEyeSourceMaxUniform_ = glGetUniformLocation(blitProgram_, "uEyeSourceMax");
-    blitLogicalTexelSizeUniform_ = glGetUniformLocation(blitProgram_, "uLogicalTexelSize");
-    blitFoveatedEncodingEnabledUniform_ =
-        glGetUniformLocation(blitProgram_, "uFoveatedEncodingEnabled");
-    blitClientUpscalingEnabledUniform_ =
-        glGetUniformLocation(blitProgram_, "uClientUpscalingEnabled");
-    blitUpscaleEdgeThresholdUniform_ =
-        glGetUniformLocation(blitProgram_, "uUpscaleEdgeThreshold");
-    blitUpscaleSharpnessUniform_ = glGetUniformLocation(blitProgram_, "uUpscaleSharpness");
-    blitFoveationCenterSizeUniform_ =
-        glGetUniformLocation(blitProgram_, "uFoveationCenterSize");
-    blitFoveationCenterShiftUniform_ =
-        glGetUniformLocation(blitProgram_, "uFoveationCenterShift");
-    blitFoveationEdgeRatioUniform_ =
-        glGetUniformLocation(blitProgram_, "uFoveationEdgeRatio");
-    blitFoveationEyeSizeRatioUniform_ =
-        glGetUniformLocation(blitProgram_, "uFoveationEyeSizeRatio");
-    blitReprojectionWarpEnabledUniform_ =
-        glGetUniformLocation(blitProgram_, "uReprojectionWarpEnabled");
-    blitReprojectionWarpOffsetUniform_ =
-        glGetUniformLocation(blitProgram_, "uReprojectionWarpOffset");
-    blitPassthroughAlphaEnabledUniform_ =
-        glGetUniformLocation(blitProgram_, "uPassthroughAlphaEnabled");
-
-    glUseProgram(blitProgram_);
-    for (uint32_t i = 0; i < VideoDecoder::PlaneCount; ++i)
-    {
-        glUniform1i(glGetUniformLocation(blitProgram_, planeSamplers[i]), static_cast<GLint>(i));
-    }
-    glUniform1f(blitUpscaleEdgeThresholdUniform_, 4.0f / 255.0f);
-    glUniform1f(blitUpscaleSharpnessUniform_, 2.0f);
-    glUniform1i(blitReprojectionWarpEnabledUniform_, 0);
-    glUniform2f(blitReprojectionWarpOffsetUniform_, 0.0f, 0.0f);
-    glUniform1i(blitPassthroughAlphaEnabledUniform_, 0);
-    glUseProgram(0);
-
-    // Full-screen quad
-    float quadVertices[] = {
-        // pos x,y    uv u,v
-        -1.0f, -1.0f,  0.0f, 1.0f,
-         1.0f, -1.0f,  1.0f, 1.0f,
-         1.0f,  1.0f,  1.0f, 0.0f,
-        -1.0f, -1.0f,  0.0f, 1.0f,
-         1.0f,  1.0f,  1.0f, 0.0f,
-        -1.0f,  1.0f,  0.0f, 0.0f,
-    };
-
-    glGenVertexArrays(1, &blitVao_);
-    glGenBuffers(1, &blitVbo_);
-    glBindVertexArray(blitVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, blitVbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glBindVertexArray(0);
-
-    glGenFramebuffers(1, &fbo_);
-
-    // One R8 texture per decoded plane, which each decoded frame is uploaded into
-    glGenTextures(VideoDecoder::PlaneCount, videoTextures_);
-    for (GLuint texture : videoTextures_)
-    {
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    LOGI("GL resources created for video rendering (Y, Cb, Cr plane textures)");
-
-    if (!CreateShellResources())
-    {
-        LOGE("Failed to create local shell GL resources");
-        return false;
+        LOGI("Eye %d swapchain: %ux%u, format %lld", eye, swapchainWidth_, swapchainHeight_,
+             static_cast<long long>(swapchainFormat));
     }
 
     if (clientFoveationPreset_ != protocol::ClientFoveationPreset::Off &&
@@ -3804,37 +3394,14 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
                     (double)(frame.localAcquireTimeNs - frame.localSubmitTimeNs) / 1.0e6);
             }
 
-            // Upload each decoded plane into its R8 texture. The decoder waited for Vulkan to finish
-            // copying the planes out before handing them over, and keeps them until the next acquire.
+            // Copy each decoded plane into the texture the blit samples. The decoder waited for its
+            // Vulkan device to finish copying the planes out, and keeps them until the next acquire.
             {
-                bool bound = true;
-                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-                for (uint32_t plane = 0; plane < VideoDecoder::PlaneCount; ++plane)
+                const bool bound = renderer_.UploadPlanes(frame);
+                if (!bound && decodedFrameCount_ <= 5)
                 {
-                    const GLsizei w = static_cast<GLsizei>(frame.planeWidth[plane]);
-                    const GLsizei h = static_cast<GLsizei>(frame.planeHeight[plane]);
-                    glBindTexture(GL_TEXTURE_2D, videoTextures_[plane]);
-                    if (videoTextureWidth_[plane] != w || videoTextureHeight_[plane] != h)
-                    {
-                        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, frame.planes[plane]);
-                        videoTextureWidth_[plane] = w;
-                        videoTextureHeight_[plane] = h;
-                    }
-                    else
-                    {
-                        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, frame.planes[plane]);
-                    }
-                    const GLenum uploadError = glGetError();
-                    if (uploadError != GL_NO_ERROR)
-                    {
-                        bound = false;
-                        if (decodedFrameCount_ <= 5)
-                        {
-                            LOGE("Uploading plane %u (%dx%d) failed: 0x%x", plane, w, h, uploadError);
-                        }
-                    }
+                    LOGE("Uploading the decoded planes failed");
                 }
-                glBindTexture(GL_TEXTURE_2D, 0);
 
                 if (bound)
                 {
@@ -3889,7 +3456,6 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
                     hasVideoTexture_ = true;
                     lastVideoFrameTime_ = std::chrono::steady_clock::now();
                     presentedVideoFrame_.valid = true;
-                    presentedVideoFrame_.texture = videoTextures_[0];
                     presentedVideoFrame_.presentationTimeUs = frame.presentationTimeUs;
                     presentedVideoFrame_.localReceiveTimeNs = frame.localReceiveTimeNs;
                     presentedVideoFrame_.localSubmitTimeNs = frame.localSubmitTimeNs;
@@ -3921,7 +3487,7 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
                 }
             }
 
-            // The decoder leaves these planes unwritten until GL has finished with them.
+            // The decoder leaves these planes unwritten until the next acquire.
         }
         else if (hasVideoTexture_)
         {
@@ -4003,12 +3569,6 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
         swapWaitInfo.timeout = XR_INFINITE_DURATION;
         xrWaitSwapchainImage(swapchains_[eye], &swapWaitInfo);
 
-        // Render into this image
-        GLuint texture = swapchainImages_[eye][imageIndex];
-
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
-
         if (hasVideo && blitWidth_ > 0)
         {
             const quest_passthrough::AlphaKeyDecision alphaKey =
@@ -4022,35 +3582,30 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
 
             // Clear full swapchain to black. In alpha passthrough frames the
             // letterbox/pillarbox bars should reveal the passthrough underlay.
-            glViewport(0, 0, swapchainWidth_, swapchainHeight_);
-            glClearColor(0.0f, 0.0f, 0.0f,
-                         alphaKey.useBlackKeyAlpha ? 0.0f : 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glDisable(GL_BLEND);
+            const float clear[4] = {0.0f, 0.0f, 0.0f, alphaKey.useBlackKeyAlpha ? 0.0f : 1.0f};
+            renderer_.BeginEye(eye, imageIndex, clear);
 
             // Blit video into aspect-ratio-correct viewport
-            glViewport(blitOffsetX_, blitOffsetY_, blitWidth_, blitHeight_);
+            renderer_.SetViewport(blitOffsetX_, blitOffsetY_, blitWidth_, blitHeight_);
             BlitVideoToSwapchain(eye);
         }
         else if (hasVideo)
         {
             // Fallback before server discovery (blitWidth_ == 0): full swapchain
-            glViewport(0, 0, swapchainWidth_, swapchainHeight_);
-            glDisable(GL_BLEND);
+            const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            renderer_.BeginEye(eye, imageIndex, clear);
             BlitVideoToSwapchain(eye);
         }
         else
         {
             // No video — render the local shell instead of a flat status color.
-            glViewport(0, 0, swapchainWidth_, swapchainHeight_);
             const bool transparentShell =
                 shellPassthroughMode_ && CanUseShellPassthrough();
-            glClearColor(0.01f, 0.014f, 0.018f, transparentShell ? 0.0f : 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT);
+            const float clear[4] = {0.01f, 0.014f, 0.018f, transparentShell ? 0.0f : 1.0f};
+            renderer_.BeginEye(eye, imageIndex, clear);
             RenderShellToSwapchain(eye, transparentShell);
         }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        renderer_.EndEye();
 
         // Release swapchain image
         XrSwapchainImageReleaseInfo releaseInfo = {XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -4075,90 +3630,28 @@ void XrApp::BlitVideoToSwapchain(int eye)
     float uMin = (eye == 0) ? contentUMin : contentMidU;
     float uMax = (eye == 0) ? contentMidU : contentUMax;
 
-    glUseProgram(blitProgram_);
-    glActiveTexture(GL_TEXTURE0);
-    for (uint32_t i = 0; i < VideoDecoder::PlaneCount; ++i)
-    {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_2D, videoTextures_[i]);
-    }
-    glActiveTexture(GL_TEXTURE0);
-    glUniform2f(blitEyeSourceMinUniform_, uMin, contentVMin);
-    glUniform2f(blitEyeSourceMaxUniform_, uMax, contentVMax);
-    glUniform2f(blitLogicalTexelSizeUniform_, decodedTexelWidth_ * 2.0f, decodedTexelHeight_);
-    glUniform1i(blitFoveatedEncodingEnabledUniform_, serverFoveatedEncodingEnabled_ ? 1 : 0);
-    glUniform1i(blitClientUpscalingEnabledUniform_, clientUpscalingEnabled_ ? 1 : 0);
-    glUniform2f(blitFoveationCenterSizeUniform_,
-                foveationCenterSizeX_, foveationCenterSizeY_);
-    glUniform2f(blitFoveationCenterShiftUniform_,
-                foveationCenterShiftX_, foveationCenterShiftY_);
-    glUniform2f(blitFoveationEdgeRatioUniform_,
-                foveationEdgeRatioX_, foveationEdgeRatioY_);
-    glUniform2f(blitFoveationEyeSizeRatioUniform_,
-                foveationEyeWidthRatio_, foveationEyeHeightRatio_);
-    glUniform1i(blitReprojectionWarpEnabledUniform_, reprojectionWarpEnabled_ ? 1 : 0);
-    glUniform2f(blitReprojectionWarpOffsetUniform_,
-                reprojectionWarpOffsetX_, reprojectionWarpOffsetY_);
-    glUniform1i(blitPassthroughAlphaEnabledUniform_,
-                EvaluatePassthroughAlphaKey().useBlackKeyAlpha ? 1 : 0);
-
-    glBindVertexArray(blitVao_);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-    glUseProgram(0);
-}
-
-bool XrApp::CreateShellResources()
-{
-    if (shellProgram_ != 0 && shellVao_ != 0 && shellVbo_ != 0)
-    {
-        return true;
-    }
-    DestroyShellResources();
-
-    shellProgram_ = CreateProgram(SHELL_VERTEX_SHADER, SHELL_FRAGMENT_SHADER);
-    if (shellProgram_ == 0)
-    {
-        return false;
-    }
-    shellMvpUniform_ = glGetUniformLocation(shellProgram_, "uMvp");
-
-    glGenVertexArrays(1, &shellVao_);
-    glGenBuffers(1, &shellVbo_);
-    glBindVertexArray(shellVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, shellVbo_);
-    glBufferData(GL_ARRAY_BUFFER, 1, nullptr, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ShellVertex),
-                          reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(ShellVertex),
-                          reinterpret_cast<void*>(3 * sizeof(float)));
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    LOGI("GL resources created for local shell");
-    return true;
-}
-
-void XrApp::DestroyShellResources()
-{
-    if (shellProgram_ != 0)
-    {
-        glDeleteProgram(shellProgram_);
-        shellProgram_ = 0;
-    }
-    if (shellVao_ != 0)
-    {
-        glDeleteVertexArrays(1, &shellVao_);
-        shellVao_ = 0;
-    }
-    if (shellVbo_ != 0)
-    {
-        glDeleteBuffers(1, &shellVbo_);
-        shellVbo_ = 0;
-    }
-    shellMvpUniform_ = -1;
+    VulkanRenderer::BlitParams params;
+    params.eyeSourceMin[0] = uMin;
+    params.eyeSourceMin[1] = contentVMin;
+    params.eyeSourceMax[0] = uMax;
+    params.eyeSourceMax[1] = contentVMax;
+    params.logicalTexelSize[0] = decodedTexelWidth_ * 2.0f;
+    params.logicalTexelSize[1] = decodedTexelHeight_;
+    params.foveatedEncodingEnabled = serverFoveatedEncodingEnabled_ ? 1 : 0;
+    params.clientUpscalingEnabled = clientUpscalingEnabled_ ? 1 : 0;
+    params.foveationCenterSize[0] = foveationCenterSizeX_;
+    params.foveationCenterSize[1] = foveationCenterSizeY_;
+    params.foveationCenterShift[0] = foveationCenterShiftX_;
+    params.foveationCenterShift[1] = foveationCenterShiftY_;
+    params.foveationEdgeRatio[0] = foveationEdgeRatioX_;
+    params.foveationEdgeRatio[1] = foveationEdgeRatioY_;
+    params.foveationEyeSizeRatio[0] = foveationEyeWidthRatio_;
+    params.foveationEyeSizeRatio[1] = foveationEyeHeightRatio_;
+    params.reprojectionWarpEnabled = reprojectionWarpEnabled_ ? 1 : 0;
+    params.reprojectionWarpOffset[0] = reprojectionWarpOffsetX_;
+    params.reprojectionWarpOffset[1] = reprojectionWarpOffsetY_;
+    params.passthroughAlphaEnabled = EvaluatePassthroughAlphaKey().useBlackKeyAlpha ? 1 : 0;
+    renderer_.DrawVideo(params);
 }
 
 void XrApp::ReleaseShellForStream(bool keepPassthrough)
@@ -4167,12 +3660,6 @@ void XrApp::ReleaseShellForStream(bool keepPassthrough)
     {
         SetShellPassthroughActive(false);
     }
-    if (shellProgram_ != 0 || shellVao_ != 0 || shellVbo_ != 0)
-    {
-        DestroyShellResources();
-        LOGI("Local shell GL resources released while video stream is active");
-    }
-
     shellPanelInitialized_ = false;
     shellHoveredButton_ = quest_shell::ButtonId::None;
     for (auto& controller : shellControllers_)
@@ -4187,15 +3674,6 @@ void XrApp::ReleaseShellForStream(bool keepPassthrough)
 
 void XrApp::RenderShellToSwapchain(int eye, bool transparentBackground)
 {
-    if (shellProgram_ == 0 || shellVao_ == 0 || shellVbo_ == 0)
-    {
-        if (!CreateShellResources())
-        {
-            LOGE("Failed to recreate local shell GL resources");
-            return;
-        }
-    }
-
     std::vector<ShellVertex> triangles;
     std::vector<ShellVertex> lines;
     triangles.reserve(8192);
@@ -4350,38 +3828,7 @@ void XrApp::RenderShellToSwapchain(int eye, bool transparentBackground)
     Mat4 projection = ProjectionFromFov(views_[eye].fov);
     Mat4 mvp = MultiplyMat4(projection, view);
 
-    glUseProgram(shellProgram_);
-    glUniformMatrix4fv(shellMvpUniform_, 1, GL_FALSE, mvp.m);
-    glBindVertexArray(shellVao_);
-    glBindBuffer(GL_ARRAY_BUFFER, shellVbo_);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    if (!triangles.empty())
-    {
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(triangles.size() * sizeof(ShellVertex)),
-                     triangles.data(), GL_DYNAMIC_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(triangles.size()));
-    }
-    if (!lines.empty())
-    {
-        glBufferData(GL_ARRAY_BUFFER,
-                     static_cast<GLsizeiptr>(lines.size() * sizeof(ShellVertex)),
-                     lines.data(), GL_DYNAMIC_DRAW);
-        glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(lines.size()));
-    }
-
-    glDisable(GL_BLEND);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
-    glUseProgram(0);
-}
-
-void XrApp::ClearSwapchain(int eye, float r, float g, float b)
-{
-    glClearColor(r, g, b, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    renderer_.DrawShell(mvp.m, triangles, lines);
 }
 
 XrPosef XrApp::BuildEyePoseFromRenderPose(const NetworkReceiver::RenderPose& renderPose,
@@ -5171,58 +4618,8 @@ void XrApp::Shutdown()
     ShutdownHandTracking();
     ShutdownFoveation();
 
-    // Destroy GL resources
-    if (blitProgram_ != 0)
-    {
-        glDeleteProgram(blitProgram_);
-        blitProgram_ = 0;
-        blitEyeSourceMinUniform_ = -1;
-        blitEyeSourceMaxUniform_ = -1;
-        blitLogicalTexelSizeUniform_ = -1;
-        blitFoveatedEncodingEnabledUniform_ = -1;
-        blitClientUpscalingEnabledUniform_ = -1;
-        blitUpscaleEdgeThresholdUniform_ = -1;
-        blitUpscaleSharpnessUniform_ = -1;
-        blitFoveationCenterSizeUniform_ = -1;
-        blitFoveationCenterShiftUniform_ = -1;
-        blitFoveationEdgeRatioUniform_ = -1;
-        blitFoveationEyeSizeRatioUniform_ = -1;
-        blitReprojectionWarpEnabledUniform_ = -1;
-        blitReprojectionWarpOffsetUniform_ = -1;
-        blitPassthroughAlphaEnabledUniform_ = -1;
-    }
-    if (blitVao_ != 0)
-    {
-        glDeleteVertexArrays(1, &blitVao_);
-        blitVao_ = 0;
-    }
-    if (blitVbo_ != 0)
-    {
-        glDeleteBuffers(1, &blitVbo_);
-        blitVbo_ = 0;
-    }
-    DestroyShellResources();
-    shellMvpUniform_ = -1;
-    if (fbo_ != 0)
-    {
-        glDeleteFramebuffers(1, &fbo_);
-        fbo_ = 0;
-    }
-    if (videoTextures_[0] != 0)
-    {
-        glDeleteTextures(VideoDecoder::PlaneCount, videoTextures_);
-        for (GLuint& texture : videoTextures_)
-        {
-            texture = 0;
-        }
-        for (uint32_t plane = 0; plane < VideoDecoder::PlaneCount; ++plane)
-        {
-            videoTextureWidth_[plane] = 0;
-            videoTextureHeight_[plane] = 0;
-        }
-    }
-
-    // Destroy swapchains
+    // Destroy swapchains, once the renderer has let go of their images
+    renderer_.ReleaseSwapchains();
     for (int eye = 0; eye < 2; eye++)
     {
         if (swapchains_[eye] != XR_NULL_HANDLE)
@@ -5261,23 +4658,12 @@ void XrApp::Shutdown()
         xrDestroySession(session_);
         session_ = XR_NULL_HANDLE;
     }
+    // The Vulkan device outlives the session that used it.
+    renderer_.Shutdown();
     if (instance_ != XR_NULL_HANDLE)
     {
         xrDestroyInstance(instance_);
         instance_ = XR_NULL_HANDLE;
-    }
-
-    // Destroy EGL
-    if (eglDisplay_ != EGL_NO_DISPLAY)
-    {
-        eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (eglContext_ != EGL_NO_CONTEXT)
-        {
-            eglDestroyContext(eglDisplay_, eglContext_);
-            eglContext_ = EGL_NO_CONTEXT;
-        }
-        eglTerminate(eglDisplay_);
-        eglDisplay_ = EGL_NO_DISPLAY;
     }
 
     running_ = false;

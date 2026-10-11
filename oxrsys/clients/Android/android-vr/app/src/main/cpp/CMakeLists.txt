@@ -55,6 +55,7 @@ add_library(oxrsys_android SHARED
     QuestPassthroughAlphaPolicy.cpp
     QuestShellInteraction.cpp
     VideoDecoder.cpp
+    VulkanRenderer.cpp
     NetworkReceiver.cpp
     TrackingSender.cpp
 )
@@ -71,15 +72,13 @@ target_link_libraries(oxrsys_android PRIVATE
     android
     log
     nativewindow
-    EGL
-    GLESv3
     openxr_loader
     oxrsys_pyrowave
 )
 
 target_compile_definitions(oxrsys_android PRIVATE
     XR_USE_PLATFORM_ANDROID
-    XR_USE_GRAPHICS_API_OPENGL_ES
+    XR_USE_GRAPHICS_API_VULKAN
     OXRSYS_BUILD=${OXRSYS_BUILD}
     OXRSYS_PREFERRED_DISPLAY_REFRESH_RATE_HZ=${OXRSYS_PREFERRED_DISPLAY_REFRESH_RATE_HZ}
 )
