@@ -218,14 +218,10 @@ private:
     EGLContext eglContext_ = EGL_NO_CONTEXT;
     EGLConfig eglConfig_ = nullptr;
 
-    // EGL extension function pointers (for AHardwareBuffer → EGLImage → GL texture)
-    PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC eglGetNativeClientBufferANDROID_ = nullptr;
-    PFNEGLCREATEIMAGEKHRPROC eglCreateImageKHR_ = nullptr;
-    PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR_ = nullptr;
-    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES_ = nullptr;
-
     // Video rendering (GL resources)
     GLuint videoTextures_[VideoDecoder::PlaneCount] = {}; // Y, Cb, Cr planes of the decoded frame
+    GLsizei videoTextureWidth_[VideoDecoder::PlaneCount] = {};  // the size each texture was allocated at
+    GLsizei videoTextureHeight_[VideoDecoder::PlaneCount] = {};
     GLuint blitProgram_ = 0;
     GLuint blitVao_ = 0;
     GLuint blitVbo_ = 0;

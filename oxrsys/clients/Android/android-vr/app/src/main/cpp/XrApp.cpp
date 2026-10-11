@@ -1307,24 +1307,7 @@ bool XrApp::InitEgl()
         return false;
     }
 
-    // Load EGL/GL extension function pointers for AHardwareBuffer → EGLImage → GL texture
-    eglGetNativeClientBufferANDROID_ =
-        (PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC)eglGetProcAddress("eglGetNativeClientBufferANDROID");
-    eglCreateImageKHR_ =
-        (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
-    eglDestroyImageKHR_ =
-        (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
-    glEGLImageTargetTexture2DOES_ =
-        (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
-
-    if (!eglGetNativeClientBufferANDROID_ || !eglCreateImageKHR_ ||
-        !eglDestroyImageKHR_ || !glEGLImageTargetTexture2DOES_)
-    {
-        LOGE("Failed to load EGL extension functions for AHardwareBuffer import");
-        return false;
-    }
-
-    LOGI("EGL context created (OpenGL ES 3.0) with AHardwareBuffer extensions");
+    LOGI("EGL context created (OpenGL ES 3.0)");
     return true;
 }
 
@@ -1941,7 +1924,7 @@ bool XrApp::CreateSwapchains()
 
     glGenFramebuffers(1, &fbo_);
 
-    // One texture per decoded plane, bound to the plane's AHardwareBuffer through an EGLImage
+    // One R8 texture per decoded plane, which each decoded frame is uploaded into
     glGenTextures(VideoDecoder::PlaneCount, videoTextures_);
     for (GLuint texture : videoTextures_)
     {
@@ -2641,7 +2624,7 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
     if (videoDecoder_ && !videoDecoder_->IsInitialized())
     {
         std::lock_guard<std::mutex> decoderLock(videoDecoderMutex_);
-        if (videoDecoder_->Initialize(decoderWidth, decoderHeight, eglDisplay_))
+        if (videoDecoder_->Initialize(decoderWidth, decoderHeight))
         {
             LOGI("Video decoder initialized: %ux%u (encoded), render %ux%u",
                  decoderWidth, decoderHeight, videoWidth_, videoHeight_);
@@ -3008,7 +2991,7 @@ void XrApp::StreamConfigWorkerMain()
             if (videoDecoder_)
             {
                 videoDecoder_->Shutdown();
-                accepted = videoDecoder_->Initialize(update.encodedWidth, update.encodedHeight, eglDisplay_);
+                accepted = videoDecoder_->Initialize(update.encodedWidth, update.encodedHeight);
             }
         }
 
@@ -3798,36 +3781,37 @@ bool XrApp::RenderFrame(XrTime predictedDisplayTime)
                     (double)(frame.localAcquireTimeNs - frame.localSubmitTimeNs) / 1.0e6);
             }
 
-            // Bind each decoded plane's AHardwareBuffer to its texture through an EGLImage.
-            // The decoder waited for Vulkan to finish writing the planes before handing them over.
+            // Upload each decoded plane into its R8 texture. The decoder waited for Vulkan to finish
+            // copying the planes out before handing them over, and keeps them until the next acquire.
             {
                 bool bound = true;
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
                 for (uint32_t plane = 0; plane < VideoDecoder::PlaneCount; ++plane)
                 {
-                    EGLClientBuffer clientBuf = eglGetNativeClientBufferANDROID_(frame.planes[plane]);
-                    EGLint imageAttribs[] = {
-                        EGL_IMAGE_PRESERVED_KHR, EGL_TRUE,
-                        EGL_NONE
-                    };
-                    EGLImageKHR eglImage = clientBuf == nullptr
-                        ? EGL_NO_IMAGE_KHR
-                        : eglCreateImageKHR_(eglDisplay_, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
-                                             clientBuf, imageAttribs);
-                    if (eglImage == EGL_NO_IMAGE_KHR)
+                    const GLsizei w = static_cast<GLsizei>(frame.planeWidth[plane]);
+                    const GLsizei h = static_cast<GLsizei>(frame.planeHeight[plane]);
+                    glBindTexture(GL_TEXTURE_2D, videoTextures_[plane]);
+                    if (videoTextureWidth_[plane] != w || videoTextureHeight_[plane] != h)
+                    {
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, frame.planes[plane]);
+                        videoTextureWidth_[plane] = w;
+                        videoTextureHeight_[plane] = h;
+                    }
+                    else
+                    {
+                        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, frame.planes[plane]);
+                    }
+                    const GLenum uploadError = glGetError();
+                    if (uploadError != GL_NO_ERROR)
                     {
                         bound = false;
                         if (decodedFrameCount_ <= 5)
                         {
-                            LOGE("EGLImage for plane %u failed: 0x%x", plane, eglGetError());
+                            LOGE("Uploading plane %u (%dx%d) failed: 0x%x", plane, w, h, uploadError);
                         }
-                        break;
                     }
-                    glBindTexture(GL_TEXTURE_2D, videoTextures_[plane]);
-                    glEGLImageTargetTexture2DOES_(GL_TEXTURE_2D, eglImage);
-                    glBindTexture(GL_TEXTURE_2D, 0);
-                    // The texture keeps the buffer; the EGLImage is no longer needed.
-                    eglDestroyImageKHR_(eglDisplay_, eglImage);
                 }
+                glBindTexture(GL_TEXTURE_2D, 0);
 
                 if (bound)
                 {
@@ -5207,6 +5191,11 @@ void XrApp::Shutdown()
         for (GLuint& texture : videoTextures_)
         {
             texture = 0;
+        }
+        for (uint32_t plane = 0; plane < VideoDecoder::PlaneCount; ++plane)
+        {
+            videoTextureWidth_[plane] = 0;
+            videoTextureHeight_[plane] = 0;
         }
     }
 

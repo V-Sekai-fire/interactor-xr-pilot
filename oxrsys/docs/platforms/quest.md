@@ -84,7 +84,7 @@ The Android client:
 - requests the server-announced display refresh rate when `XR_FB_display_refresh_rate` is available
 - receives encoded video frames and matches render-pose metadata to each decoded frame before projection submission
 - reuses short decode/network gaps with the configured client reprojection mode
-- decodes PyroWave on a Vulkan device of its own, on a decoder thread, into Y, Cb and Cr planes in `AHardwareBuffer`s that the GLES renderer samples through EGLImages, so the XR frame loop only acquires the latest ready plane set
+- decodes PyroWave on a Vulkan device of its own, on a decoder thread, into Y, Cb and Cr R8 planes that it copies into a mapped buffer; the GLES renderer uploads them into R8 textures, so the XR frame loop only acquires and uploads the latest ready plane set. R8 GLES textures exist on every GLES 3 device, where R8 `AHardwareBuffer`s do not (the Steam Frame's Android container has none)
 - shows a local shell before video arrives, with status text, a reset button, a passthrough/3D toggle, controller laser interaction, hand laser/pinch interaction, and simple controller/hand-joint markers
 - sends head, controller, and optional hand-tracking data back to the runtime
 - reports latency measurements

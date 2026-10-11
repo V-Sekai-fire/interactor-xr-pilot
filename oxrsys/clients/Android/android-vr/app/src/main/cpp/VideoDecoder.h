@@ -2,9 +2,6 @@
 
 #pragma once
 
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -13,17 +10,17 @@
 #include <thread>
 #include <vector>
 
-struct AHardwareBuffer;
-
 namespace oxr
 {
 
 /**
  * PyroWave decoder on a Vulkan device of its own.
  *
- * A decode thread decodes the newest submitted frame into three R8 planes (Y, Cb, Cr) backed by
- * AHardwareBuffers and waits for the GPU before publishing them, so the GLES renderer can import
- * the planes as EGLImages and sample them with no further synchronisation.
+ * A decode thread decodes the newest submitted frame into three R8 planes (Y, Cb, Cr) on the GPU and
+ * copies them into a persistently mapped buffer, waiting for the GPU before publishing them. The GLES
+ * renderer uploads the planes into its own R8 textures. Every GLES 3 device samples R8 textures; R8
+ * AHardwareBuffers, which sharing the planes with GLES directly would need, are missing on some
+ * (the Steam Frame's Android container).
  */
 class VideoDecoder
 {
@@ -36,7 +33,7 @@ public:
     VideoDecoder(const VideoDecoder&) = delete;
     VideoDecoder& operator=(const VideoDecoder&) = delete;
 
-    bool Initialize(uint32_t width, uint32_t height, EGLDisplay display);
+    bool Initialize(uint32_t width, uint32_t height);
     void Shutdown();
 
     // Queues one PyroWave frame; a frame not yet decoded is replaced by a newer one.
@@ -45,7 +42,10 @@ public:
 
     struct DecodedFrame
     {
-        AHardwareBuffer* planes[PlaneCount] = {};
+        // Tightly packed rows of each plane, valid until the next AcquireFrame.
+        const uint8_t* planes[PlaneCount] = {};
+        uint32_t planeWidth[PlaneCount] = {};
+        uint32_t planeHeight[PlaneCount] = {};
         int64_t presentationTimeUs = 0;
         uint32_t bufferWidth = 0;
         uint32_t bufferHeight = 0;
@@ -61,8 +61,7 @@ public:
         bool alphaBlend = false;
     };
 
-    // Called on the GL thread with the context current. The planes stay unwritten until the
-    // GL commands issued before the next successful AcquireFrame have completed.
+    // The planes stay unwritten until the next successful AcquireFrame.
     bool AcquireFrame(DecodedFrame* outFrame);
 
     bool IsInitialized() const { return running_.load(); }
@@ -89,19 +88,13 @@ private:
     {
         FrameMetadata metadata;
         uint32_t skippedBefore = 0;
-        EGLSyncKHR glDone = EGL_NO_SYNC_KHR; // set when the renderer lets go of the slot
     };
 
     static constexpr int SlotCount = 3;
 
     void DecodeThreadMain();
-    void DestroySyncs();
 
     std::unique_ptr<Gpu> gpu_;
-    EGLDisplay display_ = EGL_NO_DISPLAY;
-    PFNEGLCREATESYNCKHRPROC eglCreateSyncKHR_ = nullptr;
-    PFNEGLDESTROYSYNCKHRPROC eglDestroySyncKHR_ = nullptr;
-    PFNEGLCLIENTWAITSYNCKHRPROC eglClientWaitSyncKHR_ = nullptr;
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;
@@ -116,7 +109,7 @@ private:
     uint32_t pendingReplaced_ = 0;
 
     Slot slots_[SlotCount];
-    int heldSlot_ = -1;   // sampled by the renderer
+    int heldSlot_ = -1;   // being read by the renderer
     int readySlot_ = -1;  // decoded, not yet acquired
     std::atomic<uint32_t> skippedFramesBeforeAcquire_{0};
 };
