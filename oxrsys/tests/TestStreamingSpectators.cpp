@@ -3,6 +3,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "StreamingSpectators.h"
+#include "StreamModelCases.h"
+
+#include <string>
 
 using namespace std::chrono_literals;
 using oxrsys::streaming_spectators::Address;
@@ -64,4 +67,65 @@ TEST_CASE("Only the session owner's address owns the session", "[streaming][spec
     CHECK_FALSE(IsSessionOwner("192.168.1.194", 40438, "192.168.1.230", 40438));
     CHECK_FALSE(IsSessionOwner("192.168.1.194", 40438, "192.168.1.194", 40439));
     CHECK_FALSE(IsSessionOwner("", 0, "192.168.1.194", 40438));
+}
+
+namespace
+{
+
+std::string Text(const std::vector<Address>& addresses)
+{
+    std::string out;
+    for (const Address& a : addresses)
+    {
+        out += (out.empty() ? "" : ",") + std::to_string(a.ip) + ":" + std::to_string(a.port);
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Control routing is the table lean/XrPilot/Stream.lean works out", "[streaming][spectator][model]")
+{
+    for (const stream_model::RouteCase& c : stream_model::routeCases)
+    {
+        INFO("packet " << static_cast<int>(c.packet) << " owner " << c.isOwner << " spectator " << c.isSpectator);
+        CHECK(oxrsys::streaming_spectators::RouteControl(c.packet, c.isOwner, c.isSpectator) == c.route);
+    }
+}
+
+TEST_CASE("The spectator list follows the runs lean/XrPilot/Stream.lean works out", "[streaming][spectator][model]")
+{
+    for (const stream_model::ListRun& run : stream_model::listRuns)
+    {
+        INFO(run.name);
+        List spectators;
+        size_t index = 0;
+        for (const stream_model::ListOp& op : run.ops)
+        {
+            INFO("op " << index++);
+            const List::Clock::time_point now{std::chrono::milliseconds(op.nowMs)};
+            bool result = false;
+            std::string dropped;
+            switch (op.kind)
+            {
+            case stream_model::ListOpKind::Refresh:
+                result = spectators.Refresh(op.address, now);
+                break;
+            case stream_model::ListOpKind::Remove:
+                result = spectators.Remove(op.address);
+                break;
+            case stream_model::ListOpKind::Expire:
+            {
+                const std::vector<Address> expired =
+                    spectators.Expire(now, std::chrono::milliseconds(stream_model::spectatorTimeoutMs));
+                result = !expired.empty();
+                dropped = Text(expired);
+                break;
+            }
+            }
+            CHECK(result == op.result);
+            CHECK(dropped == op.dropped);
+            CHECK(Text(spectators.Addresses()) == op.after);
+        }
+    }
 }
