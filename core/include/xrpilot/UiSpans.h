@@ -18,6 +18,7 @@ enum class UiAction
     LaunchShowRunning,
     LaunchVersion,
     LaunchUsage,
+    LaunchMcpConfig,
     DeskSetup,
     UpdateWarning,
     FirstRunBind,
@@ -40,6 +41,7 @@ enum class UiAction
     OpenRuntimeFolder,
     OpenDriverFolder,
     TrayQuit,
+    CopyMcpConfig,
     StreamBitrate,
     StreamAbr,
     InstallFailed,
@@ -55,6 +57,9 @@ enum class UiAction
     Controllers,
     Pointing,
     Seated,
+    Appearance,
+    Conventions,
+    ColourChecker,
 };
 
 inline const char* uiSpanName(UiAction action)
@@ -75,6 +80,8 @@ inline const char* uiSpanName(UiAction action)
         return "ui.launch.version";
     case UiAction::LaunchUsage:
         return "ui.launch.usage";
+    case UiAction::LaunchMcpConfig:
+        return "ui.launch.mcp-config";
     case UiAction::DeskSetup:
         return "ui.tray.setup";
     case UiAction::UpdateWarning:
@@ -119,6 +126,8 @@ inline const char* uiSpanName(UiAction action)
         return "ui.tray.open-driver-folder";
     case UiAction::TrayQuit:
         return "ui.tray.quit";
+    case UiAction::CopyMcpConfig:
+        return "ui.tray.copy-mcp-config";
     case UiAction::StreamBitrate:
         return "ui.tray.stream-bitrate";
     case UiAction::StreamAbr:
@@ -149,6 +158,12 @@ inline const char* uiSpanName(UiAction action)
         return "ui.window.pointing";
     case UiAction::Seated:
         return "ui.window.seated";
+    case UiAction::Appearance:
+        return "ui.window.appearance";
+    case UiAction::Conventions:
+        return "ui.window.conventions";
+    case UiAction::ColourChecker:
+        return "ui.window.colour-checker";
     }
     return "ui.unknown";
 }

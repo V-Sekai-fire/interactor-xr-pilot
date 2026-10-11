@@ -16,15 +16,29 @@
         ]
       }
     },
+    "base": {
+      "component_local": {
+        "origin": [
+          -0.0034,
+          -0.0034,
+          0.1491
+        ],
+        "rotate_xyz": [
+          -0.4,
+          180.0,
+          0.0
+        ]
+      }
+    },
     "tip": {
       "component_local": {
         "origin": [
-          0.0,
-          0.0,
-          0.0
+          0.016694,
+          -0.02522,
+          0.024687
         ],
         "rotate_xyz": [
-          0.0,
+          -37.4,
           0.0,
           0.0
         ]
@@ -33,26 +47,68 @@
     "openxr_aim": {
       "component_local": {
         "origin": [
-          0.0,
-          0.0,
-          0.0
+          0.007,
+          -0.03894766,
+          0.00949694
         ],
         "rotate_xyz": [
-          0.0,
+          -39.4,
           0.0,
           0.0
         ]
       }
     },
-    "base": {
+    "openxr_grip": {
       "component_local": {
         "origin": [
-          0.0,
-          0.0,
-          0.0
+          0.007,
+          -0.00182941,
+          0.1019482
         ],
         "rotate_xyz": [
+          20.6,
           0.0,
+          0.0
+        ]
+      }
+    },
+    "openxr_pinch": {
+      "component_local": {
+        "origin": [
+          0.043,
+          -0.015779,
+          0.037701
+        ],
+        "rotate_xyz": [
+          -90.0,
+          -39.4,
+          -90.0
+        ]
+      }
+    },
+    "openxr_poke": {
+      "component_local": {
+        "origin": [
+          -0.0225,
+          -0.066903,
+          0.015636
+        ],
+        "rotate_xyz": [
+          -6.3,
+          -45.1,
+          -89.2
+        ]
+      }
+    },
+    "openxr_handmodel": {
+      "component_local": {
+        "origin": [
+          -0.01125,
+          -0.00182941,
+          0.1019482
+        ],
+        "rotate_xyz": [
+          -39.4,
           0.0,
           0.0
         ]
@@ -62,11 +118,11 @@
       "component_local": {
         "origin": [
           0.0,
-          0.0,
-          0.0
+          0.003,
+          0.097
         ],
         "rotate_xyz": [
-          0.0,
+          5.037,
           0.0,
           0.0
         ]
@@ -76,39 +132,11 @@
       "component_local": {
         "origin": [
           0.0,
-          0.0,
-          0.0
+          0.003,
+          0.097
         ],
         "rotate_xyz": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      }
-    },
-    "openxr_grip": {
-      "component_local": {
-        "origin": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotate_xyz": [
-          0.0,
-          0.0,
-          0.0
-        ]
-      }
-    },
-    "openxr_handmodel": {
-      "component_local": {
-        "origin": [
-          0.0,
-          0.0,
-          0.0
-        ],
-        "rotate_xyz": [
-          0.0,
+          5.037,
           0.0,
           0.0
         ]

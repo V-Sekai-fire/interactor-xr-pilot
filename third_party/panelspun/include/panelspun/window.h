@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "panelspun/panel.h"
 #include "panelspun/split_tree.h"
@@ -34,6 +35,14 @@ struct WindowConfig {
     bool gamepads = false;
     // Draws each panel's title bar; without them the content fills the whole leaf.
     bool panelHeaders = true;
+    // A window that clicks never activate (WS_EX_NOACTIVATE on Windows), so another window keeps the keyboard.
+    bool notFocusable = false;
+    bool alwaysOnTop = false;
+    bool borderless = false;
+    // Created hidden, for a window that is placed with setBounds before show.
+    bool hidden = false;
+    // Device extensions enabled beside the swapchain; creation fails if the device lacks one.
+    std::vector<std::string> deviceExtensions;
 };
 
 // The first connected gamepad: sticks in -1..1 with +y down as SDL reports them, triggers in 0..1,
@@ -71,6 +80,14 @@ public:
     // Safe from any thread: wakes the frame loop and redraws, for content produced off the UI thread.
     void requestRedrawFromAnyThread();
     void requestClose();
+    // Repaints with these colours from the next frame, such as on a light or dark switch; call it on the UI thread.
+    void setTheme(const Theme& theme);
+    const Theme& theme() const;
+    // Moves and sizes the window in desktop pixels, the units the OS reports other windows' rects in.
+    void setBounds(int x, int y, int width, int height);
+    void show();
+    // The OS window: an HWND on Windows, nullptr elsewhere.
+    void* nativeHandle() const;
     // Hides the cursor and reports motion as dx, dy to the panel that has the keyboard; focus loss turns it off.
     void setRelativeMouse(bool on);
     bool relativeMouse() const;

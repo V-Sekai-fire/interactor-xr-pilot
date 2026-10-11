@@ -23,6 +23,7 @@
 #include "xrpilot/Pump.h"
 #include "xrpilot/Sparkline.h"
 #include "xrpilot/StreamRecord.h"
+#include "xrpilot/Theme.h"
 #include "xrpilot/Tray.h"
 #include "xrpilot/UiTrace.h"
 #include "xrpilot/Version.h"
@@ -39,14 +40,9 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <set>
 #include <string>
 #include <thread>
-
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
 
 using namespace panelspun;
 using namespace xrpilot;
@@ -60,6 +56,7 @@ constexpr int PScancode = 19;
 struct Shared
 {
     std::mutex mutex;
+    bool colourChecker = false; // the trace panel shows the GUI colour checker instead
     std::condition_variable done;
     std::string screenshotPath; // pending request, served on the window thread
     std::string screenshotReply;
@@ -338,6 +335,40 @@ private:
     int consecutiveErrors_ = 0;
 };
 
+// The palette every widget draws with; switched on the UI thread with the window's theme.
+const Palette* currentPalette = &palette(Scheme::Dark);
+
+Color colour(Rgb c, std::uint8_t a = 255)
+{
+    return Color{c.r, c.g, c.b, a};
+}
+
+Color blend(Rgb a, Rgb b, float t)
+{
+    const auto mix = [t](std::uint8_t x, std::uint8_t y) { return std::uint8_t(std::lround(x + (y - x) * t)); };
+    return Color{mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), 255};
+}
+
+Theme themeFrom(const Palette& p)
+{
+    Theme t;
+    t.background = colour(p.background);
+    t.panel = colour(p.panel);
+    t.header = colour(p.header);
+    t.handle = colour(p.handle);
+    t.handleActive = colour(p.accent);
+    t.text = colour(p.text);
+    t.accent = colour(p.accent);
+    t.control = colour(p.control);
+    t.controlHover = colour(p.controlHover);
+    return t;
+}
+
+bool systemDark()
+{
+    return SDL_GetSystemTheme() != SDL_SYSTEM_THEME_LIGHT;
+}
+
 // One labelled sparkline row.
 class SparkRow final : public Widget
 {
@@ -360,22 +391,25 @@ public:
         const float left = x + labelWidth;
         const float width = std::max(0.0f, w - labelWidth);
         const float base[4] = {left, y + h - 1.0f, left + width, y + h - 1.0f};
-        drawPolyline(ctx, base, 2, Color{65, 78, 94, 255}, 1.0f);
+        drawPolyline(ctx, base, 2, colour(currentPalette->rule), 1.0f);
         // Once-a-second ticks scroll with the samples, so a strip of zeros still visibly moves.
         for (float tx : line_.ticks(width))
         {
             const float tick[4] = {left + tx, y + h - 1.0f, left + tx, y + h - 4.0f * ctx.scale};
-            drawPolyline(ctx, tick, 2, Color{65, 78, 94, 255}, 1.0f);
+            drawPolyline(ctx, tick, 2, colour(currentPalette->rule), 1.0f);
         }
         // The box's bottom edge is the base rule; zero sits a pixel above it.
         const std::vector<Sparkline::Segment> segments = line_.segments(width, h - 2.0f, fault_);
         for (const Sparkline::Segment& s : segments)
         {
-            const Color c = s.colour == Sparkline::Colour::Fault     ? Color{240, 98, 98, 255}
-                            : s.colour == Sparkline::Colour::Clipped ? Color{242, 204, 96, 255}
-                                                                     : Color{126, 231, 135, 255};
+            const Palette& p = *currentPalette;
+            const Color c = colour(s.colour == Sparkline::Colour::Fault     ? p.fault
+                                   : s.colour == Sparkline::Colour::Clipped ? p.warning
+                                                                            : p.good);
+            // A fault is drawn thicker too, so it reads without its colour.
+            const float thick = s.colour == Sparkline::Colour::Fault ? 2.5f : 1.25f;
             const float xy[4] = {left + s.x0, y + 1.0f + s.y0, left + s.x1, y + 1.0f + s.y1};
-            drawPolyline(ctx, xy, 2, c, 1.25f * ctx.scale);
+            drawPolyline(ctx, xy, 2, c, thick * ctx.scale);
         }
         if (!segments.empty())
         {
@@ -383,7 +417,7 @@ public:
             const Sparkline::Segment& s = segments.back();
             const float r = 1.5f * ctx.scale;
             const float dot[4] = {left + s.x1 - r, y + 1.0f + s.y1, left + s.x1 + r, y + 1.0f + s.y1};
-            drawPolyline(ctx, dot, 2, Color{230, 237, 243, 255}, 2.0f * r);
+            drawPolyline(ctx, dot, 2, colour(currentPalette->text), 2.0f * r);
         }
     }
 
@@ -393,42 +427,136 @@ private:
     Sparkline line_;
 };
 
-// Where the head looks, as a sphere seen from above right: amber is the yaw from forward along the
-// horizon, cyan the pitch up or down from it, green the look ray; the white ticks are the poles.
+// Where the head looks, as a sphere seen from above right: orange is the yaw from forward along the
+// horizon, sky blue the pitch up or down from it, green the look ray; the X, Y and Z axes are labelled
+// in Godot's red, green and blue,
+// and the legend under it states the conventions the pilot and the runtime share.
 class HeadGizmoWidget final : public Widget
 {
 public:
     void set(const Rotation& head) { gizmo_ = buildHeadGizmo(head); }
-    float height(float scale) const override { return 120.0f * scale; }
+    void showConventions(bool on) { conventions_ = on; }
+    bool conventions() const { return conventions_; }
+    float height(float scale) const override { return (120.0f + (conventions_ ? 58.0f : 0.0f)) * scale; }
 
     void draw(DrawContext& ctx, float x, float y, float) override
     {
-        const float size = height(ctx.scale);
+        const Palette& p = *currentPalette;
+        const float size = 120.0f * ctx.scale;
+        float tips[3][2] = {};
         for (const HeadGizmo::Segment& s : gizmo_.segments(size))
         {
-            Color c{65, 78, 94, 255};
+            Rgb c = p.rule;
             float width = 1.0f;
             switch (s.role)
             {
-            case HeadGizmo::Role::Outline: c = {65, 78, 94, 255}; break;
-            case HeadGizmo::Role::Back: c = {52, 60, 72, 255}; break;
-            case HeadGizmo::Role::Horizon: c = {110, 124, 140, 255}; break;
-            case HeadGizmo::Role::Pole: c = {230, 233, 238, 255}; width = 2.0f; break;
-            case HeadGizmo::Role::Yaw: c = {242, 204, 96, 255}; width = 2.5f; break;
-            case HeadGizmo::Role::Pitch: c = {96, 200, 242, 255}; width = 2.5f; break;
-            case HeadGizmo::Role::Look: c = {126, 231, 135, 255}; width = 2.0f; break;
+            case HeadGizmo::Role::Outline: c = p.rule; break;
+            case HeadGizmo::Role::Back: c = p.control; break;
+            case HeadGizmo::Role::Horizon: c = p.muted; break;
+            case HeadGizmo::Role::Pole: c = p.text; width = 2.0f; break;
+            case HeadGizmo::Role::Yaw: c = p.warning; width = 2.5f; break;
+            case HeadGizmo::Role::Pitch: c = p.info; width = 2.5f; break;
+            case HeadGizmo::Role::Look: c = p.good; width = 2.0f; break;
+            case HeadGizmo::Role::AxisX: c = p.axisX; width = 1.5f; tips[0][0] = s.x1; tips[0][1] = s.y1; break;
+            case HeadGizmo::Role::AxisY: c = p.axisY; width = 1.5f; tips[1][0] = s.x1; tips[1][1] = s.y1; break;
+            case HeadGizmo::Role::AxisZ: c = p.axisZ; width = 1.5f; tips[2][0] = s.x1; tips[2][1] = s.y1; break;
             }
             const float xy[4] = {x + s.x0, y + s.y0, x + s.x1, y + s.y1};
-            drawPolyline(ctx, xy, 2, c, width * ctx.scale);
+            drawPolyline(ctx, xy, 2, colour(c), width * ctx.scale);
         }
+        const char* names[3] = {"+X", "+Y", "+Z"};
+        for (int a = 0; a < 3; ++a)
+            Label(names[a], 10.0f).draw(ctx, x + tips[a][0] + 2.0f * ctx.scale, y + tips[a][1] - 6.0f * ctx.scale, 24.0f * ctx.scale);
         Label text("yaw " + std::to_string(int(std::lround(gizmo_.yawDegrees))) + "  pitch " +
                        std::to_string(int(std::lround(gizmo_.pitchDegrees))),
                    11.0f);
         text.draw(ctx, x + size + 8.0f * ctx.scale, y + (size - text.height(ctx.scale)) * 0.5f, 140.0f * ctx.scale);
+        if (!conventions_)
+            return;
+        // Read from the code: HeadGizmo and Rotation (-Z forward, +Y up), the body overlay (floor y = 0),
+        // the hologram rasterizer (no culling) and the screenshot pixels point_at and click take.
+        float ly = y + size + 4.0f * ctx.scale;
+        for (const char* line : {"Godot: UP +Y, FORWARD -Z, RIGHT +X; floor y = 0",
+                                 "Front faces CCW as glTF and OpenXR (Godot ArrayMesh: CW)",
+                                 "Screenshot pixels: origin top left, x right, y down"})
+        {
+            Label l(line, 10.5f);
+            l.draw(ctx, x, ly, 0.0f);
+            ly += 18.0f * ctx.scale;
+        }
     }
 
 private:
     HeadGizmo gizmo_ = buildHeadGizmo(Rotation{});
+    bool conventions_ = true;
+};
+
+// The GUI's colour checker: lookdev-24, our 24-patch chart (contract-orbit-views chart24.json, BabelColor
+// averages after Pascale 2006), so a wrong swapchain gamma or format shows against a physical chart, then each palette role with its
+// WCAG contrast against the surface it sits on (4.5:1 for text, 3:1 for marks). The rendered view is the
+// content's to check, not ours.
+class ColourCheckerWidget final : public Widget
+{
+public:
+    float height(float scale) const override { return (4.0f * 17.0f + 6.0f + float(roles().size()) * 15.0f) * scale; }
+
+    void draw(DrawContext& ctx, float x, float y, float w) override
+    {
+        const Palette& p = *currentPalette;
+        const float s = ctx.scale;
+        const float patch = std::min(w / 6.0f, 30.0f * s);
+        for (int i = 0; i < 24; ++i)
+            drawRect(ctx, x + float(i % 6) * patch, y + float(i / 6) * 17.0f * s, patch - 3.0f * s, 14.0f * s, 2.0f * s,
+                     colour(LookDev24[i]));
+        y += (4.0f * 17.0f + 6.0f) * s;
+        for (const Role& r : roles())
+        {
+            const Rgb fg = r.surface ? p.text : p.*r.colour;
+            const Rgb bg = r.surface ? p.*r.colour : p.panel;
+            const double ratio = contrast(fg, bg);
+            const bool pass = ratio >= r.needs;
+            const float mid = y + 7.5f * s;
+            drawRect(ctx, x, y + 1.5f * s, 18.0f * s, 12.0f * s, 2.0f * s, colour(p.*r.colour));
+            if (r.surface)
+                drawText(ctx, "a", 10.0f, x + 9.0f * s, mid, 0.5f, colour(p.text));
+            char ratioText[16];
+            std::snprintf(ratioText, sizeof(ratioText), "%.1f", ratio);
+            const Color c = colour(pass ? p.text : p.faultText);
+            drawText(ctx, r.name, 11.0f, x + 24.0f * s, mid, 0.0f, c);
+            drawText(ctx, ratioText, 11.0f, x + w - 18.0f * s, mid, 1.0f, c);
+            drawText(ctx, pass ? "ok" : "x", 11.0f, x + w - 14.0f * s, mid, 0.0f, c);
+            y += 15.0f * s;
+        }
+    }
+
+private:
+    static constexpr Rgb LookDev24[24] = {
+        {115, 81, 67},    {196, 149, 129},  {93, 123, 157},   {90, 108, 65},    {130, 129, 176},  {99, 191, 171},
+        {220, 123, 45},   {72, 92, 168},    {195, 84, 98},    {91, 59, 105},    {160, 189, 62},   {229, 161, 41},
+        {43, 62, 147},    {71, 149, 72},    {176, 48, 56},    {238, 200, 22},   {188, 84, 150},   {0, 136, 166},
+        {245, 245, 240},  {200, 201, 201},  {160, 161, 161},  {120, 121, 121},  {83, 84, 85},     {50, 50, 50},
+    };
+    struct Role
+    {
+        const char* name;
+        Rgb Palette::*colour;
+        double needs;
+        bool surface; // a surface is checked by the text drawn on it
+    };
+    static const std::vector<Role>& roles()
+    {
+        static const std::vector<Role> all{
+            {"bg", &Palette::background, 4.5, true}, {"panel", &Palette::panel, 4.5, true},
+            {"header", &Palette::header, 4.5, true},         {"control", &Palette::control, 4.5, true},
+            {"hover", &Palette::controlHover, 4.5, true}, {"muted", &Palette::muted, 4.5, false},
+            {"fault text", &Palette::faultText, 4.5, false},  {"accent", &Palette::accent, 3.0, false},
+            {"rule", &Palette::rule, 3.0, false},            {"good", &Palette::good, 3.0, false},
+            {"warning", &Palette::warning, 3.0, false},      {"fault", &Palette::fault, 3.0, false},
+            {"info", &Palette::info, 3.0, false},            {"axisX", &Palette::axisX, 3.0, false},
+            {"axisY", &Palette::axisY, 3.0, false},          {"axisZ", &Palette::axisZ, 3.0, false},
+        };
+        return all;
+    }
 };
 
 // The agent's tool calls as a trace: one row per span with its status, name and duration, newest at
@@ -444,6 +572,11 @@ public:
 
     void draw(DrawContext& ctx) override
     {
+        if (shared_.colourChecker)
+        {
+            checker_.draw(ctx, 10.0f * ctx.scale, 10.0f * ctx.scale, ctx.width - 20.0f * ctx.scale);
+            return;
+        }
         const std::vector<Span> spans = shared_.spans.visible();
         rows_.clear();
         const int64_t now = nowNs() / 1'000'000;
@@ -455,6 +588,7 @@ public:
         // Names take the width; the duration is its time, dim, at the right edge.
         const float msW = 40.0f * s;
         const float barX = ctx.width - pad - msW;
+        const Palette& p = *currentPalette;
         float y = ctx.height - pad;
         int age = 0;
         for (std::vector<Span>::const_reverse_iterator it = spans.rbegin(); it != spans.rend() && y > 0.0f; ++it, ++age)
@@ -468,7 +602,7 @@ public:
                     y -= sub;
                     const SpanChild& child = it->children[c];
                     const std::string text = fit(child.text, ctx.width - nameX - 10.0f * s - pad, 11.0f, s);
-                    tinted(ctx, child.ok ? Color{150, 156, 166, 255} : Red, [&](DrawContext& t) {
+                    tinted(ctx, colour(child.ok ? p.muted : p.faultText), [&](DrawContext& t) {
                         Label(text, 11.0f).draw(t, nameX + 10.0f * s, y, 0.0f);
                     });
                 }
@@ -477,19 +611,33 @@ public:
             rows_.push_back(Row{y, y + row, it->id});
             const float indent = 14.0f * s * float(std::min(it->depth, 6));
             const float nameX = nameX0 + indent;
-            const float fade = std::max(0.4f, 1.0f - 0.05f * float(age));
-            const Color status = shade(it->running() ? Cyan : it->ok ? Green : Red, fade);
+            // Older rows fade toward the muted text colour, which still reads at AA on the panel.
+            const float fade = std::min(1.0f, 0.08f * float(age));
+            const Rgb status = it->running() ? p.info : it->ok ? p.good : p.fault;
             const float mid = y + row * 0.5f;
-            const float dot[4] = {pad + indent + 4.0f * s, mid, pad + indent + 4.0f * s + 0.1f, mid};
-            drawPolyline(ctx, dot, 2, status, 8.0f * s);
+            const float cx = pad + indent + 4.0f * s;
+            if (!it->running() && !it->ok)
+            {
+                // A failure is a cross, not only a different colour.
+                const float r = 4.0f * s;
+                const float a[4] = {cx - r, mid - r, cx + r, mid + r};
+                const float b[4] = {cx - r, mid + r, cx + r, mid - r};
+                drawPolyline(ctx, a, 2, colour(status), 2.0f * s);
+                drawPolyline(ctx, b, 2, colour(status), 2.0f * s);
+            }
+            else
+            {
+                const float dot[4] = {cx, mid, cx + 0.1f, mid};
+                drawPolyline(ctx, dot, 2, colour(status), (it->running() ? 5.0f : 8.0f) * s);
+            }
             std::string name = it->name + (it->count > 1 ? "  x" + std::to_string(it->count) : "");
             if (!it->running() && it->nested > 0)
                 name = std::string(it->expanded ? "v " : "> ") + name + "  (" + std::to_string(it->nested) + ")";
             name = fit(name, barX - 8.0f * s - nameX, 13.0f, s);
-            tinted(ctx, shade(Color{223, 225, 229, 255}, fade),
+            tinted(ctx, blend(p.text, p.muted, fade),
                    [&](DrawContext& t) { Label(name, 13.0f).draw(t, nameX, y, 0.0f); });
             const int64_t ms = it->durationMs(now);
-            tinted(ctx, shade(Color{150, 156, 166, 255}, fade), [&](DrawContext& t) {
+            tinted(ctx, colour(p.muted), [&](DrawContext& t) {
                 const std::string when = ms < 1000 ? std::to_string(ms) + "ms" : std::to_string(ms / 1000) + "." +
                                                                                      std::to_string(ms % 1000 / 100) + "s";
                 Label(when, 11.0f).draw(t, barX, y, 0.0f);
@@ -521,10 +669,7 @@ private:
         std::string id;
     };
     std::vector<Row> rows_;
-
-    static constexpr Color Cyan{98, 214, 255, 255};
-    static constexpr Color Green{126, 231, 135, 255};
-    static constexpr Color Red{240, 98, 98, 255};
+    ColourCheckerWidget checker_;
 
     // The text cut to fit width at the UI font's average glyph width, so a label never runs into the bar.
     static std::string fit(const std::string& text, float width, float points, float scale)
@@ -535,7 +680,6 @@ private:
         return room > 3 ? text.substr(0, room - 3) + "..." : std::string();
     }
 
-    static Color shade(Color c, float f) { return Color{uint8_t(c.r * f), uint8_t(c.g * f), uint8_t(c.b * f), c.a}; }
     static void tinted(DrawContext& ctx, Color c, const std::function<void(DrawContext&)>& draw)
     {
         Theme theme = *ctx.theme;
@@ -611,8 +755,9 @@ std::string fixed(float value, int digits)
 class ControlsPanel final : public WidgetPanel
 {
 public:
-    ControlsPanel(Client& client, Shared& shared, Tray* tray)
+    ControlsPanel(Client& client, Shared& shared, Tray* tray, Window* window)
         : WidgetPanel("XR Pilot")
+        , window_(window)
         , tray_(tray)
         , client_(client)
         , shared_(shared)
@@ -660,7 +805,21 @@ public:
             shared_.ui.record(UiAction::Seated, true, on ? "on" : "off");
             client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
         }));
+        appearance_ = add(std::make_unique<Label>(""));
+        add(std::make_unique<Button>("Switch appearance", [this] {
+            appearanceChoice_ = nextAppearance(appearanceChoice_);
+            shared_.ui.record(UiAction::Appearance, true, appearanceName(appearanceChoice_));
+            applyScheme();
+        }));
+        add(std::make_unique<Toggle>("Colour checker", shared_.colourChecker, [this](bool on) {
+            shared_.ui.record(UiAction::ColourChecker, true, on ? "on" : "off");
+            shared_.colourChecker = on;
+        }));
         pose_ = add(std::make_unique<Label>(""));
+        add(std::make_unique<Toggle>("Conventions", true, [this](bool on) {
+            shared_.ui.record(UiAction::Conventions, true, on ? "on" : "off");
+            gizmo_->showConventions(on);
+        }));
         gizmo_ = add(std::make_unique<HeadGizmoWidget>());
         capture_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
@@ -676,6 +835,8 @@ public:
         if (now - lastTrayNs_ >= 2'000'000'000)
         {
             lastTrayNs_ = now;
+            if (appearanceChoice_ == Appearance::Auto)
+                applyScheme();
             if (tray_ != nullptr)
             {
                 tray_->poll();
@@ -716,10 +877,28 @@ public:
                        fixed(a.head.position[2], 2));
         gizmo_->set(a.head.rotation);
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
+        appearance_->setText(appearanceChoice_ != Appearance::Auto ? std::string("Appearance ") + appearanceName(appearanceChoice_)
+                             : scheme_ == Scheme::Dark ? "Appearance auto (dark)" : "Appearance auto (light)");
         WidgetPanel::draw(ctx);
     }
 
 private:
+    // Auto follows the system's light or dark setting, polled with the tray.
+    void applyScheme()
+    {
+        const Scheme scheme = schemeFor(appearanceChoice_, systemDark());
+        if (scheme == scheme_)
+            return;
+        scheme_ = scheme;
+        currentPalette = &palette(scheme);
+        if (window_ != nullptr)
+            window_->setTheme(themeFrom(*currentPalette));
+    }
+
+    Window* window_ = nullptr;
+    Appearance appearanceChoice_ = Appearance::Auto;
+    Scheme scheme_ = currentPalette == &palette(Scheme::Dark) ? Scheme::Dark : Scheme::Light;
+    Label* appearance_ = nullptr;
     Client& client_;
     Shared& shared_;
     Label* connection_ = nullptr;
@@ -772,6 +951,8 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     config.tickHz = 90;
     config.lockLayout = true;
     config.aspectRatio = 16.0f / 9.0f; // OBS captures the window into a 16:9 canvas
+    currentPalette = &palette(schemeFor(Appearance::Auto, systemDark()));
+    config.theme = themeFrom(*currentPalette);
     std::string error;
     std::unique_ptr<Window> window = Window::create(config, layout, &error);
     if (!window)
@@ -782,7 +963,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     }
     windowPtr = window.get();
     window->setPanel("eye", std::make_unique<EyePanel>(client, shared, *window));
-    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, &tray));
+    window->setPanel("controls", std::make_unique<ControlsPanel>(client, shared, &tray, window.get()));
     window->setPanel("stats", std::make_unique<StatsPanel>(client, shared, *window));
     window->setPanel("trace", std::make_unique<TracePanel>(shared));
 
@@ -861,48 +1042,21 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 }
 
 
-// The MCP server's port on the loopback address; OXRSys's own ports are 9943 to 9948.
-constexpr uint16_t McpPort = 9950;
-
-// The install's MCP bearer token: made once, kept in the user's profile, which only they can read.
-std::string mcpToken(const std::string& dir)
+// The install's MCP bearer token, in the user's profile: made once, readable by this user alone.
+std::string mcpToken(std::string* error = nullptr)
 {
-    const std::string path = dir + "mcp-token";
-    if (SDL_IOStream* in = SDL_IOFromFile(path.c_str(), "rb"))
-    {
-        char buffer[129] = {};
-        const size_t n = SDL_ReadIO(in, buffer, sizeof(buffer) - 1);
-        SDL_CloseIO(in);
-        std::string token(buffer, n);
-        while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
-            token.pop_back();
-        if (token.size() >= 32)
-            return token;
-    }
-    std::random_device random;
+    char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
+    const std::string path = std::string(pref != nullptr ? pref : "") + "mcp-token";
+    SDL_free(pref);
     std::string token;
-    for (int i = 0; i < 32; ++i)
-    {
-        char hex[3];
-        std::snprintf(hex, sizeof(hex), "%02x", static_cast<unsigned>(random() & 0xFF));
-        token += hex;
-    }
-    SDL_IOStream* out = SDL_IOFromFile(path.c_str(), "wb");
-    if (out == nullptr)
-        return {};
-    SDL_WriteIO(out, token.data(), token.size());
-    SDL_CloseIO(out);
-#ifndef _WIN32
-    chmod(path.c_str(), 0600);
-#endif
-    return token;
+    return loadOrCreateMcpToken(path, token, error) ? token : std::string();
 }
 
 // xr_pilot_mcp --http --parent: its pilot commands reach the pilot window through the bridge.
 class McpHost final
 {
 public:
-    McpHost(CommandBridge& bridge, const std::string& token) : bridge_(bridge)
+    McpHost(CommandBridge& bridge, int port, const std::string& token) : bridge_(bridge)
     {
         const char* base = SDL_GetBasePath();
         const std::string exe = std::string(base != nullptr ? base : "") + "xr_pilot_mcp" +
@@ -911,10 +1065,10 @@ public:
 #else
                                 "";
 #endif
-        if (token.empty() || !std::filesystem::exists(exe))
+        if (port == 0 || token.empty() || !std::filesystem::exists(exe))
             return;
-        const std::string port = std::to_string(McpPort);
-        const char* args[] = {exe.c_str(), "--http", port.c_str(), "--parent", nullptr};
+        const std::string portText = std::to_string(port);
+        const char* args[] = {exe.c_str(), "--http", portText.c_str(), "--parent", nullptr};
         SDL_Environment* env = SDL_CreateEnvironment(true);
         SDL_SetEnvironmentVariable(env, "XR_PILOT_MCP_TOKEN", token.c_str(), true);
         SDL_PropertiesID props = SDL_CreateProperties();
@@ -934,6 +1088,8 @@ public:
         }
         thread_ = std::thread([this] { run(); });
     }
+
+    bool running() const { return process_ != nullptr; }
 
     ~McpHost()
     {
@@ -1016,6 +1172,8 @@ UiAction launchAction(LaunchMode mode)
         return UiAction::LaunchShowRunning;
     case LaunchMode::PrintVersion:
         return UiAction::LaunchVersion;
+    case LaunchMode::PrintMcpConfig:
+        return UiAction::LaunchMcpConfig;
     case LaunchMode::Usage:
         break;
     }
@@ -1045,7 +1203,7 @@ int main(int argc, char** argv)
                 .count();
         if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
             std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
-        else if (launch.mode != LaunchMode::PrintVersion)
+        else if (launch.mode != LaunchMode::PrintVersion && launch.mode != LaunchMode::PrintMcpConfig)
             std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
                          (long long)shared.traces.session());
     }
@@ -1056,11 +1214,25 @@ int main(int argc, char** argv)
         shared.ui.record(UiAction::LaunchVersion);
         std::printf("xr-pilot %s\n", Version);
         return 0;
+    case LaunchMode::PrintMcpConfig:
+    {
+        std::string error;
+        const std::string token = mcpToken(&error);
+        shared.ui.record(UiAction::LaunchMcpConfig, !token.empty(), error);
+        if (token.empty())
+        {
+            std::fprintf(stderr, "xr-pilot: no MCP token: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("%s\n", mcpClientConfig(launch.mcpPort, token).c_str());
+        return 0;
+    }
     case LaunchMode::Usage:
         shared.ui.record(UiAction::LaunchUsage, false);
         std::fprintf(stderr,
-                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
-                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
+                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite] [--mcp-port port] [--mcp-config]\n"
+                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n"
+                     "The tray serves MCP at http://127.0.0.1:<--mcp-port, 9950>/mcp (0 turns it off); --mcp-config prints the client settings with this desk's token.\n");
         return 2;
     case LaunchMode::ShowRunning:
     {
@@ -1121,9 +1293,10 @@ int main(int argc, char** argv)
             show.type = Tray::showPilotEvent();
             SDL_PushEvent(&show);
         });
-        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
-        McpHost mcp(bridge, mcpToken(pref != nullptr ? pref : ""));
-        SDL_free(pref);
+        const std::string token = launch.mcpPort != 0 ? mcpToken() : std::string();
+        McpHost mcp(bridge, launch.mcpPort, token);
+        if (mcp.running())
+            Tray::setMcpConfig(mcpClientConfig(launch.mcpPort, token));
         // A first start opens the pilot; closing it leaves the tray, which can show it again.
         if (launch.mode == LaunchMode::PilotThenTray)
             rc = runPilot(shared, autoConnect, false, tray, false, &bridge);

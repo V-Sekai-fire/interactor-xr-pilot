@@ -695,7 +695,7 @@ public:
         // A profile SteamVR ships, so apps use their own bindings for that controller.
         WriteString(c, Prop_ControllerType_String, layout_.controllerType);
         // Hidden until physical tracker support lands; oxrsys_controller is the model to restore.
-        WriteString(c, Prop_RenderModelName_String, "{oxrsys}oxrsys_hidden");
+        WriteString(c, Prop_RenderModelName_String, left_ ? layout_.renderModelLeft : layout_.renderModelRight);
         WriteString(c, Prop_InputProfilePath_String, layout_.inputProfilePath);
         WriteProperty(c, Prop_ControllerRoleHint_Int32,
                       static_cast<int32_t>(left_ ? TrackedControllerRole_LeftHand : TrackedControllerRole_RightHand),

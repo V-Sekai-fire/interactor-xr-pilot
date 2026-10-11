@@ -40,6 +40,8 @@ public:
     static bool askRunningToShowPilot();
     // Shows the pilot: raises its window, or asks the tray loop to open one.
     static void showPilot();
+    // What Copy MCP settings puts on the clipboard; empty while no MCP server runs.
+    static void setMcpConfig(const std::string& config);
     // The tray's mode is Stream to a headset: a headset owns this machine's session, and any pilot here
     // only watches, read-only, as a spectator.
     static bool streamsToHeadset();

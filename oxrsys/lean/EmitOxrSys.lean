@@ -10,7 +10,7 @@ import OxrSys
 open LeanSlang
 
 private def kernels : List (String × SlangShaderModule) :=
-  [ ("yuv420_to_rgbx", OxrSys.Yuv420ToRgbx.shader) ]
+  [ ("yuv420_to_rgbx", OxrSys.Yuv420ToRgbx.shader), ("eye_fit_bgra", OxrSys.EyeFitBgra.shader) ]
 
 def main (args : List String) : IO UInt32 := do
   let outDir := args.headD "."

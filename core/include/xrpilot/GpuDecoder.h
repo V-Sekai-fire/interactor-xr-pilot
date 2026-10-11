@@ -60,6 +60,10 @@ public:
     // The left eye of the last decoded frame, read back from the GPU as tightly packed RGBA8.
     bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height);
 
+    // The left eye fitted into a canvas by eye_fit_bgra, with taps for fit columns then rows; BGRA, bottom row first.
+    bool fitLeftEye(const std::vector<int32_t>& first, const std::vector<float>& weights, int taps, int fitWidth,
+                    int fitHeight, int canvasWidth, int canvasHeight, std::vector<uint8_t>& bgra);
+
     // Width and height from the frame's sequence header, or false without one.
     static bool frameSize(const uint8_t* data, size_t size, int& width, int& height);
 

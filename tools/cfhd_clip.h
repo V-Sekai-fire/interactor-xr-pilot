@@ -70,14 +70,31 @@ template <typename Body> void parallelRows(int count, const Body& body)
         th.join();
 }
 
+struct Fit
+{
+    int dw = 0, dh = 0;
+    Taps x, y;
+};
+
+// The largest even-sized rectangle with sw:sh's aspect inside W x H, centred, and its taps.
+inline Fit fitInto(int sw, int sh, int W, int H)
+{
+    const double s = std::min(double(W) / sw, double(H) / sh);
+    Fit f;
+    f.dw = std::max(2, int(sw * s) & ~1);
+    f.dh = std::max(2, int(sh * s) & ~1);
+    f.x = resampleTaps(sw, f.dw);
+    f.y = resampleTaps(sh, f.dh);
+    return f;
+}
+
 // Fits src into a W x H canvas, letterboxed, BGRA bottom row first (AVI); Catmull-Rom was the most faithful on Alyx.
 inline void fitBgraBottomUp(const std::vector<uint8_t>& src, int sw, int sh, int W, int H, std::vector<uint8_t>& out)
 {
     out.assign(size_t(W) * size_t(H) * 4, 0);
-    const double s = std::min(double(W) / sw, double(H) / sh);
-    const int dw = std::max(2, int(sw * s) & ~1), dh = std::max(2, int(sh * s) & ~1);
-    const int ox = (W - dw) / 2, oy = (H - dh) / 2;
-    const Taps tx = resampleTaps(sw, dw), ty = resampleTaps(sh, dh);
+    const Fit fit = fitInto(sw, sh, W, H);
+    const int dw = fit.dw, dh = fit.dh, ox = (W - dw) / 2, oy = (H - dh) / 2;
+    const Taps &tx = fit.x, &ty = fit.y;
     std::vector<float> rows(size_t(sh) * dw * 3);
     parallelRows(sh, [&](int begin, int end) {
         for (int y = begin; y < end; y++)

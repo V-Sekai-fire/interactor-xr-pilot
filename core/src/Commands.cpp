@@ -225,13 +225,13 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
     }
     else if (verb == "release")
     {
-        const float aspect = state.eyeAspect;
-        const float fov = state.verticalFovDegrees;
-        const Pose head = state.head;
+        // What the connection and the head set is kept; screenshot pixels keep mapping to the same rays.
+        const AgentState kept = state;
         state = AgentState();
-        state.eyeAspect = aspect;
-        state.verticalFovDegrees = fov;
-        state.head = head;
+        state.eyeAspect = kept.eyeAspect;
+        state.verticalFovDegrees = kept.verticalFovDegrees;
+        std::copy(std::begin(kept.renderTangents), std::end(kept.renderTangents), std::begin(state.renderTangents));
+        state.head = kept.head;
         result.reply = ok;
     }
     else if (verb == "span")
