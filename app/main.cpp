@@ -495,8 +495,8 @@ private:
     bool conventions_ = true;
 };
 
-// The GUI's colour checker: the 24 patches of a Macbeth ColorChecker Classic in X-Rite's published sRGB,
-// so a wrong swapchain gamma or format shows against a physical chart, then each palette role with its
+// The GUI's colour checker: lookdev-24, our 24-patch chart (contract-orbit-views chart24.json, BabelColor
+// averages after Pascale 2006), so a wrong swapchain gamma or format shows against a physical chart, then each palette role with its
 // WCAG contrast against the surface it sits on (4.5:1 for text, 3:1 for marks). The rendered view is the
 // content's to check, not ours.
 class ColourCheckerWidget final : public Widget
@@ -517,7 +517,7 @@ public:
         const float patch = std::min(w / 6.0f, 30.0f * s);
         for (int i = 0; i < 24; ++i)
             drawRect(ctx, x + float(i % 6) * patch, y + float(i / 6) * 20.0f * s, patch - 3.0f * s, 17.0f * s, 2.0f * s,
-                     colour(Macbeth[i]));
+                     colour(LookDev24[i]));
         y += (4.0f * 20.0f + 6.0f) * s;
         for (const Role& r : roles())
         {
@@ -541,11 +541,11 @@ public:
     }
 
 private:
-    static constexpr Rgb Macbeth[24] = {
-        {115, 82, 68},   {194, 150, 130}, {98, 122, 157},  {87, 108, 67},   {133, 128, 177}, {103, 189, 170},
-        {214, 126, 44},  {80, 91, 166},   {193, 90, 99},   {94, 60, 108},   {157, 188, 64},  {224, 163, 46},
-        {56, 61, 150},   {70, 148, 73},   {175, 54, 60},   {231, 199, 31},  {187, 86, 149},  {8, 133, 161},
-        {243, 243, 242}, {200, 200, 200}, {160, 160, 160}, {122, 122, 121}, {85, 85, 85},    {52, 52, 52},
+    static constexpr Rgb LookDev24[24] = {
+        {115, 81, 67},    {196, 149, 129},  {93, 123, 157},   {90, 108, 65},    {130, 129, 176},  {99, 191, 171},
+        {220, 123, 45},   {72, 92, 168},    {195, 84, 98},    {91, 59, 105},    {160, 189, 62},   {229, 161, 41},
+        {43, 62, 147},    {71, 149, 72},    {176, 48, 56},    {238, 200, 22},   {188, 84, 150},   {0, 136, 166},
+        {245, 245, 240},  {200, 201, 201},  {160, 161, 161},  {120, 121, 121},  {83, 84, 85},     {50, 50, 50},
     };
     struct Role
     {
