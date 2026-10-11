@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 SLANGC="${SLANGC:-slangc}"
 command -v "$SLANGC" >/dev/null 2>&1 || SLANGC="$HOME/scoop/apps/vulkan/current/Bin/slangc"
-KERNELS="yuv420_to_rgbx"
+KERNELS="yuv420_to_rgbx eye_fit_bgra"
 
 if [ "${1:-}" != "--no-emit" ]; then
 	( cd "$ROOT/lean" && lake exe emit_oxrsys "$HERE/slang" >/dev/null )
