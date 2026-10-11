@@ -8,6 +8,7 @@
 #include <volk.h>
 #include <pyrowave.h>
 
+#include "eye_fit_bgra_spv.h"
 #include "yuv420_to_rgbx_spv.h"
 
 #include <algorithm>
@@ -44,6 +45,15 @@ uint32_t PlaneHeight(int plane, int height)
 
 } // namespace
 
+struct Kernel
+{
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+};
+
 struct GpuDecoder::Gpu
 {
     GpuContext context;
@@ -56,11 +66,8 @@ struct GpuDecoder::Gpu
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
+    Kernel pack;
+    Kernel fit;
 
     int width = 0;
     int height = 0;
@@ -72,20 +79,27 @@ struct GpuDecoder::Gpu
     bool hasFrame = false;
     Image white; // 1x1 RGBA8 white, the reticle's blit source; TRANSFER_SRC_OPTIMAL once made
     bool whiteReady = false;
+    Buffer fitParams, fitFirst, fitWeights, fitCanvas, fitReadback;
+    VkDeviceSize fitFirstBytes = 0, fitWeightBytes = 0, fitCanvasBytes = 0;
+    bool fitBound = false;
 
     ~Gpu()
     {
         releaseFrame();
+        releaseFit();
         if (whiteReady)
         {
             releaseImage(white);
         }
         if (device != VK_NULL_HANDLE)
         {
-            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-            vkDestroyPipeline(device, pipeline, nullptr);
-            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+            for (Kernel* k : {&pack, &fit})
+            {
+                vkDestroyDescriptorPool(device, k->descriptorPool, nullptr);
+                vkDestroyPipeline(device, k->pipeline, nullptr);
+                vkDestroyPipelineLayout(device, k->pipelineLayout, nullptr);
+                vkDestroyDescriptorSetLayout(device, k->setLayout, nullptr);
+            }
             vkDestroyFence(device, fence, nullptr);
             vkDestroyCommandPool(device, pool, nullptr);
         }
@@ -199,6 +213,95 @@ struct GpuDecoder::Gpu
         height = 0;
     }
 
+    void releaseFit()
+    {
+        if (device == VK_NULL_HANDLE)
+        {
+            return;
+        }
+        vkQueueWaitIdle(queue);
+        for (Buffer* b : {&fitParams, &fitFirst, &fitWeights, &fitCanvas, &fitReadback})
+        {
+            releaseBuffer(*b);
+        }
+        fitBound = false;
+    }
+
+    bool ensureFit(VkDeviceSize firstBytes, VkDeviceSize weightBytes, VkDeviceSize canvasBytes)
+    {
+        if (fitBound && fitFirstBytes >= firstBytes && fitWeightBytes >= weightBytes && fitCanvasBytes == canvasBytes)
+        {
+            return true;
+        }
+        releaseFit();
+        const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (!makeBuffer(fitParams, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host) ||
+            !makeBuffer(fitFirst, firstBytes, storage, host) || !makeBuffer(fitWeights, weightBytes, storage, host) ||
+            !makeBuffer(fitCanvas, canvasBytes, storage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ||
+            !makeBuffer(fitReadback, canvasBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host | VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+        {
+            releaseFit();
+            return false;
+        }
+        fitFirstBytes = firstBytes;
+        fitWeightBytes = weightBytes;
+        fitCanvasBytes = canvasBytes;
+        fitBound = true;
+        return true;
+    }
+
+    bool fitLeftEye(const std::vector<int32_t>& first, const std::vector<float>& weights, int taps, int fitWidth,
+                    int fitHeight, int canvasWidth, int canvasHeight, std::vector<uint8_t>& bgra)
+    {
+        const size_t lines = size_t(fitWidth) + size_t(fitHeight);
+        if (!hasFrame || first.size() != lines || weights.size() != lines * size_t(taps) || fitWidth > canvasWidth ||
+            fitHeight > canvasHeight)
+        {
+            return false;
+        }
+        const VkDeviceSize canvasBytes = VkDeviceSize(canvasWidth) * canvasHeight * 4;
+        if (!ensureFit(first.size() * 4, weights.size() * 4, canvasBytes))
+        {
+            return false;
+        }
+        const int eyeWidth = (width / 2) & ~1;
+        const uint32_t p[13] = {uint32_t(width), uint32_t(eyeWidth), uint32_t(height), uint32_t(width / 2),
+                                uint32_t(eyeWidth / 2), uint32_t(height / 2), uint32_t(fitWidth), uint32_t(fitHeight),
+                                uint32_t(canvasWidth - fitWidth) / 2, uint32_t(canvasHeight - fitHeight) / 2,
+                                uint32_t(canvasWidth), uint32_t(canvasHeight), uint32_t(taps)};
+        std::memcpy(fitParams.mapped, p, sizeof(p));
+        std::memcpy(fitFirst.mapped, first.data(), first.size() * 4);
+        std::memcpy(fitWeights.mapped, weights.data(), weights.size() * 4);
+        const VkBuffer buffers[7] = {fitParams.buffer, packed[0].buffer,  packed[1].buffer, packed[2].buffer,
+                                     fitFirst.buffer,  fitWeights.buffer, fitCanvas.buffer};
+        bind(fit, buffers, 7);
+        if (!beginCommands())
+        {
+            return false;
+        }
+        vkCmdFillBuffer(cmd, fitCanvas.buffer, 0, VK_WHOLE_SIZE, 0);
+        barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fit.pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fit.pipelineLayout, 0, 1, &fit.set, 0, nullptr);
+        vkCmdDispatch(cmd, (uint32_t(fitWidth) + 63) / 64, uint32_t(fitHeight), 1);
+        barrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT);
+        const VkBufferCopy region = {0, 0, canvasBytes};
+        vkCmdCopyBuffer(cmd, fitCanvas.buffer, fitReadback.buffer, 1, &region);
+        barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                VK_ACCESS_HOST_READ_BIT);
+        if (!submitAndWait())
+        {
+            return false;
+        }
+        bgra.resize(size_t(canvasBytes));
+        std::memcpy(bgra.data(), fitReadback.mapped, size_t(canvasBytes));
+        return true;
+    }
+
     bool initialize(const GpuContext& ctx)
     {
         context = ctx;
@@ -243,8 +346,15 @@ struct GpuDecoder::Gpu
             return false;
         }
 
-        VkDescriptorSetLayoutBinding bindings[5] = {};
-        for (uint32_t i = 0; i < 5; ++i)
+        return makeKernel(pack, k_yuv420_to_rgbx_spv, sizeof(k_yuv420_to_rgbx_spv), 5) &&
+               makeKernel(fit, k_eye_fit_bgra_spv, sizeof(k_eye_fit_bgra_spv), 7);
+    }
+
+    // Binding 0 is the uniform params and the rest storage buffers, as both Lean kernels lay them out.
+    bool makeKernel(Kernel& k, const uint32_t* code, size_t codeSize, uint32_t count)
+    {
+        VkDescriptorSetLayoutBinding bindings[8] = {};
+        for (uint32_t i = 0; i < count; ++i)
         {
             bindings[i].binding = i;
             bindings[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -252,20 +362,20 @@ struct GpuDecoder::Gpu
             bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         }
         VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        setInfo.bindingCount = 5;
+        setInfo.bindingCount = count;
         setInfo.pBindings = bindings;
-        if (vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &setLayout) != VK_SUCCESS)
+        if (vkCreateDescriptorSetLayout(device, &setInfo, nullptr, &k.setLayout) != VK_SUCCESS)
         {
             return false;
         }
         VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &setLayout;
+        layoutInfo.pSetLayouts = &k.setLayout;
         VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        moduleInfo.codeSize = sizeof(k_yuv420_to_rgbx_spv);
-        moduleInfo.pCode = k_yuv420_to_rgbx_spv;
+        moduleInfo.codeSize = codeSize;
+        moduleInfo.pCode = code;
         VkShaderModule module = VK_NULL_HANDLE;
-        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS ||
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &k.pipelineLayout) != VK_SUCCESS ||
             vkCreateShaderModule(device, &moduleInfo, nullptr, &module) != VK_SUCCESS)
         {
             return false;
@@ -275,28 +385,45 @@ struct GpuDecoder::Gpu
         pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         pipelineInfo.stage.module = module;
         pipelineInfo.stage.pName = "main";
-        pipelineInfo.layout = pipelineLayout;
-        const VkResult made = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+        pipelineInfo.layout = k.pipelineLayout;
+        const VkResult made = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &k.pipeline);
         vkDestroyShaderModule(device, module, nullptr);
         if (made != VK_SUCCESS)
         {
             return false;
         }
 
-        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}};
+        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count - 1}};
         VkDescriptorPoolCreateInfo descriptorInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         descriptorInfo.maxSets = 1;
         descriptorInfo.poolSizeCount = 2;
         descriptorInfo.pPoolSizes = sizes;
-        if (vkCreateDescriptorPool(device, &descriptorInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+        if (vkCreateDescriptorPool(device, &descriptorInfo, nullptr, &k.descriptorPool) != VK_SUCCESS)
         {
             return false;
         }
         VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorPool = k.descriptorPool;
         allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &setLayout;
-        return vkAllocateDescriptorSets(device, &allocInfo, &set) == VK_SUCCESS;
+        allocInfo.pSetLayouts = &k.setLayout;
+        return vkAllocateDescriptorSets(device, &allocInfo, &k.set) == VK_SUCCESS;
+    }
+
+    void bind(const Kernel& k, const VkBuffer* buffers, uint32_t count)
+    {
+        VkDescriptorBufferInfo infos[8] = {};
+        VkWriteDescriptorSet writes[8] = {};
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            infos[i] = {buffers[i], 0, VK_WHOLE_SIZE};
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = k.set;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+        }
+        vkUpdateDescriptorSets(device, count, writes, 0, nullptr);
     }
 
     bool beginCommands()
@@ -380,20 +507,8 @@ struct GpuDecoder::Gpu
         const uint32_t dims[2] = {uint32_t(w), uint32_t(h)};
         std::memcpy(params.mapped, dims, sizeof(dims));
 
-        VkDescriptorBufferInfo infos[5] = {{params.buffer, 0, VK_WHOLE_SIZE},    {packed[0].buffer, 0, VK_WHOLE_SIZE},
-                                           {packed[1].buffer, 0, VK_WHOLE_SIZE}, {packed[2].buffer, 0, VK_WHOLE_SIZE},
-                                           {rgbx.buffer, 0, VK_WHOLE_SIZE}};
-        VkWriteDescriptorSet writes[5] = {};
-        for (uint32_t i = 0; i < 5; ++i)
-        {
-            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = set;
-            writes[i].dstBinding = i;
-            writes[i].descriptorCount = 1;
-            writes[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &infos[i];
-        }
-        vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+        const VkBuffer buffers[5] = {params.buffer, packed[0].buffer, packed[1].buffer, packed[2].buffer, rgbx.buffer};
+        bind(pack, buffers, 5);
         width = w;
         height = h;
 
@@ -451,8 +566,8 @@ struct GpuDecoder::Gpu
         }
         barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 VK_ACCESS_SHADER_READ_BIT);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pack.pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pack.pipelineLayout, 0, 1, &pack.set, 0, nullptr);
         vkCmdDispatch(cmd, (uint32_t(width) * uint32_t(height) + 63) / 64, 1, 1);
         barrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT);
@@ -661,6 +776,12 @@ void GpuDecoder::recordEye(VkCommandBuffer commands, int eye, VkImage target, ui
 bool GpuDecoder::snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height)
 {
     return gpu_ && gpu_->snapshotLeftEye(rgba, width, height);
+}
+
+bool GpuDecoder::fitLeftEye(const std::vector<int32_t>& first, const std::vector<float>& weights, int taps,
+                            int fitWidth, int fitHeight, int canvasWidth, int canvasHeight, std::vector<uint8_t>& bgra)
+{
+    return gpu_ && gpu_->fitLeftEye(first, weights, taps, fitWidth, fitHeight, canvasWidth, canvasHeight, bgra);
 }
 
 bool GpuDecoder::frameSize(const uint8_t* data, size_t size, int& width, int& height)
