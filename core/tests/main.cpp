@@ -4,6 +4,7 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
+#include "xrpilot/CommandLoop.h"
 #include "xrpilot/Launch.h"
 #include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
@@ -22,13 +23,16 @@
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <map>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace xrpilot;
@@ -1177,6 +1181,61 @@ const std::map<std::string, std::function<void()>> cases = {
          check(runCommand("hand left 0 1 0 0 0 1 0 1 0 -1 0 0", s, status, 0).reply == "{\"ok\":true}" &&
                    s.hands[0].manual && s.hands[0].pose.rotation.m[2] == 1.0f,
                "a hand takes a rotation matrix");
+     }},
+    {"commands.loop-normalizes-lines",
+     [] {
+         std::istringstream in("health\r\n\xEF\xBB\xBFstate\n\n\r\nwait 1");
+         std::ostringstream out;
+         runCommandLoop(in, out, [](const std::string& line) { return "<" + line + ">"; });
+         check(out.str() == "<health>\n<state>\n<wait 1>\n", "CRs and a byte order mark go, blank lines are skipped");
+         std::string blank = "\r";
+         check(!normalizeCommandLine(blank), "a lone CR is blank");
+     }},
+    {"bridge.wakes-the-tray-and-waits",
+     [] {
+         CommandBridge* self = nullptr;
+         std::thread opener;
+         int wakes = 0;
+         CommandBridge bridge([&] {
+             ++wakes;
+             opener = std::thread([&] {
+                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                 self->attach([](const std::string& line) { return "pilot:" + line; });
+             });
+         });
+         self = &bridge;
+         check(bridge.ask("state", std::chrono::seconds(5)) == "pilot:state", "the pilot the tray opened answers");
+         opener.join();
+         check(bridge.ask("health", std::chrono::seconds(5)) == "pilot:health" && wakes == 1,
+               "an attached pilot answers without waking the tray again");
+     }},
+    {"bridge.no-pilot-is-an-error",
+     [] {
+         CommandBridge bridge([] {});
+         check(bridge.ask("state", std::chrono::milliseconds(50)).rfind("{\"ok\":false", 0) == 0,
+               "with no pilot window the command fails as JSON");
+         bridge.attach([](const std::string&) { return std::string("{\"ok\":true}"); });
+         bridge.detach();
+         check(!bridge.attached() && bridge.ask("state", std::chrono::milliseconds(50)).rfind("{\"ok\":false", 0) == 0,
+               "a detached pilot answers nothing");
+     }},
+    {"bridge.detach-waits-for-the-command",
+     [] {
+         CommandBridge bridge([] {});
+         std::atomic<bool> answering{false};
+         std::atomic<bool> answered{false};
+         bridge.attach([&](const std::string&) {
+             answering = true;
+             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+             answered = true;
+             return std::string("{\"ok\":true}");
+         });
+         std::thread asker([&] { bridge.ask("state", std::chrono::seconds(5)); });
+         while (!answering)
+             std::this_thread::yield();
+         bridge.detach();
+         check(answered, "the window closes only after the command it is answering has its reply");
+         asker.join();
      }},
 };
 

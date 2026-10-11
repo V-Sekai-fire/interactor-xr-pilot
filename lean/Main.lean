@@ -2,10 +2,12 @@
 xr_pilot_mcp: the MCP server an agent registers. It starts xr-pilot, the OXRSys client, and drives
 it over that process's stdin and stdout.
 
-  xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>] [--record-stream <out.pwrec>]
+  xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port> [--parent]] [--frames <dir>] [--record-stream <out.pwrec>]
 
 Without --pilot it runs the xr-pilot next to itself. Without --http it speaks MCP over its stdin and
-stdout; with it, MCP's streamable HTTP transport at http://127.0.0.1:<port>/mcp. With --frames, every
+stdout; with it, MCP's streamable HTTP transport at http://127.0.0.1:<port>/mcp, answering only requests
+bearing the token in XR_PILOT_MCP_TOKEN. With --parent the pilot is the process that started this one:
+commands go out on stdout and replies come back on stdin, as the tray runs it. With --frames, every
 left-eye frame a tool takes is also kept in <dir> as <sequence>_<monotonic ms>.png. With --record-stream,
 the pilot keeps every streamed frame as it arrived; a restarted pilot writes <out>.1.pwrec, and so on.
 
@@ -19,6 +21,7 @@ structure McpOptions where
   http : Option UInt16 := none
   frames : Option String := none
   recordStream : Option String := none
+  parent : Bool := false
 
 def parseOptions : List String → McpOptions → IO McpOptions
   | [], o => return o
@@ -30,7 +33,8 @@ def parseOptions : List String → McpOptions → IO McpOptions
     | none => throw (IO.userError s!"--http needs a port, got {port}")
   | "--frames" :: dir :: rest, o => parseOptions rest { o with frames := some dir }
   | "--record-stream" :: out :: rest, o => parseOptions rest { o with recordStream := some out }
-  | _, _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port>] [--frames <dir>] [--record-stream <out.pwrec>]")
+  | "--parent" :: rest, o => parseOptions rest { o with parent := true }
+  | _, _ => throw (IO.userError "usage: xr_pilot_mcp [--pilot <path to xr-pilot>] [--http <port> [--parent]] [--frames <dir>] [--record-stream <out.pwrec>]")
 
 def pilotPath (options : McpOptions) : IO String := do
   match options.pilot with
@@ -66,14 +70,34 @@ def keptFrameName (sequence ms : Nat) : String :=
   let n := toString sequence
   ("".pushn '0' (6 - n.length)) ++ n ++ "_" ++ toString ms ++ ".png"
 
+/-- One command to the parent over stdout, its reply from stdin. -/
+def askParent (cmd : String) : IO (Option String) := do
+  let stdout ← IO.getStdout
+  stdout.putStrLn cmd
+  stdout.flush
+  let line ← (← IO.getStdin).getLine
+  return if line.isEmpty then none else some line.trimAsciiEnd.toString
+
 def main (args : List String) : IO UInt32 := do
   let options ← parseOptions args {}
+  if options.parent && options.http.isNone then
+    IO.eprintln "xr_pilot_mcp: --parent needs --http, since stdin and stdout carry the pilot's commands"
+    return 2
+  let token := ((← IO.getEnv "XR_PILOT_MCP_TOKEN").getD "").trimAscii.toString
+  if options.http.isSome && token.length < 32 then
+    IO.eprintln "xr_pilot_mcp: --http needs a token of 32 or more characters in XR_PILOT_MCP_TOKEN"
+    return 2
   let path ← pilotPath options
   let spawns ← IO.mkRef (0 : Nat)
-  let spawn : IO (IO.Process.Child PilotConfig) := do
+  let spawn : IO (Option (IO.Process.Child PilotConfig)) := do
+    if options.parent then return none
     let n ← spawns.modifyGet fun n => (n, n + 1)
-    spawnPilot path (options.recordStream.map (recordingName · n))
+    return some (← spawnPilot path (options.recordStream.map (recordingName · n)))
   let pilotRef ← IO.mkRef (← spawn)
+  let askPilot (cmd : String) : IO (Option String) := do
+    match ← pilotRef.get with
+    | some pilot => ask pilot cmd
+    | none => askParent cmd
   let temp := (← IO.getEnv "TEMP").getD ((← IO.getEnv "TMPDIR").getD "/tmp")
   if let some dir := options.frames then IO.FS.createDirAll dir
   let kept ← IO.mkRef (0 : Nat)
@@ -86,11 +110,13 @@ def main (args : List String) : IO UInt32 := do
   let backend : Backend := {
     send := fun cmd => do
       -- A pilot that exited is started again once; its agent state starts from rest.
-      let reply ← match ← ask (← pilotRef.get) cmd with
+      let reply ← match ← askPilot cmd with
         | some line => pure (some line)
         | none => do
-          pilotRef.set (← spawn)
-          ask (← pilotRef.get) cmd
+          if options.parent then pure none
+          else
+            pilotRef.set (← spawn)
+            askPilot cmd
       match reply with
       | none => return Json.mkObj [("ok", false), ("error", "the pilot exited and did not restart")]
       | some line =>
@@ -103,7 +129,7 @@ def main (args : List String) : IO UInt32 := do
     lastShot := ← IO.mkRef (0.0, 0.0) }
   if let some port := options.http then
     IO.eprintln s!"xr_pilot_mcp: MCP at http://127.0.0.1:{port}/mcp"
-    serveMcpHttp port (handleLine backend)
+    serveMcpHttp port token (handleLine backend)
     return 0
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
@@ -116,8 +142,8 @@ def main (args : List String) : IO UInt32 := do
     if let some reply ← handleLine backend line then
       stdout.putStrLn reply.compress
       stdout.flush
-  let pilot ← pilotRef.get
-  pilot.stdin.flush
-  let (_, child) ← pilot.takeStdin
-  discard <| child.wait
+  if let some pilot ← pilotRef.get then
+    pilot.stdin.flush
+    let (_, child) ← pilot.takeStdin
+    discard <| child.wait
   return 0

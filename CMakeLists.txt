@@ -36,6 +36,7 @@ add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Body.cpp
     third_party/sinew-align/sinew_align.c
+    core/src/CommandLoop.cpp
     core/src/Commands.cpp
     core/src/FrameAssembler.cpp
     core/src/HeadGizmo.cpp
@@ -86,7 +87,9 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       launch.flags-keep-their-meaning client.local-runtime-wins
                       client.local-address-is-recognised client.second-pilot-is-refused
                       ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
-                      mouse.look-turns-evenly mouse.look-lands-whole)
+                      mouse.look-turns-evenly mouse.look-lands-whole
+                      commands.loop-normalizes-lines bridge.wakes-the-tray-and-waits bridge.no-pilot-is-an-error
+                      bridge.detach-waits-for-the-command)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
@@ -257,6 +260,10 @@ add_custom_command(TARGET xr-pilot POST_BUILD
 if(WIN32 AND XRPILOT_BUILD_OXRSYS)
     set(XRPILOT_DRIVER_ROOT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys/driver/oxrsys)
     install(TARGETS xr-pilot RUNTIME DESTINATION bin COMPONENT xrpilot)
+    # The MCP server the tray runs, which `lake build xr_pilot_mcp` in lean/ makes before cpack packs it.
+    set(XRPILOT_MCP_EXE ${CMAKE_CURRENT_SOURCE_DIR}/lean/.lake/build/bin/xr_pilot_mcp.exe CACHE FILEPATH
+        "xr_pilot_mcp for the MSI")
+    install(PROGRAMS ${XRPILOT_MCP_EXE} DESTINATION bin COMPONENT xrpilot)
     install(DIRECTORY tray/resources/ DESTINATION bin/resources COMPONENT xrpilot)
     install(FILES $<TARGET_FILE:oxrsys_runtime> DESTINATION runtime COMPONENT xrpilot)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/package/oxrsys-runtime.json
