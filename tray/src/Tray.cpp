@@ -567,6 +567,7 @@ enum Command : intptr_t
     CommandUninstall,
     CommandShowPilot,
     CommandLogs,
+    CommandCopyMcpConfig,
     CommandRuntimeFolder,
     CommandDriverFolder,
     CommandDeveloperMode,
@@ -588,6 +589,9 @@ std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
     static std::vector<std::unique_ptr<CommandTarget>> targets;
     return targets;
 }
+
+std::mutex mcpConfigMutex;
+std::string mcpConfigText;
 
 } // namespace
 
@@ -655,6 +659,7 @@ Tray::Tray(bool setUpDesk, xrpilot::UiTrace* ui)
         {"Uninstall OXRSys...", CommandUninstall},
         {"Show XR Pilot", CommandShowPilot},
         {"Open logs", CommandLogs},
+        {"Copy MCP settings", CommandCopyMcpConfig},
     };
     for (const std::pair<const char*, Command>& c : commands)
     {
@@ -1080,6 +1085,12 @@ void Tray::onFileChosen(void* userdata, const char* const* files, int)
     self->shownRuntimes_.clear();
 }
 
+void Tray::setMcpConfig(const std::string& config)
+{
+    std::lock_guard<std::mutex> lock(mcpConfigMutex);
+    mcpConfigText = config;
+}
+
 Uint32 Tray::showPilotEvent()
 {
     static const Uint32 type = SDL_RegisterEvents(1);
@@ -1122,6 +1133,18 @@ void Tray::onCommand(void* userdata, SDL_TrayEntry*)
         self->record(xrpilot::UiAction::OpenLogs);
         reveal(stateFolder());
         break;
+    case CommandCopyMcpConfig:
+    {
+        std::string config;
+        {
+            std::lock_guard<std::mutex> lock(mcpConfigMutex);
+            config = mcpConfigText;
+        }
+        const bool copied = !config.empty() && SDL_SetClipboardText(config.c_str());
+        self->record(xrpilot::UiAction::CopyMcpConfig, copied);
+        self->setMessage(copied ? "MCP settings copied: add them to your MCP client" : "The MCP server is off");
+        break;
+    }
     case CommandRuntimeFolder:
         self->record(xrpilot::UiAction::OpenRuntimeFolder);
         reveal(native(fs::path(installedRuntimeManifest()).parent_path().string()));

@@ -27,6 +27,16 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.9.0
         with:
           cache: true
+      # The MCP server the tray starts; the configure step finds it under lean/ and packs it beside xr-pilot.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          test: false
+          build: false
+      - name: MCP server
+        working-directory: lean
+        shell: bash
+        run: lake build xr_pilot_mcp
       - name: Build
         shell: pwsh
         # No Vulkan SDK on the runner; FindVulkan takes pixi's headers and loader instead.

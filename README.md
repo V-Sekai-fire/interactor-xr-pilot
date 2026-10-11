@@ -17,6 +17,14 @@ cmake --build build
 
 Start an OpenXR app on OXRSys, then register `xr_pilot_mcp` with your agent.
 
+When XR Pilot runs from the Start menu or the tray, it serves MCP itself at `http://127.0.0.1:9949/mcp` and drives its own pilot window, opening it if it is closed. Use this server and not a separate `xr_pilot_mcp`, because a second pilot cannot bind the OXRSys ports that the tray holds. The server listens on the loopback address only. It refuses each request that does not carry this desk's bearer token, and each request with an `Origin` that is not loopback. The token is 32 random bytes, which XR Pilot makes on its first start and keeps in `mcp-token`, a file in its per-user folder that only you can read. To get the client settings, click **Copy MCP settings** in the tray menu, or run `xr-pilot --mcp-config`:
+
+```json
+{"type":"http","url":"http://127.0.0.1:9949/mcp","headers":{"Authorization":"Bearer <token>"}}
+```
+
+`--mcp-port <port>` moves the server to a different port, and `--mcp-port 0` turns it off.
+
 ## Licence
 
 Apache-2.0 OR MIT. `oxrsys/` and the files ported from it are MPL-2.0 (`oxrsys/LICENSE`), and `third_party/` projects carry their own licences.

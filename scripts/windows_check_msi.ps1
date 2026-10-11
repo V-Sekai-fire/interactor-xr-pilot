@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
-# Installs an MSI per-user without elevation, fails unless XR Pilot, the runtime with its manifest, the
-# PC VR driver and the Start-menu shortcut land and the product registers in the per-user context,
-# runs nothing, then uninstalls and fails unless every one of them is gone.
+# Installs an MSI per-user without elevation, fails unless XR Pilot and its MCP server, the runtime
+# with its manifest, the PC VR driver and the Start-menu shortcut land and the product registers in the
+# per-user context, runs nothing, then uninstalls and fails unless every one of them is gone.
 #   scripts/windows_check_msi.ps1 <package.msi>
 #   scripts/windows_check_msi.ps1 -SelfTest    # an empty folder must fail the file check
 param([string]$Msi, [switch]$SelfTest)
@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $required = @(
     'bin\xr-pilot.exe',
+    'bin\xr_pilot_mcp.exe',
     'bin\resources\tray_idle.png',
     'runtime\liboxrsys-runtime.dll',
     'runtime\oxrsys-runtime.json',

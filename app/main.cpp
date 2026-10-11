@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
 // xr-pilot: an OXRSys client a person and an agent both drive. Commands arrive on stdin and replies
-// leave on stdout, one per line (core/include/xrpilot/Commands.h); the keyboard and mouse drive the
-// same state through HumanInput. Decode, present and screenshots run on the window's thread and device.
+// leave on stdout, one per line (core/include/xrpilot/Commands.h), or, for the desk copy, through the
+// MCP server it starts beside its tray; the keyboard and mouse drive the same state through
+// HumanInput. Decode, present and screenshots run on the window's thread and device.
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -15,6 +16,7 @@
 #include "xrpilot/GpuDecoder.h"
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/McpLink.h"
 #include "xrpilot/SpanLog.h"
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/Png.h"
@@ -738,7 +740,50 @@ void reportError(bool agent, const std::string& message)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "XR Pilot", message.c_str(), nullptr);
 }
 
-int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool readCommands)
+// One pilot command, from an agent's stdin or the desk's MCP server; a screenshot waits for the window.
+std::string serveCommand(Shared& shared, Client& client, Window& window, const std::string& line)
+{
+    SpanLine mark;
+    const bool isMark = parseSpanLine(line, mark);
+    if (isMark && mark.begin)
+    {
+        shared.spans.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
+        shared.traces.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
+    }
+    else if (isMark)
+    {
+        shared.spans.end(mark.id, mark.ok, nowNs() / 1'000'000);
+        shared.traces.end(mark.id, mark.ok, nowNs() / 1'000'000);
+    }
+    const ClientStatus status = client.status();
+    CommandResult result;
+    client.updateAgent([&](AgentState& s) { result = runCommand(line, s, status, shared.decoded.load()); });
+    std::string reply = result.reply;
+    if (!result.screenshotPath.empty())
+    {
+        std::unique_lock<std::mutex> lock(shared.mutex);
+        shared.screenshotPath = result.screenshotPath;
+        shared.screenshotReply.clear();
+        window.requestRedrawFromAnyThread();
+        if (!shared.done.wait_for(lock, std::chrono::seconds(5), [&] { return !shared.screenshotReply.empty(); }))
+        {
+            shared.screenshotPath.clear();
+            shared.screenshotReply = errorJson("the window did not render within 5 s");
+        }
+        reply = shared.screenshotReply;
+    }
+    if (!isMark)
+    {
+        const bool ok = reply.rfind("{\"ok\":false", 0) != 0;
+        shared.spans.child(line, ok, nowNs() / 1'000'000);
+        shared.traces.command(line, ok, nowNs() / 1'000'000);
+    }
+    window.requestRedrawFromAnyThread();
+    return reply;
+}
+
+int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool readCommands,
+             CommandRouter* router = nullptr)
 {
     Window* windowPtr = nullptr;
     Client client([&windowPtr] {
@@ -787,7 +832,15 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 
     if (!readCommands)
     {
+        if (router != nullptr)
+        {
+            router->attach([&](const std::string& line) { return serveCommand(shared, client, *window, line); });
+        }
         const int rc = window->run();
+        if (router != nullptr)
+        {
+            router->detach();
+        }
         shared.ui.record(UiAction::WindowClose);
         client.stop();
         return rc;
@@ -803,43 +856,7 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
                 line.erase(0, 3);
             if (line.empty())
                 continue;
-            SpanLine mark;
-            const bool isMark = parseSpanLine(line, mark);
-            if (isMark && mark.begin)
-            {
-                shared.spans.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
-                shared.traces.begin(mark.id, mark.name, mark.detail, nowNs() / 1'000'000);
-            }
-            else if (isMark)
-            {
-                shared.spans.end(mark.id, mark.ok, nowNs() / 1'000'000);
-                shared.traces.end(mark.id, mark.ok, nowNs() / 1'000'000);
-            }
-            const ClientStatus status = client.status();
-            CommandResult result;
-            client.updateAgent([&](AgentState& s) { result = runCommand(line, s, status, shared.decoded.load()); });
-            std::string reply = result.reply;
-            if (!result.screenshotPath.empty())
-            {
-                std::unique_lock<std::mutex> lock(shared.mutex);
-                shared.screenshotPath = result.screenshotPath;
-                shared.screenshotReply.clear();
-                windowPtr->requestRedrawFromAnyThread();
-                if (!shared.done.wait_for(lock, std::chrono::seconds(5), [&] { return !shared.screenshotReply.empty(); }))
-                {
-                    shared.screenshotPath.clear();
-                    shared.screenshotReply = errorJson("the window did not render within 5 s");
-                }
-                reply = shared.screenshotReply;
-            }
-            if (!isMark)
-            {
-                const bool ok = reply.rfind("{\"ok\":false", 0) != 0;
-                shared.spans.child(line, ok, nowNs() / 1'000'000);
-                shared.traces.command(line, ok, nowNs() / 1'000'000);
-            }
-            std::cout << reply << std::endl;
-            windowPtr->requestRedrawFromAnyThread();
+            std::cout << serveCommand(shared, client, *windowPtr, line) << std::endl;
         }
         // An agent that closes stdin is done, and the pilot exits with it; a person's window stays.
         if (agent)
@@ -857,6 +874,143 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     windowPtr = nullptr;
     window.reset();
     return rc;
+}
+
+// xr_pilot_mcp --http --parent beside this exe: its stdout lines are pilot commands, replied to on its
+// stdin, which closing ends it, so it never outlives the tray.
+class McpServer
+{
+public:
+    McpServer(Shared& shared, CommandRouter& router)
+        : shared_(shared)
+        , router_(router)
+    {
+    }
+
+    ~McpServer()
+    {
+        stopping_ = true;
+        router_.close();
+        if (process_ != nullptr)
+        {
+            SDL_KillProcess(process_, true);
+        }
+        if (reader_.joinable())
+        {
+            reader_.join();
+        }
+        SDL_DestroyProcess(process_);
+    }
+
+    bool start(int port, const std::string& tokenFile, std::string* error)
+    {
+        const char* base = SDL_GetBasePath();
+#if defined(_WIN32)
+        const std::string exe = std::string(base != nullptr ? base : "") + "xr_pilot_mcp.exe";
+#else
+        const std::string exe = std::string(base != nullptr ? base : "") + "xr_pilot_mcp";
+#endif
+        const std::string portText = std::to_string(port);
+        const char* args[] = {exe.c_str(), "--http", portText.c_str(), "--parent", "--token-file", tokenFile.c_str(),
+                              nullptr};
+        const SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, args);
+        SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_APP);
+        SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+        process_ = SDL_CreateProcessWithProperties(props);
+        SDL_DestroyProperties(props);
+        if (process_ == nullptr)
+        {
+            *error = exe + ": " + SDL_GetError();
+            return false;
+        }
+        reader_ = std::thread([this] { pump(); });
+        return true;
+    }
+
+private:
+    void pump()
+    {
+        SDL_IOStream* commands = SDL_GetProcessOutput(process_);
+        std::string pending;
+        char buffer[4096];
+        while (!stopping_)
+        {
+            const size_t n = SDL_ReadIO(commands, buffer, sizeof(buffer));
+            if (n == 0)
+            {
+                // The pipes do not block: wait out an empty read, stop at the server's exit.
+                if (SDL_GetIOStatus(commands) != SDL_IO_STATUS_NOT_READY)
+                {
+                    break;
+                }
+                SDL_Delay(2);
+                continue;
+            }
+            pending.append(buffer, n);
+            for (size_t end = pending.find('\n'); end != std::string::npos; end = pending.find('\n'))
+            {
+                std::string line = pending.substr(0, end);
+                pending.erase(0, end + 1);
+                if (!line.empty() && line.back() == '\r')
+                {
+                    line.pop_back();
+                }
+                if (!line.empty() && !reply(router_.route(line, [this] { openPilot(); }, std::chrono::seconds(30))))
+                {
+                    return;
+                }
+            }
+        }
+        if (!stopping_)
+        {
+            std::fprintf(stderr, "xr-pilot: the MCP server exited\n");
+        }
+    }
+
+    void openPilot()
+    {
+        shared_.ui.record(UiAction::McpShowPilot);
+        SDL_Event show{};
+        show.type = Tray::showPilotEvent();
+        SDL_PushEvent(&show);
+    }
+
+    bool reply(const std::string& text)
+    {
+        SDL_IOStream* replies = SDL_GetProcessInput(process_);
+        const std::string line = text + "\n";
+        size_t done = 0;
+        while (done < line.size() && !stopping_)
+        {
+            const size_t n = SDL_WriteIO(replies, line.data() + done, line.size() - done);
+            if (n == 0 && SDL_GetIOStatus(replies) != SDL_IO_STATUS_NOT_READY)
+            {
+                return false;
+            }
+            if (n == 0)
+            {
+                SDL_Delay(1);
+            }
+            done += n;
+        }
+        return true;
+    }
+
+    Shared& shared_;
+    CommandRouter& router_;
+    SDL_Process* process_ = nullptr;
+    std::thread reader_;
+    std::atomic<bool> stopping_{false};
+};
+
+std::string prefFile(const char* name)
+{
+    char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
+    const std::string path = std::string(pref != nullptr ? pref : "") + name;
+    SDL_free(pref);
+    return path;
 }
 
 } // namespace
@@ -880,6 +1034,8 @@ UiAction launchAction(LaunchMode mode)
         return UiAction::LaunchShowRunning;
     case LaunchMode::PrintVersion:
         return UiAction::LaunchVersion;
+    case LaunchMode::PrintMcpConfig:
+        return UiAction::LaunchMcpConfig;
     case LaunchMode::Usage:
         break;
     }
@@ -897,11 +1053,7 @@ int main(int argc, char** argv)
     Shared shared;
     std::string tracePath = launch.tracePath;
     if (tracePath.empty())
-    {
-        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
-        tracePath = std::string(pref != nullptr ? pref : "") + "traces.sqlite";
-        SDL_free(pref);
-    }
+        tracePath = prefFile("traces.sqlite");
     {
         std::string traceError;
         const int64_t wallMs =
@@ -909,7 +1061,7 @@ int main(int argc, char** argv)
                 .count();
         if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
             std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
-        else if (launch.mode != LaunchMode::PrintVersion)
+        else if (launch.mode != LaunchMode::PrintVersion && launch.mode != LaunchMode::PrintMcpConfig)
             std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
                          (long long)shared.traces.session());
     }
@@ -920,11 +1072,26 @@ int main(int argc, char** argv)
         shared.ui.record(UiAction::LaunchVersion);
         std::printf("xr-pilot %s\n", Version);
         return 0;
+    case LaunchMode::PrintMcpConfig:
+    {
+        std::string token;
+        std::string error;
+        const bool ok = loadOrCreateMcpToken(prefFile("mcp-token"), token, &error);
+        shared.ui.record(UiAction::LaunchMcpConfig, ok);
+        if (!ok)
+        {
+            std::fprintf(stderr, "xr-pilot: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("%s\n", mcpClientConfig(launch.mcpPort, token).c_str());
+        return 0;
+    }
     case LaunchMode::Usage:
         shared.ui.record(UiAction::LaunchUsage, false);
         std::fprintf(stderr,
-                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
-                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
+                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite] [--mcp-port port] [--mcp-config]\n"
+                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n"
+                     "The tray serves MCP at http://127.0.0.1:<--mcp-port, 9949>/mcp (0 turns it off); --mcp-config prints the client settings with this desk's token.\n");
         return 2;
     case LaunchMode::ShowRunning:
     {
@@ -960,6 +1127,26 @@ int main(int argc, char** argv)
     if (ownsDesk(launch.mode) && !tray.ok())
         std::fprintf(stderr, "xr-pilot: no tray icon: %s\n", SDL_GetError());
 
+    // The desk copy serves MCP, so an agent drives this pilot rather than starting one of its own.
+    CommandRouter router;
+    std::unique_ptr<McpServer> mcp;
+    if (ownsDesk(launch.mode) && tray.ok() && launch.mcpPort != 0)
+    {
+        std::string token;
+        std::string error;
+        const std::string tokenFile = prefFile("mcp-token");
+        mcp = std::make_unique<McpServer>(shared, router);
+        if (loadOrCreateMcpToken(tokenFile, token, &error) && mcp->start(launch.mcpPort, tokenFile, &error))
+        {
+            Tray::setMcpConfig(mcpClientConfig(launch.mcpPort, token));
+        }
+        else
+        {
+            std::fprintf(stderr, "xr-pilot: no MCP server: %s\n", error.c_str());
+            mcp.reset();
+        }
+    }
+
     int rc = 0;
     if (launch.mode == LaunchMode::PilotOnly || agent)
         rc = runPilot(shared, autoConnect, agent, tray, true);
@@ -982,15 +1169,16 @@ int main(int argc, char** argv)
             &quitting);
         // A first start opens the pilot; closing it leaves the tray, which can show it again.
         if (launch.mode == LaunchMode::PilotThenTray)
-            rc = runPilot(shared, autoConnect, false, tray, false);
+            rc = runPilot(shared, autoConnect, false, tray, false, &router);
         while (!quitting)
         {
             SDL_Event e;
             if (SDL_WaitEventTimeout(&e, 500) && e.type == Tray::showPilotEvent())
-                rc = runPilot(shared, autoConnect, false, tray, false);
+                rc = runPilot(shared, autoConnect, false, tray, false, &router);
             tray.poll();
         }
     }
+    mcp.reset();
     shared.traces.close();
     if (!shared.stream.close())
         std::fprintf(stderr, "xr-pilot: the stream recording did not close cleanly\n");

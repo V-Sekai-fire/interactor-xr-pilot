@@ -18,6 +18,7 @@ enum class UiAction
     LaunchShowRunning,
     LaunchVersion,
     LaunchUsage,
+    LaunchMcpConfig,
     DeskSetup,
     UpdateWarning,
     FirstRunBind,
@@ -40,6 +41,8 @@ enum class UiAction
     OpenRuntimeFolder,
     OpenDriverFolder,
     TrayQuit,
+    CopyMcpConfig,
+    McpShowPilot,
     InstallFailed,
     ElevatedDone,
     ElevatedDeclined,
@@ -73,6 +76,8 @@ inline const char* uiSpanName(UiAction action)
         return "ui.launch.version";
     case UiAction::LaunchUsage:
         return "ui.launch.usage";
+    case UiAction::LaunchMcpConfig:
+        return "ui.launch.mcp-config";
     case UiAction::DeskSetup:
         return "ui.tray.setup";
     case UiAction::UpdateWarning:
@@ -117,6 +122,10 @@ inline const char* uiSpanName(UiAction action)
         return "ui.tray.open-driver-folder";
     case UiAction::TrayQuit:
         return "ui.tray.quit";
+    case UiAction::CopyMcpConfig:
+        return "ui.tray.copy-mcp-config";
+    case UiAction::McpShowPilot:
+        return "ui.mcp.show-pilot";
     case UiAction::InstallFailed:
         return "ui.tray.install-failed";
     case UiAction::ElevatedDone:

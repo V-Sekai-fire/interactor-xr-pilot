@@ -59,7 +59,7 @@ structure Desk where
   deriving DecidableEq, Repr, Inhabited
 
 inductive Mode where
-  | pilotThenTray | trayOnly | pilotOnly | agent | showRunning | version | usage
+  | pilotThenTray | trayOnly | pilotOnly | agent | showRunning | version | mcpConfig | usage
   deriving DecidableEq, Repr, Inhabited
 
 /-- The swap track's end: OXRSys is the OpenXR runtime and SteamVR's headset, with SteamVR's other
@@ -158,13 +158,16 @@ inductive Pending where
 inductive Action where
   -- Starting xr-pilot.
   | launchPilot | launchTray | launchWindow | launchAgent | launchShowRunning | launchVersion | launchUsage
+  | launchMcpConfig
   -- The desk copy's set-up when it starts.
   | deskSetup | updateWarning | firstRunBind
   -- The tray menu.
   | trayShowPilot | showRequest | trayBind | trayUnbind | runtimeOurs | runtimeOther
   | modePcvr | modeSteamVr | modeStream
   | addRuntime | addRuntimeChosen | trayUninstall | uninstallConfirm | uninstallCancel
-  | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit
+  | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit | copyMcpConfig
+  -- The MCP server the desk copy starts asked for a closed pilot.
+  | mcpShowPilot
   -- How a background change ends.
   | installFailed | elevatedDone | elevatedDeclined
   -- The pilot window and its controls.
@@ -175,11 +178,12 @@ inductive Action where
 /-- Every action, once. -/
 def Action.all : List Action :=
   [.launchPilot, .launchTray, .launchWindow, .launchAgent, .launchShowRunning, .launchVersion, .launchUsage,
+   .launchMcpConfig,
    .deskSetup, .updateWarning, .firstRunBind,
    .trayShowPilot, .showRequest, .trayBind, .trayUnbind, .runtimeOurs, .runtimeOther,
    .modePcvr, .modeSteamVr, .modeStream,
    .addRuntime, .addRuntimeChosen, .trayUninstall, .uninstallConfirm, .uninstallCancel,
-   .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit,
+   .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit, .copyMcpConfig, .mcpShowPilot,
    .installFailed, .elevatedDone, .elevatedDeclined,
    .windowOpen, .windowError, .windowClose,
    .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated]
@@ -193,6 +197,7 @@ def Action.spanName : Action → String
   | .launchShowRunning => "ui.launch.show-running"
   | .launchVersion => "ui.launch.version"
   | .launchUsage => "ui.launch.usage"
+  | .launchMcpConfig => "ui.launch.mcp-config"
   | .deskSetup => "ui.tray.setup"
   | .updateWarning => "ui.tray.update-warning"
   | .firstRunBind => "ui.tray.first-run-bind"
@@ -211,6 +216,8 @@ def Action.spanName : Action → String
   | .uninstallConfirm => "ui.tray.uninstall-confirm"
   | .uninstallCancel => "ui.tray.uninstall-cancel"
   | .openLogs => "ui.tray.open-logs"
+  | .copyMcpConfig => "ui.tray.copy-mcp-config"
+  | .mcpShowPilot => "ui.mcp.show-pilot"
   | .developerMode => "ui.tray.developer-mode"
   | .openRuntimeFolder => "ui.tray.open-runtime-folder"
   | .openDriverFolder => "ui.tray.open-driver-folder"
@@ -238,6 +245,7 @@ def Action.cppName : Action → String
   | .launchShowRunning => "LaunchShowRunning"
   | .launchVersion => "LaunchVersion"
   | .launchUsage => "LaunchUsage"
+  | .launchMcpConfig => "LaunchMcpConfig"
   | .deskSetup => "DeskSetup"
   | .updateWarning => "UpdateWarning"
   | .firstRunBind => "FirstRunBind"
@@ -256,6 +264,8 @@ def Action.cppName : Action → String
   | .uninstallConfirm => "UninstallConfirm"
   | .uninstallCancel => "UninstallCancel"
   | .openLogs => "OpenLogs"
+  | .copyMcpConfig => "CopyMcpConfig"
+  | .mcpShowPilot => "McpShowPilot"
   | .developerMode => "DeveloperMode"
   | .openRuntimeFolder => "OpenRuntimeFolder"
   | .openDriverFolder => "OpenDriverFolder"
@@ -333,6 +343,7 @@ def step (s : State) : Action → Option State
     if s.mode.isNone && s.desk.runningCopy then some { s with mode := some .showRunning, exited := true } else none
   | .launchVersion => if s.mode.isNone then some { s with mode := some .version, exited := true } else none
   | .launchUsage => if s.mode.isNone then some { s with mode := some .usage, exited := true } else none
+  | .launchMcpConfig => if s.mode.isNone then some { s with mode := some .mcpConfig, exited := true } else none
   | .deskSetup =>
     if s.ownsDesk && !s.setUp then
       let due := !s.desk.firstRunDone && s.desk.runtime != .oxrsys
@@ -395,6 +406,9 @@ def step (s : State) : Action → Option State
     else none
   | .uninstallCancel => if s.uninstallAsked && !s.exited then some { s with uninstallAsked := false } else none
   | .openLogs => if s.trayAnswers then some { s with warningDue := false } else none
+  | .copyMcpConfig => if s.trayAnswers then some { s with warningDue := false } else none
+  -- The MCP server runs beside the tray, so a tray dialog does not hold its request back.
+  | .mcpShowPilot => if s.ownsDesk && s.setUp && s.desk.trayIcon && !s.exited then some { s with showWanted := !s.window } else none
   | .developerMode =>
     if s.trayAnswers then
       some { s with warningDue := false, desk := { s.desk with developerMode := !s.desk.developerMode } }
@@ -450,6 +464,7 @@ def witness : Action → Desk × List Action
   | .launchShowRunning => ({ runningCopy := true }, [.launchShowRunning])
   | .launchVersion => ({}, [.launchVersion])
   | .launchUsage => ({}, [.launchUsage])
+  | .launchMcpConfig => ({}, [.launchMcpConfig])
   | .deskSetup => ({}, [.launchPilot, .deskSetup])
   | .updateWarning => ({}, [.launchPilot, .deskSetup, .updateWarning])
   | .firstRunBind => ({}, [.launchPilot, .deskSetup, .firstRunBind])
@@ -470,6 +485,8 @@ def witness : Action → Desk × List Action
   | .uninstallCancel =>
     ({ firstRunDone := true, packaged := true }, [.launchTray, .deskSetup, .trayUninstall, .uninstallCancel])
   | .openLogs => ({ firstRunDone := true }, [.launchTray, .deskSetup, .openLogs])
+  | .copyMcpConfig => ({ firstRunDone := true }, [.launchTray, .deskSetup, .copyMcpConfig])
+  | .mcpShowPilot => ({ firstRunDone := true }, [.launchTray, .deskSetup, .mcpShowPilot])
   | .developerMode => ({ firstRunDone := true }, [.launchTray, .deskSetup, .developerMode])
   | .openRuntimeFolder =>
     ({ firstRunDone := true }, [.launchTray, .deskSetup, .developerMode, .openRuntimeFolder])

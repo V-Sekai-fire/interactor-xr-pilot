@@ -65,6 +65,25 @@ def check (failures : IO.Ref Nat) (ok : Bool) (what : String) : IO Unit := do
     IO.eprintln s!"FAIL {what}"
     failures.modify (· + 1)
 
+/-- One raw HTTP exchange with the MCP server over an in-memory connection. -/
+def httpExchange (mcp : McpHttp) (raw : String) : IO String := do
+  let (client, server) ← Std.Http.Internal.Mock.new
+  let bytes ← Std.Async.Async.block do
+    client.send raw.toUTF8
+    client.getSendChan.close
+    Std.Http.Server.serveConnection server mcp { lingeringTimeout := 1000, generateDate := false } |>.run
+    return (← client.recv?).getD .empty
+  return String.fromUTF8! bytes
+
+def mcpPost (headers : List String) (body : String) : String :=
+  String.join ((["POST /mcp HTTP/1.1", "Host: 127.0.0.1:9949", "Content-Type: application/json",
+    s!"Content-Length: {body.utf8ByteSize}", "Connection: close"] ++ headers).map (· ++ "\r\n")) ++ "\r\n" ++ body
+
+/-- A stream over an in-memory buffer, as a pipe end. -/
+def memoryStream (text : String) : IO (IO.Ref IO.FS.Stream.Buffer × IO.FS.Stream) := do
+  let buffer ← IO.mkRef { data := text.toUTF8 : IO.FS.Stream.Buffer }
+  return (buffer, IO.FS.Stream.ofBuffer buffer)
+
 def main : IO UInt32 := do
   let failures ← IO.mkRef 0
   let c := check failures
@@ -341,6 +360,11 @@ def main : IO UInt32 := do
   let mcp := line 2 "screenshot" ++ "\n" ++ line 2 "ui.launch.agent" ++ "\n" ++ line 2 "ui.window.open"
   c (sessions (Ui.checkJsonl mcp) == some 1) "an agent session with MCP spans follows the model"
   c (sessions (Ui.checkJsonl (firstRun ++ "\n" ++ line 3 "ui.launch.show-running")) == some 2) "sessions are checked apart"
+  let deskMcp := String.intercalate "\n" (["ui.launch.tray", "ui.tray.setup", "ui.mcp.show-pilot", "ui.window.open",
+    "ui.window.close", "ui.mcp.show-pilot", "ui.window.open", "ui.tray.copy-mcp-config"].map (line 4))
+  c (sessions (Ui.checkJsonl deskMcp) == some 1) "the desk's MCP server opens a closed pilot, twice"
+  c (sessions (Ui.checkJsonl (line 5 "ui.launch.agent" ++ "\n" ++ line 5 "ui.mcp.show-pilot")) == Option.none)
+    "control: an agent's pilot, which starts no MCP server, asking for a pilot is caught"
   c (sessions (Ui.checkJsonl (line 1 "ui.window.connect")) == Option.none) "control: a control before any window is caught"
   c (sessions (Ui.checkJsonl (line 1 "ui.launch.agent" ++ "\n" ++ line 1 "ui.tray.bind")) == Option.none)
     "control: an agent pilot using the tray is caught"
@@ -397,6 +421,60 @@ def main : IO UInt32 := do
     c (spark == Spark.emitCpp) "core/tests/SparkModelCases.h is what the model emits (lake exe emit_spark_cases)"
     let cases ← try IO.FS.readFile "../oxrsys/tests/StreamModelCases.h" catch _ => pure ""
     c (cases == Stream.emitCpp) "oxrsys/tests/StreamModelCases.h is what the model emits (lake exe emit_stream_cases)"
+
+  -- MCP over HTTP trusts no caller: the bearer token on every request, and only loopback origins.
+  let token := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let reached ← IO.mkRef (0 : Nat)
+  let mcp ← McpHttp.new token fun line => do reached.modify (· + 1); handleLine f.backend line
+  let list := "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"
+  let bearer := s!"Authorization: Bearer {token}"
+  let good ← httpExchange mcp (mcpPost [bearer] list)
+  c (good.startsWith "HTTP/1.1 200" && good.contains "\"screenshot\"") s!"the token's holder lists the tools, got {good.take 60}"
+  let loopback ← httpExchange mcp (mcpPost [bearer, "Origin: http://localhost:9949"] list)
+  c (loopback.startsWith "HTTP/1.1 200") s!"a loopback Origin with the token is served, got {loopback.take 60}"
+  let served ← reached.get
+  let bare ← httpExchange mcp (mcpPost [] list)
+  c (bare.startsWith "HTTP/1.1 401" && bare.toLower.contains "www-authenticate: bearer" && !bare.contains "screenshot")
+    s!"a request without the token is refused, got {bare.take 60}"
+  let wrong ← httpExchange mcp (mcpPost [s!"Authorization: Bearer {token.dropEnd 1}0"] list)
+  c (wrong.startsWith "HTTP/1.1 401") s!"a wrong token is refused, got {wrong.take 60}"
+  let basic ← httpExchange mcp (mcpPost [s!"Authorization: Basic {token}"] list)
+  c (basic.startsWith "HTTP/1.1 401") s!"the token outside a Bearer header is refused, got {basic.take 60}"
+  let foreign ← httpExchange mcp (mcpPost [bearer, "Origin: http://evil.example"] list)
+  c (foreign.startsWith "HTTP/1.1 403" && !foreign.contains "screenshot") s!"a foreign Origin is refused, got {foreign.take 60}"
+  let rebound ← httpExchange mcp (mcpPost [bearer, "Origin: http://127.0.0.1.evil.example:9949"] list)
+  c (rebound.startsWith "HTTP/1.1 403") s!"a rebinding name that starts like loopback is refused, got {rebound.take 60}"
+  c ((← reached.get) == served) "a refused request never reaches MCP"
+  c (served == 2) "control: the requests that hold the token do reach MCP"
+  let tokenless ← McpHttp.new "" fun _ => pure (some (Json.str "served"))
+  let empty ← httpExchange tokenless (mcpPost ["Authorization: Bearer "] list)
+  c (empty.startsWith "HTTP/1.1 401") "control: a server without a token refuses everyone, even an empty bearer"
+  c (["http://127.0.0.1", "https://localhost:1", "http://[::1]:9949"].all loopbackOrigin) "loopback origins pass"
+  c (!(["null", "file://", "http://localhost.evil", "http://localhost:", "http://localhost:99a", "ftp://127.0.0.1",
+       "http://127.0.0.2"].any loopbackOrigin)) "control: lookalike and opaque origins fail"
+  c (sameSecret "abc" "abc" && !sameSecret "abc" "abd" && !sameSecret "abc" "abcd") "secrets compare exactly"
+  c (validToken token && !validToken (token.dropEnd 1).toString && !validToken ((token.dropEnd 1).toString ++ "g") &&
+      !validToken token.toUpper) "a token is 64 lowercase hex digits"
+
+  -- The parent pipe: a command leaves as a line on stdout, its reply is the next line on stdin.
+  let (_, parentIn) ← memoryStream "{\"ok\":true,\"connected\":false}\n"
+  let (sentBuf, parentOut) ← memoryStream ""
+  let ended ← IO.mkRef false
+  let link ← ParentLink.start parentIn parentOut (ended.set true)
+  let reply ← link.ask "state"
+  c (reply == some "{\"ok\":true,\"connected\":false}") s!"the parent's reply line answers the command, got {reply}"
+  c (String.fromUTF8! (← sentBuf.get).data == "state\n") "the command leaves as one line on stdout"
+  let after ← link.ask "state"
+  c (after == Option.none) "control: once the parent closes the pipe, a command has no reply"
+  let mut waited := 0
+  while !(← ended.get) && waited < 100 do
+    IO.sleep 10
+    waited := waited + 1
+  c (← ended.get) "a closed parent pipe ends the server"
+  let (_, silentIn) ← memoryStream ""
+  let (_, silentOut) ← memoryStream ""
+  let silent ← ParentLink.start silentIn silentOut (pure ())
+  c ((← silent.ask "state") == Option.none) "control: a parent that never answers gives no reply"
 
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"

@@ -5,6 +5,7 @@
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/McpLink.h"
 #include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
@@ -22,14 +23,30 @@
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <aclapi.h>
+#undef far
+#undef near
+#else
+#include <sys/stat.h>
+#endif
 
 using namespace xrpilot;
 
@@ -55,6 +72,30 @@ int64_t countRows(sqlite3* db, const char* sql)
     const int64_t n = sqlite3_step(s) == SQLITE_ROW ? sqlite3_column_int64(s, 0) : -1;
     sqlite3_finalize(s);
     return n;
+}
+
+// Whether only the current user can open the file: a protected DACL whose one entry is this user, or
+// no group or other bits.
+bool userOnly(const std::string& path)
+{
+#if defined(_WIN32)
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    PACL dacl = nullptr;
+    if (GetNamedSecurityInfoA(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                              nullptr, &descriptor) != ERROR_SUCCESS)
+        return false;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    GetSecurityDescriptorControl(descriptor, &control, &revision);
+    ACL_SIZE_INFORMATION size{};
+    const bool one = dacl != nullptr && GetAclInformation(dacl, &size, sizeof(size), AclSizeInformation) &&
+                     size.AceCount == 1;
+    LocalFree(descriptor);
+    return one && (control & SE_DACL_PROTECTED) != 0;
+#else
+    struct stat st{};
+    return stat(path.c_str(), &st) == 0 && (st.st_mode & 077) == 0;
+#endif
 }
 
 float distance3(const float* p, const float* q)
@@ -735,6 +776,97 @@ const std::map<std::string, std::function<void()>> cases = {
          check(parseLaunch(2, bad, false).mode == LaunchMode::Usage, "an unknown flag prints usage");
          const char* both[] = {"xr-pilot.exe", "--tray", "--window"};
          check(parseLaunch(3, both, false).mode == LaunchMode::Usage, "--tray with a pilot flag prints usage");
+     }},
+    {"launch.mcp-flags",
+     [] {
+         const char* plain[] = {"xr-pilot.exe"};
+         check(parseLaunch(1, plain, false).mcpPort == DefaultMcpPort, "the desk serves MCP on 9949 by default");
+         const char* config[] = {"xr-pilot.exe", "--mcp-config", "--mcp-port", "9950"};
+         const LaunchOptions o = parseLaunch(4, config, true);
+         check(o.mode == LaunchMode::PrintMcpConfig && o.mcpPort == 9950, "--mcp-config prints, even beside a running copy");
+         const char* off[] = {"xr-pilot.exe", "--tray", "--mcp-port", "0"};
+         check(parseLaunch(4, off, false).mcpPort == 0, "--mcp-port 0 starts no server");
+         for (const char* bad : {"abc", "65536", "-1", ""})
+         {
+             const char* argv[] = {"xr-pilot.exe", "--mcp-port", bad};
+             check(parseLaunch(3, argv, false).mode == LaunchMode::Usage, bad);
+         }
+         const char* agent[] = {"xr-pilot.exe", "--mcp-config", "--agent"};
+         check(parseLaunch(3, agent, false).mode == LaunchMode::Usage, "--mcp-config with a pilot flag prints usage");
+     }},
+    {"mcp.token-is-random-and-kept",
+     [] {
+         namespace fs = std::filesystem;
+         const fs::path dir = fs::temp_directory_path() / ("xrpilot-mcp-" + std::to_string(monotonicNowNs()));
+         const std::string a = (dir / "a" / "mcp-token").string();
+         const std::string b = (dir / "b" / "mcp-token").string();
+         std::string first, again, other, error;
+         check(loadOrCreateMcpToken(a, first, &error), error.c_str());
+         check(first.size() == 64 && first.find_first_not_of("0123456789abcdef") == std::string::npos,
+               "a token is 64 hex digits");
+         check(loadOrCreateMcpToken(a, again) && again == first, "the token is kept across starts");
+         check(loadOrCreateMcpToken(b, other) && other != first, "control: another install draws another token");
+         {
+             std::ofstream broken(fs::path(a), std::ios::trunc);
+             broken << "short";
+         }
+         check(loadOrCreateMcpToken(a, again) && again != first && again.size() == 64, "a damaged token is replaced");
+         check(userOnly(a), "only this user can open the token");
+         const std::string plain = (dir / "plain").string();
+         std::ofstream(fs::path(plain)) << first;
+         check(!userOnly(plain), "control: a file written the ordinary way is caught as readable by others");
+         Json parsed;
+         check(parseJson(mcpClientConfig(9949, first), parsed), "the client config is JSON");
+         check(parsed.find("url")->str() == "http://127.0.0.1:9949/mcp" &&
+                   parsed.find("headers")->find("Authorization")->str() == "Bearer " + first,
+               "the client config names the loopback URL and the bearer token");
+         std::error_code ignored;
+         fs::remove_all(dir, ignored);
+     }},
+    {"mcp.router-waits-for-the-pilot",
+     [] {
+         using namespace std::chrono_literals;
+         CommandRouter router;
+         int asked = 0;
+         std::thread opener;
+         const std::string reply = router.route(
+             "state",
+             [&] {
+                 ++asked;
+                 opener = std::thread([&] { router.attach([](const std::string& line) { return "ran " + line; }); });
+             },
+             5000ms);
+         opener.join();
+         check(reply == "ran state" && asked == 1, "a closed pilot is opened once and the command runs on it");
+         check(router.route("state", [&] { ++asked; }, 5000ms) == "ran state" && asked == 1,
+               "an open pilot takes the command without being asked again");
+         router.detach();
+         const std::string none = router.route("state", [] {}, 20ms);
+         check(none.find("did not open") != std::string::npos, "control: a pilot that never opens gives an error");
+         router.close();
+         const auto start = std::chrono::steady_clock::now();
+         const std::string closed = router.route("state", [] {}, 5000ms);
+         check(closed.find("quitting") != std::string::npos && std::chrono::steady_clock::now() - start < 1s,
+               "a closed router refuses at once");
+     }},
+    {"mcp.detach-waits-for-the-command",
+     [] {
+         using namespace std::chrono_literals;
+         CommandRouter router;
+         std::atomic<bool> running{false};
+         std::atomic<bool> finished{false};
+         router.attach([&](const std::string&) {
+             running = true;
+             std::this_thread::sleep_for(100ms);
+             finished = true;
+             return std::string("{\"ok\":true}");
+         });
+         std::thread command([&] { router.route("state", [] {}, 1000ms); });
+         while (!running)
+             std::this_thread::yield();
+         router.detach();
+         check(finished, "the pilot closes only after the command it is running");
+         command.join();
      }},
     {"pace.ticks-evenly-at-90hz",
      [] {
