@@ -119,7 +119,11 @@ std::unique_ptr<Window> Window::create(const WindowConfig& config, SplitTree lay
     impl->config.gamepads = false;
 #endif
     impl->window = SDL_CreateWindow(config.title.c_str(), config.width, config.height,
-                                    SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+                                    SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                        (config.notFocusable ? SDL_WINDOW_NOT_FOCUSABLE : 0) |
+                                        (config.alwaysOnTop ? SDL_WINDOW_ALWAYS_ON_TOP : 0) |
+                                        (config.borderless ? SDL_WINDOW_BORDERLESS : 0) |
+                                        (config.hidden ? SDL_WINDOW_HIDDEN : 0));
     if (!impl->window) {
         if (error) *error = std::string("SDL_CreateWindow: ") + SDL_GetError();
         return nullptr;
@@ -139,7 +143,7 @@ std::unique_ptr<Window> Window::create(const WindowConfig& config, SplitTree lay
         SDL_SetWindowSize(impl->window, w, h);
         SDL_SetWindowPosition(impl->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
-    if (!impl->presenter.init(impl->window, config.vulkanValidation, config.vulkanAllFeatures, error)) return nullptr;
+    if (!impl->presenter.init(impl->window, config.vulkanValidation, config.vulkanAllFeatures, config.deviceExtensions, error)) return nullptr;
 
     if (tvg::Initializer::init(0) != tvg::Result::Success) {
         if (error) *error = "ThorVG failed to initialise";
@@ -169,6 +173,14 @@ bool Window::setPanel(const std::string& id, std::unique_ptr<Panel> panel) {
 }
 
 SplitTree& Window::layout() { return impl_->tree; }
+void Window::setBounds(int x, int y, int width, int height) {
+    SDL_SetWindowPosition(impl_->window, x, y);
+    SDL_SetWindowSize(impl_->window, width, height);
+}
+void Window::show() { SDL_ShowWindow(impl_->window); }
+void* Window::nativeHandle() const {
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(impl_->window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+}
 const VulkanContext& Window::vulkan() const { return impl_->presenter.context(); }
 void Window::requestRedraw() { impl_->dirty = true; }
 void Window::requestRedrawFromAnyThread() {
