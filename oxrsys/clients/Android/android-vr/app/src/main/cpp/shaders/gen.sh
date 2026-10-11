@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Compiles the Android client's shaders to SPIR-V for VulkanRenderer.cpp to embed.
-#
-#   src/main/cpp/shaders/gen.sh    # <name>.<stage>  ->  spirv/<name>_<stage>.inc   (committed)
-#
-# Each .inc is glslc's numeric output, the module's words for a uint32_t array initialiser.
+# Compiles <name>.<stage> to spirv/<name>_<stage>.inc (committed): glslc's numeric output, the SPIR-V
+# words VulkanRenderer.cpp embeds as uint32_t arrays.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

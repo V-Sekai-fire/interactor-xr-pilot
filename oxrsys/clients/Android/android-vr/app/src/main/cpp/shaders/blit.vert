@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// One triangle over the whole viewport, from the vertex index; the viewport clips it to the eye. The renderer
-// flips its viewport, so y points up here as it did in GL and v = 1 is the frame's bottom row.
+// One triangle covering the viewport; with the renderer's flipped viewport, v = 1 is the frame's bottom row.
 #version 450
 
 layout(location = 0) out vec2 vUV;

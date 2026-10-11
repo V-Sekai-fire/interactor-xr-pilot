@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MPL-2.0
-// Converts one eye of the decoded Y, Cb, Cr planes to RGB.
 // Foveated decompression follows ALVR's AADT inverse mapping (MIT licensed).
 // The upscaling branch is an OXRSys edge-aware shader path using ALVR's public defaults.
 #version 450

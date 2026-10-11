@@ -17,17 +17,11 @@
 namespace oxr
 {
 
-/**
- * The client's Vulkan renderer: the device OpenXR asks for, each eye's swapchain images, and the two
- * things drawn into them, the decoded video (Y, Cb, Cr planes converted to RGB) and the local shell.
- *
- * Device functions go through a table of its own, since the decoder points volk's global ones at its
- * own device. One eye at a time: BeginEye, then draws, then EndEye submits before the image is released.
- */
+// Draws the decoded video and the local shell into each eye's swapchain image, one eye at a time.
+// Device calls go through its own volk table, since the decoder points volk's globals at its own device.
 class VulkanRenderer
 {
   public:
-    // The shell's vertex: position, then straight-alpha colour.
     struct ShellVertex
     {
         float x, y, z;
@@ -66,16 +60,12 @@ class VulkanRenderer
         return binding_;
     }
 
-    // The swapchain format to ask for: 8-bit sRGB, as the GL client used.
     int64_t ChooseSwapchainFormat(XrSession session) const;
 
-    // Takes an eye's swapchain images and makes their views and framebuffers, and the pipelines once.
     bool AdoptSwapchain(int eye, XrSwapchain swapchain, int64_t format, uint32_t width, uint32_t height);
 
-    // Copies a decoded frame's planes into the textures the blit samples.
     bool UploadPlanes(const VideoDecoder::DecodedFrame& frame);
 
-    // Starts drawing into an eye's acquired image, cleared to the colour, with the viewport the whole image.
     void BeginEye(int eye, uint32_t imageIndex, const float clearColour[4]);
     // GL's glViewport: x and y from the image's bottom-left corner.
     void SetViewport(int32_t x, int32_t y, uint32_t width, uint32_t height);
@@ -85,7 +75,6 @@ class VulkanRenderer
     // Submits the eye's commands; the image can be released after.
     void EndEye();
 
-    // Lets go of the swapchain images, before OpenXR destroys them.
     void ReleaseSwapchains();
     void Shutdown();
 

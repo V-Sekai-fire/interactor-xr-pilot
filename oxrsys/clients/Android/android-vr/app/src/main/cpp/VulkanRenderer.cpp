@@ -218,6 +218,7 @@ bool VulkanRenderer::AdoptSwapchain(int eye, XrSwapchain swapchain, int64_t form
     std::vector<XrSwapchainImageVulkan2KHR> images(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
     xrEnumerateSwapchainImages(swapchain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
 
+    // A session that becomes ready again brings new swapchains.
     Eye& target = eyes_[eye];
     ReleaseEye(target);
     target.width = width;
@@ -618,6 +619,7 @@ bool VulkanRenderer::UploadPlanes(const VideoDecoder::DecodedFrame& frame)
             return false;
         }
     }
+    // A new size comes with a stream config change; the waits above left nothing sampling the old planes.
     if (resized)
     {
         VkDescriptorImageInfo imageInfos[VideoDecoder::PlaneCount] = {};
@@ -737,6 +739,7 @@ void VulkanRenderer::SetViewport(int32_t x, int32_t y, uint32_t width, uint32_t 
 
 void VulkanRenderer::DrawVideo(const BlitParams& params)
 {
+    // Nothing to sample before the first upload.
     if (planes_[0].image == VK_NULL_HANDLE)
     {
         return;
@@ -793,6 +796,7 @@ void VulkanRenderer::EndEye()
     Eye& target = eyes_[currentEye_];
     vk_.vkCmdEndRenderPass(target.cmd);
     vk_.vkEndCommandBuffer(target.cmd);
+    // The runtime orders its reads of the released image after this queue's work.
     VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &target.cmd;
