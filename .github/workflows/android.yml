@@ -5,9 +5,15 @@ name: android
 
 on:
   workflow_call:
+    inputs:
+      run:
+        description: Build this platform. When false its jobs report as skipped.
+        type: boolean
+        default: true
 
 jobs:
   apk:
+    if: ${{ inputs.run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -16,11 +22,12 @@ jobs:
       run:
         working-directory: oxrsys/clients/Android/android-vr
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
       - name: Build
         run: ./gradlew --no-daemon assembleDebug
       - name: Headset run, unchecked
