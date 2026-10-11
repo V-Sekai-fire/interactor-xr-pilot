@@ -84,7 +84,7 @@ The Android client:
 - requests the server-announced display refresh rate when `XR_FB_display_refresh_rate` is available
 - receives encoded video frames and matches render-pose metadata to each decoded frame before projection submission
 - reuses short decode/network gaps with the configured client reprojection mode
-- decodes PyroWave on a Vulkan device of its own, on a decoder thread, into Y, Cb and Cr R8 planes that it copies into a mapped buffer; the GLES renderer uploads them into R8 textures, so the XR frame loop only acquires and uploads the latest ready plane set. R8 GLES textures exist on every GLES 3 device, where R8 `AHardwareBuffer`s do not (the Steam Frame's Android container has none)
+- decodes PyroWave on a Vulkan device of its own, on a decoder thread, into Y, Cb and Cr R8 planes that it copies into a mapped buffer; the Vulkan renderer copies them into R8 images, so the XR frame loop only acquires and uploads the latest ready plane set. R8 images need no R8 `AHardwareBuffer`s, which some devices lack (the Steam Frame's Android container has none)
 - shows a local shell before video arrives, with status text, a reset button, a passthrough/3D toggle, controller laser interaction, hand laser/pinch interaction, and simple controller/hand-joint markers
 - sends head, controller, and optional hand-tracking data back to the runtime
 - reports latency measurements
@@ -134,12 +134,12 @@ short gaps where the decoder has no new image ready:
 - `pose`: default. Reuse the last decoded texture for short gaps and submit the projection layer with
   the matched server render pose when available. If an exact presentation timestamp match is missing,
   the client may use the latest render pose only when it is recent and monotone.
-- `pose_warp`: adds a conservative GLES shader correction based on the current headset orientation
+- `pose_warp`: adds a conservative shader correction based on the current headset orientation
   delta from the render pose. The warp is intentionally small and disables on missing pose, old
   frames, strong translation, recovery, or more than a few consecutive stale reuses.
 
-The first implementation does not use depth, motion vectors, Vulkan, or `XR_FB_space_warp`. All work
-stays on the existing GLES/EGL texture path, and the plain bilinear/upscaling path remains active
+The first implementation does not use depth, motion vectors, or `XR_FB_space_warp`. All work
+stays in the blit shader, and the plain bilinear/upscaling path remains active
 when the server disables reprojection or when safety checks fail.
 
 Latency reports now include displayed frame age, stale-frame reuse count, reprojected-frame count,

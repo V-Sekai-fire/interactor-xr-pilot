@@ -13,9 +13,10 @@
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
 
-    <!-- OpenGL ES 3.1 required for Quest -->
+    <!-- Vulkan 1.1 for the renderer (negative viewport heights) and the PyroWave decoder -->
     <uses-feature
-        android:glEsVersion="0x00030001"
+        android:name="android.hardware.vulkan.version"
+        android:version="0x401000"
         android:required="true" />
     <uses-feature
         android:name="android.hardware.vr.headtracking"

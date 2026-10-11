@@ -6,17 +6,13 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <GLES3/gl3.h>
-#include <GLES2/gl2ext.h>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <openxr/openxr.h>
+#include "VulkanRenderer.h"
 
 #include "NetworkReceiver.h"
 #include "QuestPassthroughAlphaPolicy.h"
@@ -33,7 +29,7 @@ namespace oxr
  * Main OpenXR application for the streaming client.
  *
  * Manages the OpenXR session lifecycle on the headset:
- * - Creates XrInstance with EGL/OpenGL ES, XrSession, XrSwapchains
+ * - Creates XrInstance with Vulkan, XrSession, XrSwapchains
  * - Discovers the macOS server via UDP broadcast
  * - Receives PyroWave video frames, decodes, and blits to swapchains
  * - Sends head/controller tracking data back to the server
@@ -71,7 +67,6 @@ private:
     };
 
     bool CreateInstance(struct android_app* app);
-    bool InitEgl();
     bool CreateSession();
     bool CreateSwapchains();
     bool InitializeHandTracking();
@@ -124,11 +119,8 @@ private:
 
     bool RenderFrame(XrTime predictedDisplayTime);
     void BlitVideoToSwapchain(int eye);
-    bool CreateShellResources();
-    void DestroyShellResources();
     void ReleaseShellForStream(bool keepPassthrough);
     void RenderShellToSwapchain(int eye, bool transparentBackground);
-    void ClearSwapchain(int eye, float r, float g, float b);
     XrPosef BuildEyePoseFromRenderPose(const NetworkReceiver::RenderPose& renderPose,
                                        int eye) const;
     XrPosef BuildCurrentHeadPose() const;
@@ -204,7 +196,6 @@ private:
     XrPath handPaths_[2] = {};       // /user/hand/left, /user/hand/right
 
     XrSwapchain swapchains_[2] = {};
-    std::vector<uint32_t> swapchainImages_[2]; // GL texture names per eye
     uint32_t swapchainWidth_ = 0;
     uint32_t swapchainHeight_ = 0;
 
@@ -216,37 +207,8 @@ private:
     bool sessionRunning_ = false;
     bool running_ = false;
 
-    // EGL
-    EGLDisplay eglDisplay_ = EGL_NO_DISPLAY;
-    EGLContext eglContext_ = EGL_NO_CONTEXT;
-    EGLConfig eglConfig_ = nullptr;
-
-    // Video rendering (GL resources)
-    GLuint videoTextures_[VideoDecoder::PlaneCount] = {}; // Y, Cb, Cr planes of the decoded frame
-    GLsizei videoTextureWidth_[VideoDecoder::PlaneCount] = {};  // the size each texture was allocated at
-    GLsizei videoTextureHeight_[VideoDecoder::PlaneCount] = {};
-    GLuint blitProgram_ = 0;
-    GLuint blitVao_ = 0;
-    GLuint blitVbo_ = 0;
-    GLuint shellProgram_ = 0;
-    GLuint shellVao_ = 0;
-    GLuint shellVbo_ = 0;
-    GLuint fbo_ = 0;               // Framebuffer for blit-to-swapchain
-    GLint blitEyeSourceMinUniform_ = -1;
-    GLint blitEyeSourceMaxUniform_ = -1;
-    GLint blitLogicalTexelSizeUniform_ = -1;
-    GLint blitFoveatedEncodingEnabledUniform_ = -1;
-    GLint blitClientUpscalingEnabledUniform_ = -1;
-    GLint blitUpscaleEdgeThresholdUniform_ = -1;
-    GLint blitUpscaleSharpnessUniform_ = -1;
-    GLint blitFoveationCenterSizeUniform_ = -1;
-    GLint blitFoveationCenterShiftUniform_ = -1;
-    GLint blitFoveationEdgeRatioUniform_ = -1;
-    GLint blitFoveationEyeSizeRatioUniform_ = -1;
-    GLint blitReprojectionWarpEnabledUniform_ = -1;
-    GLint blitReprojectionWarpOffsetUniform_ = -1;
-    GLint blitPassthroughAlphaEnabledUniform_ = -1;
-    GLint shellMvpUniform_ = -1;
+    // Vulkan: the device, the swapchain images and what is drawn into them
+    VulkanRenderer renderer_;
 
     // Networking
     std::unique_ptr<NetworkReceiver> networkReceiver_;
@@ -329,7 +291,6 @@ private:
     struct PresentedVideoFrame
     {
         bool valid = false;
-        GLuint texture = 0;
         int64_t presentationTimeUs = 0;
         int64_t localReceiveTimeNs = 0;
         int64_t localSubmitTimeNs = 0;

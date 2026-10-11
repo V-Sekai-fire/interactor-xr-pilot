@@ -17,10 +17,9 @@ namespace oxr
  * PyroWave decoder on a Vulkan device of its own.
  *
  * A decode thread decodes the newest submitted frame into three R8 planes (Y, Cb, Cr) on the GPU and
- * copies them into a persistently mapped buffer, waiting for the GPU before publishing them. The GLES
- * renderer uploads the planes into its own R8 textures. Every GLES 3 device samples R8 textures; R8
- * AHardwareBuffers, which sharing the planes with GLES directly would need, are missing on some
- * (the Steam Frame's Android container).
+ * copies them into a persistently mapped buffer, waiting for the GPU before publishing them. The
+ * renderer copies the planes into R8 images on its own Vulkan device. R8 AHardwareBuffers, which sharing
+ * the planes across devices directly would need, are missing on some (the Steam Frame's Android container).
  */
 class VideoDecoder
 {
