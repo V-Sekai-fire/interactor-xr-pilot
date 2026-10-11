@@ -178,6 +178,11 @@ void Window::requestRedrawFromAnyThread() {
     SDL_PushEvent(&e);
 }
 void Window::requestClose() { impl_->closing = true; }
+void Window::setTheme(const Theme& theme) {
+    impl_->config.theme = theme;
+    impl_->dirty = true;
+}
+const Theme& Window::theme() const { return impl_->config.theme; }
 void Window::setRelativeMouse(bool on) {
     if (SDL_SetWindowRelativeMouseMode(impl_->window, on)) impl_->relative = on;
 }

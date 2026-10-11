@@ -71,6 +71,9 @@ public:
     // Safe from any thread: wakes the frame loop and redraws, for content produced off the UI thread.
     void requestRedrawFromAnyThread();
     void requestClose();
+    // Repaints with these colours from the next frame, such as on a light or dark switch; call it on the UI thread.
+    void setTheme(const Theme& theme);
+    const Theme& theme() const;
     // Hides the cursor and reports motion as dx, dy to the panel that has the keyboard; focus loss turns it off.
     void setRelativeMouse(bool on);
     bool relativeMouse() const;
