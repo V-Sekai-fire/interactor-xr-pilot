@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 #
-# Builds the Android headset client's debug APK, attached to the release on a version tag.
+# Builds the Android headset client's debug APK: an artifact of every run, and attached to the release on a
+# version tag.
 name: android
 
 on:
@@ -30,6 +31,12 @@ jobs:
           cache: gradle
       - name: Build
         run: ./gradlew --no-daemon assembleDebug
+      # Every run's APK, so a pull request's client can be put on a headset before it merges.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oxrsys-android-debug-apk
+          path: oxrsys/clients/Android/android-vr/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
       - name: Headset run, unchecked
         run: echo "UNCHECKED 1 - the APK is built, not run; nothing here exercises it on a headset"
       - name: Attach to the release
