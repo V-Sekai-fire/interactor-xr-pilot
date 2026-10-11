@@ -213,9 +213,10 @@ add_executable(trace_roundtrip tools/trace_roundtrip.cpp)
 target_link_libraries(trace_roundtrip PRIVATE xrpilot_gpu xrpilot_core)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
-# A CineForm SDK checkout (interactor-av1mkv's thirdparty/cineform-sdk) adds the recording tools:
-# frames2cfhd from kept PNG frames, pyro2cfhd from a --record-stream recording.
-set(XRPILOT_CINEFORM_DIR "" CACHE PATH "CineForm SDK checkout for frames2cfhd and pyro2cfhd")
+# The CineForm SDK (V-Sekai-fire/cineform-sdk, subtreed) adds the recording tools: frames2cfhd from kept
+# PNG frames, pyro2cfhd from a --record-stream recording. An empty path leaves them out.
+set(XRPILOT_CINEFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cineform-sdk" CACHE PATH
+    "CineForm SDK for frames2cfhd and pyro2cfhd")
 if(XRPILOT_CINEFORM_DIR)
     set(CMAKE_DISABLE_FIND_PACKAGE_OpenMP ON)
     set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
@@ -224,7 +225,8 @@ if(XRPILOT_CINEFORM_DIR)
     set(BUILD_SEPARATED OFF CACHE BOOL "" FORCE)
     add_subdirectory(${XRPILOT_CINEFORM_DIR} cineform-sdk EXCLUDE_FROM_ALL)
     if(NOT MSVC)
-        target_compile_options(CFHDCodecStatic PRIVATE -w)
+        target_compile_options(CFHDCodecStatic PRIVATE -w
+            $<$<COMPILE_LANGUAGE:C>:-Wno-incompatible-pointer-types -Wno-incompatible-function-pointer-types>)
     endif()
     add_executable(frames2cfhd tools/frames2cfhd.cpp)
     target_include_directories(frames2cfhd PRIVATE ${XRPILOT_CINEFORM_DIR}/Common)
