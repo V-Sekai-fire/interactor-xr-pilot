@@ -46,6 +46,13 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(static_cast<uint8_t>(ControlType::BodyPose) == 0x88);
     STATIC_REQUIRE(SERVER_FEATURE_STREAM_RECONFIGURE == 0x00000010);
     STATIC_REQUIRE(CLIENT_CAPABILITY_STREAM_RECONFIGURE == 0x00000010);
+    // A layout mismatch XORs the wrong packets together, so these bits must agree with upstream's
+    // (demonixis/oxrsys#30), as must ten-bit's, which upstream already ships; this fork's spectator
+    // bit stays clear of them.
+    STATIC_REQUIRE(SERVER_FEATURE_FEC_INTERLEAVED == 0x00000400);
+    STATIC_REQUIRE(CLIENT_CAPABILITY_FEC_INTERLEAVED == 0x00001000);
+    STATIC_REQUIRE(CLIENT_CAPABILITY_TEN_BIT_ENCODING == 0x00000400);
+    STATIC_REQUIRE(CLIENT_CAPABILITY_SPECTATOR == 0x80000000u);
 
     STATIC_REQUIRE(sizeof(TrackingPacket) == 1008);
     STATIC_REQUIRE(offsetof(TrackingPacket, headLinearVelocity) == 152);
