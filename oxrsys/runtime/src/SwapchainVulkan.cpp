@@ -4,6 +4,7 @@
 #include "Runtime.h"
 #include "VulkanDispatch.h"
 #include "D3D11Interop.h"
+#include "LinuxVulkanInterop.h"
 
 #include <spdlog/spdlog.h>
 #include <vulkan/vulkan.h>
@@ -459,21 +460,26 @@ FrameImageSource Swapchain::GetLastReleasedFrameImageSource(uint32_t arrayIndex)
     return Win32StageSwapchainSlice(win32State_, lastReleasedIndex_, arrayIndex);
 #endif
 
-    if (vkImages_.empty())
+    if (vkImages_.empty() || vkImages_[lastReleasedIndex_] == 0)
     {
         return {};
     }
 
-    void* image = reinterpret_cast<void*>(vkImages_[lastReleasedIndex_]);
-    if (image == nullptr)
-    {
-        return {};
-    }
-
+#if defined(__linux__)
+    // Session copies the eyes into a packed image for the encoder (LinuxPackVulkanFrame).
+    auto* eye = new LinuxEyeSlice{};
+    eye->image = reinterpret_cast<VkImage>(vkImages_[lastReleasedIndex_]);
+    eye->arrayIndex = arrayIndex;
+    eye->width = width_;
+    eye->height = height_;
+    eye->format = static_cast<VkFormat>(format_);
     FrameImageSource source = {};
     source.api = GraphicsApi::Vulkan;
-    source.image = std::shared_ptr<void>(image, [](void*) {});
+    source.image = std::shared_ptr<void>(eye, [](void* ptr) { delete static_cast<LinuxEyeSlice*>(ptr); });
     return source;
+#else
+    return {};
+#endif
 }
 
 void Swapchain::ReleaseTextureSlice(void* /*textureSlice*/)

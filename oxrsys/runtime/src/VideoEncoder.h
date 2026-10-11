@@ -90,7 +90,7 @@ public:
 
     bool IsInitialized() const
     {
-        return pyrowave_.encoder != nullptr || win32_ != nullptr;
+        return pyrowave_.encoder != nullptr || win32_ != nullptr || linux_ != nullptr;
     }
 
     // Stats
@@ -146,6 +146,7 @@ private:
     MetalState metal_ = {};
     PyroWaveState pyrowave_ = {};
     void* win32_ = nullptr;           // Win32PyroWaveState* (PyroWaveVideoEncoder.cpp)
+    void* linux_ = nullptr;           // LinuxPyroWaveState* (PyroWaveVideoEncoderLinux.cpp)
 
     uint32_t width_ = 0;       // Total encoded width (may be 2x eye width for stereo)
     uint32_t height_ = 0;
