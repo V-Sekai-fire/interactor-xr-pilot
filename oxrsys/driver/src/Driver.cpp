@@ -93,7 +93,9 @@ void StartTray()
         Log("oxrsys: no tray to start; run xr-pilot once to record it");
         return;
     }
-    std::wstring commandLine = L"\"" + std::wstring(path) + L"\"";
+    // The tray alone: with no flags xr-pilot also opens the pilot, which connects to this machine's runtime
+    // and takes the stream from the headset SteamVR is driving.
+    std::wstring commandLine = L"\"" + std::wstring(path) + L"\" --tray";
     STARTUPINFOW startup = {};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process = {};
