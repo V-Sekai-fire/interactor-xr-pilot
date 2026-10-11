@@ -1688,6 +1688,17 @@ void StreamingServer::EncodeThread()
     spdlog::info("StreamingServer: Encode thread ended");
 }
 
+void StreamingServer::RememberClientDisplayEye(const oxr::protocol::ClientConnect& clientConnect)
+{
+    clientDisplayEyeWidth_.store(clientConnect.displayEyeWidth);
+    clientDisplayEyeHeight_.store(clientConnect.displayEyeHeight);
+    if (clientConnect.displayEyeHeight > 0)
+    {
+        spdlog::info("StreamingServer: the client shows {}x{} per eye", clientConnect.displayEyeWidth,
+                     clientConnect.displayEyeHeight);
+    }
+}
+
 void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& clientConnect,
                                           const sockaddr_in& clientAddr)
 {
@@ -1727,6 +1738,7 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
         ? clientConnect.refreshRateHz
         : refreshRateHz_;
     targetRefreshRateHz_.store(negotiatedRefresh);
+    RememberClientDisplayEye(clientConnect);
     UpdatePredictionHorizon();
 
     if (trackingReceiver_ != nullptr)
@@ -1870,6 +1882,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         ? clientConnect.refreshRateHz
         : refreshRateHz_;
     targetRefreshRateHz_.store(negotiatedRefresh);
+    RememberClientDisplayEye(clientConnect);
     UpdatePredictionHorizon();
 
     if (trackingReceiver_ != nullptr)

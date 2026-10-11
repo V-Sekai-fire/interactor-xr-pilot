@@ -20,6 +20,9 @@ TEST_CASE("C++ protocol layouts match the documented wire format", "[protocol]")
     STATIC_REQUIRE(offsetof(ServerAnnounce, renderEyeTangents) == 152);
     STATIC_REQUIRE(sizeof(ClientConnect) == 96);
     STATIC_REQUIRE(offsetof(ClientConnect, clientCapabilities) == CLIENT_CONNECT_BASE_SIZE);
+    // v1.4 took the two reserved words, so the message keeps its size.
+    STATIC_REQUIRE(offsetof(ClientConnect, displayEyeWidth) == 88);
+    STATIC_REQUIRE(offsetof(ClientConnect, displayEyeHeight) == 92);
     STATIC_REQUIRE(sizeof(VideoPacketHeader) == 24);
     STATIC_REQUIRE(offsetof(VideoPacketHeader, fecGroupLastPacketPayloadSize) == 12);
     STATIC_REQUIRE(offsetof(VideoPacketHeader, reserved) == 14);

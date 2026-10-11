@@ -73,6 +73,12 @@ public:
     // Leaves the runtime and stays away until connectNow or auto-connect.
     void disconnect();
     void setAutoConnect(bool on);
+    // The pixels per eye the headset's compositor recommends, sent with the next connect (0 when unknown).
+    void setDisplayEye(uint32_t width, uint32_t height)
+    {
+        displayEyeWidth_ = width;
+        displayEyeHeight_ = height;
+    }
     // Spectator: watches this machine's runtime, whose session a headset owns, without taking it. The
     // client sends its ClientConnect with CLIENT_CAPABILITY_SPECTATOR to loopback every SpectatorHeartbeatNs,
     // ignores announces, and sends no tracking, keyframe requests or latency reports.
@@ -101,6 +107,8 @@ private:
     std::function<void()> onFrame_;
     std::atomic<bool> running_{false};
     std::atomic<bool> spectator_{false};
+    std::atomic<uint32_t> displayEyeWidth_{0};
+    std::atomic<uint32_t> displayEyeHeight_{0};
     int64_t lastSpectatorConnectNs_ = 0; // under mutex_
     std::thread discovery_;
     std::thread video_;
