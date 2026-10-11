@@ -2347,6 +2347,8 @@ void XrApp::SendClientConnect(const char* serverIp)
         ? protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG
         : 100;
     connect.refreshRateHz = clientRefreshRateHz_;
+    connect.displayEyeWidth = swapchainWidth_;
+    connect.displayEyeHeight = swapchainHeight_;
     if (spectating_.load())
     {
         // The owner's capabilities shape the stream; a spectator only asks to watch it.

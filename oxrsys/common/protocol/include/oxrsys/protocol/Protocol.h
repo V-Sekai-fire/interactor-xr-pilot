@@ -235,8 +235,11 @@ struct ClientConnect
     // prefix so older servers can still parse the original connect message.
     uint32_t clientCapabilities = 0; // ClientCapabilityFlags
     uint32_t audioSampleRateHz = 48000;
-    uint32_t reserved2 = 0;
-    uint32_t reserved3 = 0;
+    // Protocol v1.4: the pixels per eye the headset's compositor recommends (recommendedImageRect), in
+    // what were two reserved words; zero when the client does not say. A server that renders a fixed size
+    // (the SteamVR driver) saves it for its next start.
+    uint32_t displayEyeWidth = 0;
+    uint32_t displayEyeHeight = 0;
 };
 
 // ─── Video Stream (Server → Client, UDP on VIDEO_PORT) ──────────────────────
