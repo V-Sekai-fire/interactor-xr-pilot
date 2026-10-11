@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 
 $required = @(
     'bin\xr-pilot.exe',
+    'bin\xr_pilot_mcp.exe',
     'bin\resources\tray_idle.png',
     'runtime\liboxrsys-runtime.dll',
     'runtime\oxrsys-runtime.json',

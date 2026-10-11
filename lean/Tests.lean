@@ -398,6 +398,25 @@ def main : IO UInt32 := do
     let cases ← try IO.FS.readFile "../oxrsys/tests/StreamModelCases.h" catch _ => pure ""
     c (cases == Stream.emitCpp) "oxrsys/tests/StreamModelCases.h is what the model emits (lake exe emit_stream_cases)"
 
+  let tok := "0123456789abcdef0123456789abcdef"
+  let bearer := some ("Bearer " ++ tok)
+  let host := some "127.0.0.1:9947"
+  let absent : Option String := Option.none
+  c (admit tok 9947 bearer host absent).isNone "a request from a local agent with the token is admitted"
+  c (admit tok 9947 bearer (some "localhost:9947") (some "http://localhost:9947")).isNone
+    "the server's own origin is admitted"
+  c ((admit tok 9947 absent host absent) == some .unauthorized) "a request without the token is refused"
+  c ((admit tok 9947 (some ("Bearer " ++ tok.dropEnd 1 ++ "0")) host absent) == some .unauthorized)
+    "a wrong token is refused"
+  c ((admit tok 9947 (some tok) host absent) == some .unauthorized) "a token without the Bearer scheme is refused"
+  c ((admit tok 9947 bearer (some "evil.example:9947") absent) == some .foreignHost)
+    "a rebound host name is refused"
+  c ((admit tok 9947 bearer host (some "http://evil.example")) == some .foreignOrigin)
+    "a web page's origin is refused"
+  c ((admit tok 9947 bearer (some "127.0.0.1:9948") absent) == some .foreignHost) "another port's host is refused"
+  c ((admit "" 9947 (some "Bearer ") host absent) == some .unauthorized) "an empty token admits nothing"
+  c (sameSecret "abc" "abc" && !sameSecret "abc" "abd" && !sameSecret "abc" "abcd") "sameSecret compares whole strings"
+
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"
   return if n == 0 then 0 else 1
