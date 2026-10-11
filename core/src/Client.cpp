@@ -234,6 +234,17 @@ intptr_t bindExclusiveUdp(uint16_t port, std::string* error)
     return s;
 }
 
+uint16_t boundUdpPort(intptr_t s)
+{
+    if (s < 0)
+        return 0;
+    sockaddr_in address{};
+    SocketLength length = sizeof(address);
+    if (getsockname(NativeSocket(s), reinterpret_cast<sockaddr*>(&address), &length) != 0)
+        return 0;
+    return ntohs(address.sin_port);
+}
+
 void closeUdp(intptr_t s)
 {
     if (s < 0)
