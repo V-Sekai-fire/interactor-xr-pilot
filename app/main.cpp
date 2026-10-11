@@ -56,6 +56,7 @@ constexpr int PScancode = 19;
 struct Shared
 {
     std::mutex mutex;
+    bool colourChecker = false; // the trace panel shows the GUI colour checker instead
     std::condition_variable done;
     std::string screenshotPath; // pending request, served on the window thread
     std::string screenshotReply;
@@ -475,7 +476,7 @@ public:
         // Read from the code: HeadGizmo and Rotation (-Z forward, +Y up), the body overlay (floor y = 0),
         // the hologram rasterizer (no culling) and the screenshot pixels point_at and click take.
         float ly = y + size + 4.0f * ctx.scale;
-        for (const char* line : {"Godot axes: UP +Y (floor y = 0), FORWARD -Z, RIGHT +X, right-handed",
+        for (const char* line : {"Godot: UP +Y, FORWARD -Z, RIGHT +X; floor y = 0",
                                  "Front faces CCW as glTF and OpenXR (Godot ArrayMesh: CW)",
                                  "Screenshot pixels: origin top left, x right, y down"})
         {
@@ -497,41 +498,34 @@ private:
 class ColourCheckerWidget final : public Widget
 {
 public:
-    void show(bool on) { shown_ = on; }
-    float height(float scale) const override
-    {
-        return shown_ ? (4.0f * 20.0f + 6.0f + float(roles().size()) * 16.0f) * scale : 0.0f;
-    }
+    float height(float scale) const override { return (4.0f * 17.0f + 6.0f + float(roles().size()) * 15.0f) * scale; }
 
     void draw(DrawContext& ctx, float x, float y, float w) override
     {
-        if (!shown_)
-            return;
         const Palette& p = *currentPalette;
         const float s = ctx.scale;
         const float patch = std::min(w / 6.0f, 30.0f * s);
         for (int i = 0; i < 24; ++i)
-            drawRect(ctx, x + float(i % 6) * patch, y + float(i / 6) * 20.0f * s, patch - 3.0f * s, 17.0f * s, 2.0f * s,
+            drawRect(ctx, x + float(i % 6) * patch, y + float(i / 6) * 17.0f * s, patch - 3.0f * s, 14.0f * s, 2.0f * s,
                      colour(LookDev24[i]));
-        y += (4.0f * 20.0f + 6.0f) * s;
+        y += (4.0f * 17.0f + 6.0f) * s;
         for (const Role& r : roles())
         {
             const Rgb fg = r.surface ? p.text : p.*r.colour;
             const Rgb bg = r.surface ? p.*r.colour : p.panel;
             const double ratio = contrast(fg, bg);
             const bool pass = ratio >= r.needs;
-            const float mid = y + 8.0f * s;
-            drawRect(ctx, x, y + 2.0f * s, 24.0f * s, 12.0f * s, 2.0f * s, colour(p.*r.colour));
+            const float mid = y + 7.5f * s;
+            drawRect(ctx, x, y + 1.5f * s, 18.0f * s, 12.0f * s, 2.0f * s, colour(p.*r.colour));
             if (r.surface)
-                drawText(ctx, "Aa", 10.0f, x + 12.0f * s, mid, 0.5f, colour(p.text));
+                drawText(ctx, "a", 10.0f, x + 9.0f * s, mid, 0.5f, colour(p.text));
             char ratioText[16];
-            std::snprintf(ratioText, sizeof(ratioText), "%.1f:1", ratio);
+            std::snprintf(ratioText, sizeof(ratioText), "%.1f", ratio);
             const Color c = colour(pass ? p.text : p.faultText);
-            drawText(ctx, r.name, 13.0f, x + 32.0f * s, mid, 0.0f, c);
-            drawText(ctx, ratioText, 13.0f, x + w * 0.62f, mid, 1.0f, c);
-            drawText(ctx, std::string(pass ? "pass " : "FAIL ") + (r.needs > 4.0 ? "text" : "mark"), 13.0f,
-                     x + w * 0.66f, mid, 0.0f, c);
-            y += 16.0f * s;
+            drawText(ctx, r.name, 11.0f, x + 24.0f * s, mid, 0.0f, c);
+            drawText(ctx, ratioText, 11.0f, x + w - 18.0f * s, mid, 1.0f, c);
+            drawText(ctx, pass ? "ok" : "x", 11.0f, x + w - 14.0f * s, mid, 0.0f, c);
+            y += 15.0f * s;
         }
     }
 
@@ -552,10 +546,10 @@ private:
     static const std::vector<Role>& roles()
     {
         static const std::vector<Role> all{
-            {"background", &Palette::background, 4.5, true}, {"panel", &Palette::panel, 4.5, true},
+            {"bg", &Palette::background, 4.5, true}, {"panel", &Palette::panel, 4.5, true},
             {"header", &Palette::header, 4.5, true},         {"control", &Palette::control, 4.5, true},
-            {"controlHover", &Palette::controlHover, 4.5, true}, {"muted", &Palette::muted, 4.5, false},
-            {"faultText", &Palette::faultText, 4.5, false},  {"accent", &Palette::accent, 3.0, false},
+            {"hover", &Palette::controlHover, 4.5, true}, {"muted", &Palette::muted, 4.5, false},
+            {"fault text", &Palette::faultText, 4.5, false},  {"accent", &Palette::accent, 3.0, false},
             {"rule", &Palette::rule, 3.0, false},            {"good", &Palette::good, 3.0, false},
             {"warning", &Palette::warning, 3.0, false},      {"fault", &Palette::fault, 3.0, false},
             {"info", &Palette::info, 3.0, false},            {"axisX", &Palette::axisX, 3.0, false},
@@ -563,7 +557,6 @@ private:
         };
         return all;
     }
-    bool shown_ = false;
 };
 
 // The agent's tool calls as a trace: one row per span with its status, name and duration, newest at
@@ -579,6 +572,11 @@ public:
 
     void draw(DrawContext& ctx) override
     {
+        if (shared_.colourChecker)
+        {
+            checker_.draw(ctx, 10.0f * ctx.scale, 10.0f * ctx.scale, ctx.width - 20.0f * ctx.scale);
+            return;
+        }
         const std::vector<Span> spans = shared_.spans.visible();
         rows_.clear();
         const int64_t now = nowNs() / 1'000'000;
@@ -671,6 +669,7 @@ private:
         std::string id;
     };
     std::vector<Row> rows_;
+    ColourCheckerWidget checker_;
 
     // The text cut to fit width at the UI font's average glyph width, so a label never runs into the bar.
     static std::string fit(const std::string& text, float width, float points, float scale)
@@ -806,23 +805,22 @@ public:
             shared_.ui.record(UiAction::Seated, true, on ? "on" : "off");
             client_.updateAgent([on](AgentState& s) { setSeated(s, on); });
         }));
-        pose_ = add(std::make_unique<Label>(""));
-        add(std::make_unique<Toggle>("Conventions", true, [this](bool on) {
-            shared_.ui.record(UiAction::Conventions, true, on ? "on" : "off");
-            gizmo_->showConventions(on);
-        }));
-        gizmo_ = add(std::make_unique<HeadGizmoWidget>());
         appearance_ = add(std::make_unique<Label>(""));
         add(std::make_unique<Button>("Switch appearance", [this] {
             appearanceChoice_ = nextAppearance(appearanceChoice_);
             shared_.ui.record(UiAction::Appearance, true, appearanceName(appearanceChoice_));
             applyScheme();
         }));
-        add(std::make_unique<Toggle>("Colour checker", false, [this](bool on) {
+        add(std::make_unique<Toggle>("Colour checker", shared_.colourChecker, [this](bool on) {
             shared_.ui.record(UiAction::ColourChecker, true, on ? "on" : "off");
-            checker_->show(on);
+            shared_.colourChecker = on;
         }));
-        checker_ = add(std::make_unique<ColourCheckerWidget>());
+        pose_ = add(std::make_unique<Label>(""));
+        add(std::make_unique<Toggle>("Conventions", true, [this](bool on) {
+            shared_.ui.record(UiAction::Conventions, true, on ? "on" : "off");
+            gizmo_->showConventions(on);
+        }));
+        gizmo_ = add(std::make_unique<HeadGizmoWidget>());
         capture_ = add(std::make_unique<Label>(""));
         for (const char* help : {"Drag the view to look; click to capture, Esc lets go",
                                  "WASD walk, wheel sets its speed, E/R roll",
@@ -879,8 +877,8 @@ public:
                        fixed(a.head.position[2], 2));
         gizmo_->set(a.head.rotation);
         capture_->setText(shared_.captured ? "Mouse captured" : "Mouse free");
-        appearance_->setText(std::string("Appearance ") + appearanceName(appearanceChoice_) + ", " +
-                             (scheme_ == Scheme::Dark ? "dark" : "light"));
+        appearance_->setText(appearanceChoice_ != Appearance::Auto ? std::string("Appearance ") + appearanceName(appearanceChoice_)
+                             : scheme_ == Scheme::Dark ? "Appearance auto (dark)" : "Appearance auto (light)");
         WidgetPanel::draw(ctx);
     }
 
@@ -899,9 +897,8 @@ private:
 
     Window* window_ = nullptr;
     Appearance appearanceChoice_ = Appearance::Auto;
-    Scheme scheme_ = systemDark() ? Scheme::Dark : Scheme::Light;
+    Scheme scheme_ = currentPalette == &palette(Scheme::Dark) ? Scheme::Dark : Scheme::Light;
     Label* appearance_ = nullptr;
-    ColourCheckerWidget* checker_ = nullptr;
     Client& client_;
     Shared& shared_;
     Label* connection_ = nullptr;
