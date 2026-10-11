@@ -72,6 +72,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- Fixed the Android client declaring the headset's own view for a streamed frame. A server that renders a fixed view (the SteamVR driver announces it in `renderEyeTangents`) drew a different one, so the picture was scaled and the world turned with the head. The client now declares the view the frame was rendered with: the announced one, or else the left eye it sent, with the right eye as its mirror, as the server renders it.
 - Ported the interleaved FEC layout from demonixis/oxrsys#30 (commits `875a76b6` and `ea0893e6`, by nburns), negotiated with `CLIENT_CAPABILITY_FEC_INTERLEAVED` (`0x1000`) and `SERVER_FEATURE_FEC_INTERLEAVED` (`0x400`). A contiguous parity group lost any two adjacent packets together, the common case on Wi-Fi; interleaving spreads each group across the frame and recovers bursts up to the group count at the same parity overhead. The Android client advertises it and assembles frames with the shared `common/streaming` `VideoFrameAssembler`, which also recovers as soon as the parity held covers everything missing. The Apple client and XR Pilot keep the contiguous layout, and a spectator gets parity only for that layout.
 - Moved `CLIENT_CAPABILITY_SPECTATOR` from `0x400` to `0x80000000`. Upstream oxrsys ships `0x400` as `CLIENT_CAPABILITY_TEN_BIT_ENCODING`, so an upstream client decoding 10-bit HEVC would have been taken for a spectator and never given the session.
 
