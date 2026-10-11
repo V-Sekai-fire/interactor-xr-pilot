@@ -66,6 +66,11 @@ if(PANELSPUN_GPU_TESTS AND TARGET panelspun-demo)
   add_test(NAME demo.tick-wakes-idle-loop COMMAND panelspun-demo --tick-check 30)
   add_test(NAME demo.control-no-tick-stays-idle COMMAND panelspun-demo --tick-check 30 --no-tick)
   set_tests_properties(demo.control-no-tick-stays-idle PROPERTIES WILL_FAIL TRUE)
+  add_test(NAME demo.theme-switch-repaints
+    COMMAND panelspun-demo --frames 4 --screenshot ${CMAKE_CURRENT_BINARY_DIR}/demo-theme.bmp --check --theme-check)
+  add_test(NAME demo.control-no-theme-switch-keeps-colour
+    COMMAND panelspun-demo --frames 4 --screenshot ${CMAKE_CURRENT_BINARY_DIR}/demo-theme-control.bmp --check --theme-check --no-theme-switch)
+  set_tests_properties(demo.control-no-theme-switch-keeps-colour PROPERTIES WILL_FAIL TRUE)
   add_test(NAME demo.polyline-drawn
     COMMAND panelspun-demo --frames 4 --screenshot ${CMAKE_CURRENT_BINARY_DIR}/demo-line.bmp --check --polyline-check)
   add_test(NAME demo.control-no-polyline-fails
