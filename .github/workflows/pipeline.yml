@@ -19,53 +19,87 @@ permissions:
   contents: write # the tag builds attach their packages to the release
 
 jobs:
-  # What changed, for the parts that build only when their files do.
+  # What changed, for the parts that build only when their files do. A pull request builds the platforms
+  # its files reach; a skipped platform still reports its checks, as skipped. Pushes to main, tags and
+  # manual runs build every platform; edge keeps its file filter on main too.
   plan:
     runs-on: ubuntu-24.04
     outputs:
+      core: ${{ steps.changes.outputs.core }}
+      linux-runtime: ${{ steps.changes.outputs.linux-runtime }}
+      macos: ${{ steps.changes.outputs.macos }}
+      android: ${{ steps.changes.outputs.android }}
       edge: ${{ steps.changes.outputs.edge }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - id: changes
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          edge=true
+          files=$RUNNER_TEMP/changed.txt
           if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && [ -n "$BASE" ] && git cat-file -e "$BASE" 2>/dev/null; then
-            git diff --name-only "$BASE" HEAD | grep -qE '^(edge/|third_party/picoquic/|third_party/picotls/|\.github/workflows/(edge|pipeline)\.yml$)' || edge=false
+            # Prose builds nothing.
+            git diff --name-only "$BASE" HEAD | grep -vE '\.md$|^LICENSE-|^CITATION\.cff$|(^|/)docs/' > "$files" || true
+          else
+            echo '.github/workflows/pipeline.yml' > "$files"
           fi
-          echo "edge=$edge" | tee -a "$GITHUB_OUTPUT"
+          cat "$files"
+          # touches <include> [exclude]: a changed file matches include and not exclude; pipeline.yml reaches all.
+          touches() {
+            grep -qE '^\.github/workflows/pipeline\.yml$' "$files" && return 0
+            grep -E "$1" "$files" | grep -vE "${2:-^$}" > /dev/null # no -q: an early exit would SIGPIPE the first grep under pipefail
+          }
+          platform() {
+            if [ "$GITHUB_EVENT_NAME" != pull_request ] || touches "$@"; then echo true; else echo false; fi
+          }
+          {
+            echo "core=$(platform '.' '^oxrsys/clients/|^edge/|^third_party/(picoquic|picotls)/|^\.github/workflows/(linux-runtime|macos|android|edge|slot-keeper)\.yml$')"
+            echo "linux-runtime=$(platform '^oxrsys/|^\.github/workflows/linux-runtime\.yml$' '^oxrsys/clients/')"
+            echo "macos=$(platform '^oxrsys/|^\.github/workflows/macos\.yml$' '^oxrsys/clients/Android/')"
+            echo "android=$(platform '^oxrsys/(clients/Android|config)/|^\.github/workflows/android\.yml$')"
+            if touches '^(edge/|third_party/(picoquic|picotls)/|\.github/workflows/edge\.yml$)'; then echo edge=true; else echo edge=false; fi
+          } | tee -a "$GITHUB_OUTPUT"
 
   ci:
     needs: plan
     if: ${{ !cancelled() && github.ref_type != 'tag' }}
     uses: ./.github/workflows/ci.yml
+    with:
+      run: ${{ needs.plan.outputs.core == 'true' }}
     secrets: inherit
 
   linux-runtime:
-    needs: ci
+    needs: [plan, ci]
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/linux-runtime.yml
+    with:
+      run: ${{ needs.plan.outputs.linux-runtime == 'true' }}
     secrets: inherit
 
   windows-msi:
-    needs: linux-runtime
+    needs: [plan, linux-runtime]
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/windows-msi.yml
+    with:
+      run: ${{ needs.plan.outputs.core == 'true' }}
     secrets: inherit
 
   macos:
-    needs: windows-msi
+    needs: [plan, windows-msi]
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/macos.yml
+    with:
+      run: ${{ needs.plan.outputs.macos == 'true' }}
     secrets: inherit
 
   android:
-    needs: macos
+    needs: [plan, macos]
     if: ${{ !cancelled() }}
     uses: ./.github/workflows/android.yml
+    with:
+      run: ${{ needs.plan.outputs.android == 'true' }}
     secrets: inherit
 
   edge:

@@ -7,19 +7,25 @@ name: macos
 
 on:
   workflow_call:
+    inputs:
+      run:
+        description: Build this platform. When false its jobs report as skipped.
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
   runtime:
+    if: ${{ inputs.run }}
     runs-on: macos-26
     timeout-minutes: 45
     defaults:
       run:
         working-directory: oxrsys
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Metal device
         id: metal
         run: |
@@ -50,28 +56,26 @@ jobs:
 
   swift-packages:
     needs: runtime
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.run }}
     runs-on: macos-26
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 1 # one runner at a time (the repo's CI slot)
-      matrix:
-        package: [OXRSysStreaming, OXRSysSimulator]
+    defaults:
+      run:
+        working-directory: oxrsys/clients/Apple/common
     steps:
-      - uses: actions/checkout@v4
-      - name: Build
-        run: swift build --package-path oxrsys/clients/Apple/common/${{ matrix.package }}
-      - name: Test
-        if: matrix.package == 'OXRSysStreaming'
-        run: swift test --package-path oxrsys/clients/Apple/common/${{ matrix.package }}
-      - name: Test, unchecked without a test target
-        if: matrix.package != 'OXRSysStreaming'
-        run: echo "UNCHECKED 1 - ${{ matrix.package }} has no test target; it is built only"
+      - uses: actions/checkout@v5
+      - name: OXRSysStreaming
+        run: |
+          swift build --package-path OXRSysStreaming
+          swift test --package-path OXRSysStreaming
+      - name: OXRSysSimulator
+        run: swift build --package-path OXRSysSimulator
+      - name: OXRSysSimulator test, unchecked without a test target
+        run: echo "UNCHECKED 1 - OXRSysSimulator has no test target; it is built only"
 
   apps:
     needs: swift-packages
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.run }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -80,7 +84,7 @@ jobs:
       run:
         working-directory: oxrsys
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: SDKs
         run: xcodebuild -showsdks
       - name: Home
@@ -111,7 +115,7 @@ jobs:
           cp -R build/xcode/Build/Products/Debug/*.app build/dmg/
           ls build/dmg
           hdiutil create -volname OXRSys -srcfolder build/dmg -format UDRO dist/oxrsys-macos-apps-unsigned.dmg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: oxrsys-macos-apps
           path: oxrsys/dist/*.dmg

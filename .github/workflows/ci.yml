@@ -5,14 +5,31 @@ name: ci
 
 on:
   workflow_call:
+    inputs:
+      run:
+        description: Build this platform. When false its jobs report as skipped.
+        type: boolean
+        default: true
 
 jobs:
   windows:
+    if: ${{ inputs.run }}
     runs-on: windows-2025
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@v5
+      - name: MSVC x64 environment
+        shell: pwsh
+        # The variables vcvars64 adds or changes, for the steps after this one.
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw "MSVC x64 tools not found" }
+          $before = @{}
+          Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -ne $Matches[2]) { "$($Matches[1])=$($Matches[2])" }
+          } | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DXRPILOT_BUILD_OXRSYS=OFF
@@ -32,11 +49,11 @@ jobs:
 
   linux-core:
     needs: windows
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Core
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXRPILOT_BUILD_APP=OFF

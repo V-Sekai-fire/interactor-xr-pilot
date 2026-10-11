@@ -7,18 +7,24 @@ name: windows-msi
 
 on:
   workflow_call:
+    inputs:
+      run:
+        description: Build this platform. When false its jobs report as skipped.
+        type: boolean
+        default: true
 
 jobs:
   msi:
+    if: ${{ inputs.run }}
     runs-on: windows-2025
     timeout-minutes: 60
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # the version comes from the newest v* tag (cmake/XrPilotVersion.cmake)
-      - uses: prefix-dev/setup-pixi@v0.8.8
+      - uses: prefix-dev/setup-pixi@v0.9.0
         with:
           cache: true
       - name: Build
@@ -57,7 +63,7 @@ jobs:
         run: Get-ChildItem dist/*.msi | ForEach-Object { scripts/windows_check_msi.ps1 $_.FullName; if ($LASTEXITCODE) { exit 1 } }
       - name: Per-user install unelevated, unchecked
         run: echo "UNCHECKED 1 - this runner's shell is elevated, so the install proves the per-user scope but not the absence of a UAC prompt; that runs on the Windows desk"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: xr-pilot-windows-msi
           path: dist/*.msi
