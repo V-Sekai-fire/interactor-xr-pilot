@@ -495,14 +495,18 @@ private:
     bool conventions_ = true;
 };
 
-// The GUI's colour checker: each palette role as a swatch with its WCAG contrast against the surface it
-// sits on, and whether it meets AA (4.5:1 for text, 3:1 for marks). The rendered view is the content's
-// to check, not ours.
+// The GUI's colour checker: the 24 patches of a Macbeth ColorChecker Classic in X-Rite's published sRGB,
+// so a wrong swapchain gamma or format shows against a physical chart, then each palette role with its
+// WCAG contrast against the surface it sits on (4.5:1 for text, 3:1 for marks). The rendered view is the
+// content's to check, not ours.
 class ColourCheckerWidget final : public Widget
 {
 public:
     void show(bool on) { shown_ = on; }
-    float height(float scale) const override { return shown_ ? float(roles().size()) * 16.0f * scale : 0.0f; }
+    float height(float scale) const override
+    {
+        return shown_ ? (4.0f * 20.0f + 6.0f + float(roles().size()) * 16.0f) * scale : 0.0f;
+    }
 
     void draw(DrawContext& ctx, float x, float y, float w) override
     {
@@ -510,6 +514,11 @@ public:
             return;
         const Palette& p = *currentPalette;
         const float s = ctx.scale;
+        const float patch = std::min(w / 6.0f, 30.0f * s);
+        for (int i = 0; i < 24; ++i)
+            drawRect(ctx, x + float(i % 6) * patch, y + float(i / 6) * 20.0f * s, patch - 3.0f * s, 17.0f * s, 2.0f * s,
+                     colour(Macbeth[i]));
+        y += (4.0f * 20.0f + 6.0f) * s;
         for (const Role& r : roles())
         {
             const Rgb fg = r.surface ? p.text : p.*r.colour;
@@ -532,6 +541,12 @@ public:
     }
 
 private:
+    static constexpr Rgb Macbeth[24] = {
+        {115, 82, 68},   {194, 150, 130}, {98, 122, 157},  {87, 108, 67},   {133, 128, 177}, {103, 189, 170},
+        {214, 126, 44},  {80, 91, 166},   {193, 90, 99},   {94, 60, 108},   {157, 188, 64},  {224, 163, 46},
+        {56, 61, 150},   {70, 148, 73},   {175, 54, 60},   {231, 199, 31},  {187, 86, 149},  {8, 133, 161},
+        {243, 243, 242}, {200, 200, 200}, {160, 160, 160}, {122, 122, 121}, {85, 85, 85},    {52, 52, 52},
+    };
     struct Role
     {
         const char* name;
