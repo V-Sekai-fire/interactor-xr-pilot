@@ -87,6 +87,22 @@ inline bool Differs(const Angles& a, const Angles& b, float tolerance = 0.01f)
            std::fabs(a.up - b.up) > tolerance || std::fabs(a.down - b.down) > tolerance;
 }
 
+// The eye heights a fixed-size renderer accepts.
+constexpr uint32_t kMinEyeHeight = 512;
+constexpr uint32_t kMaxEyeHeight = 4096;
+
+inline bool ValidHeight(uint32_t height)
+{
+    return height >= kMinEyeHeight && height <= kMaxEyeHeight;
+}
+
+// The eye height to save for the next start when a headset reports its own: the headset's when it is one a
+// renderer accepts and differs from both the height rendered now and the one already saved, else zero.
+inline uint32_t HeightToSave(uint32_t reported, uint32_t rendering, uint32_t saved)
+{
+    return ValidHeight(reported) && reported != rendering && reported != saved ? reported : 0u;
+}
+
 // The settings text: "left,right,up,down" in radians.
 inline std::string Format(const Angles& a)
 {
