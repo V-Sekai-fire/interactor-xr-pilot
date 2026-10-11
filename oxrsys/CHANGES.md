@@ -12,6 +12,7 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Added
 
+- Added the Linux stream of the app's eyes, which replaces the black frame the Linux encoder sent. At `xrEndFrame` the app's queue copies both eyes into a packed image and signals a timeline semaphore; both are exported as opaque file descriptors and imported by PyroWave on the same GPU, so the frame never leaves the GPU. Vulkan apps now need `VK_KHR_external_memory_fd`, `VK_KHR_external_semaphore_fd` and timeline semaphores, which `xrGetVulkanDeviceExtensionsKHR` lists and `xrCreateVulkanDeviceKHR` enables.
 - Added Linux-first Qt frontends under `clients/Qt/`, including Qt Home, a standalone Qt simulator, and a reusable simulator widget.
 - Added Qt Home support for compatible app launching, selected-runtime registration on Linux, runtime TOML editing, runtime activity/status display, custom ADB selection, USB reverse mapping setup, and asynchronous transport readiness checks.
 - Added Qt simulator video preview, decoded on the GPU with PyroWave and presented through a Vulkan swapchain, with mouse-driven synthetic head tracking, frame-loss/FEC status, and keyframe recovery requests.

@@ -79,8 +79,8 @@ public:
 
     // Acquire a backend-native image source for streaming. Dynamic Metal swapchains
     // prefer a release-time staging snapshot; Windows Vulkan copies the slice into a
-    // D3D11 eye texture for NVENC (Win32EyeImage); Linux Vulkan still returns the live
-    // image handle as its readback path is scaffolded.
+    // D3D11 eye texture for the encoder (Win32EyeImage); Linux Vulkan returns the released
+    // slice (LinuxEyeSlice), which the session packs with the other eye on the GPU.
     FrameImageSource GetLastReleasedFrameImageSource(uint32_t arrayIndex) const;
 
     uint32_t GetArraySize() const

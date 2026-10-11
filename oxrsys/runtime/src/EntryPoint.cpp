@@ -32,6 +32,7 @@
 #include "RuntimeStatus.h"
 #include "VulkanDispatch.h"
 #include "D3D11Interop.h"
+#include "LinuxVulkanInterop.h"
 
 #include <spdlog/spdlog.h>
 #include <glm/glm.hpp>
@@ -982,6 +983,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateSession(
         vulkanContext.queueIndex = vulkanBinding->queueIndex;
 #if defined(_WIN32)
         std::shared_ptr<void> interop = Win32CreateVulkanInterop(vulkanContext);
+#elif defined(__linux__)
+        std::shared_ptr<void> interop = LinuxCreateVulkanInterop(vulkanContext);
 #else
         std::shared_ptr<void> interop;
 #endif
@@ -3449,7 +3452,7 @@ static void EnsureMetalDevice()
 
 // --- v1 functions (XR_KHR_vulkan_enable) ---
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__linux__)
 static XrResult WriteExtensionString(const char* extensions, uint32_t bufferCapacityInput,
                                      uint32_t* bufferCountOutput, char* buffer)
 {
@@ -3511,6 +3514,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetVulkanInstanceExtensionsKHR(
 
 #if defined(_WIN32)
     return WriteExtensionString(kWin32VulkanInstanceExtensions, bufferCapacityInput, bufferCountOutput, buffer);
+#elif defined(__linux__)
+    return WriteExtensionString(kLinuxVulkanInstanceExtensions, bufferCapacityInput, bufferCountOutput, buffer);
 #else
     // No additional instance extensions required from the runtime
     // (Godot/apps handle portability enumeration themselves in the v1 path)
@@ -3543,6 +3548,8 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrGetVulkanDeviceExtensionsKHR(
 
 #if defined(_WIN32)
     return WriteExtensionString(kWin32VulkanDeviceExtensions, bufferCapacityInput, bufferCountOutput, buffer);
+#elif defined(__linux__)
+    return WriteExtensionString(kLinuxVulkanDeviceExtensions, bufferCapacityInput, bufferCountOutput, buffer);
 #else
     // No additional device extensions required from the runtime
     // (Godot/apps handle portability subset themselves in the v1 path)
@@ -3722,6 +3729,9 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateVulkanInstanceKHR(
 #if defined(_WIN32)
     std::vector<std::string> interopInstanceExtensions;
     AppendExtensions(extensions, interopInstanceExtensions, kWin32VulkanInstanceExtensions);
+#elif defined(__linux__)
+    std::vector<std::string> interopInstanceExtensions;
+    AppendExtensions(extensions, interopInstanceExtensions, kLinuxVulkanInstanceExtensions);
 #endif
     modifiedCreateInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
@@ -3804,11 +3814,16 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrCreateVulkanDeviceKHR(
     }
 #endif
 
-#if defined(_WIN32)
-    // D3D11 texture and fence sharing (VDXR vulkan_interop.cpp:284-330). Timeline semaphores
-    // are enabled on whichever features struct the app chained, or on one of ours.
+#if defined(_WIN32) || defined(__linux__)
+    // Windows: D3D11 texture and fence sharing (VDXR vulkan_interop.cpp:284-330). Linux: opaque
+    // fd memory and semaphore export to the encoder's device. Timeline semaphores are enabled on
+    // whichever features struct the app chained, or on one of ours.
     std::vector<std::string> interopDeviceExtensions;
+#if defined(_WIN32)
     AppendExtensions(deviceExts, interopDeviceExtensions, kWin32VulkanDeviceExtensions);
+#else
+    AppendExtensions(deviceExts, interopDeviceExtensions, kLinuxVulkanDeviceExtensions);
+#endif
 
     VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};

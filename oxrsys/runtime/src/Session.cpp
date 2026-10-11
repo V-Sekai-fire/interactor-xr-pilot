@@ -10,6 +10,7 @@
 #include "StreamingServer.h"
 #include "Config.h"
 #include "D3D11Interop.h"
+#include "LinuxVulkanInterop.h"
 #ifdef GetCurrentTime
 #undef GetCurrentTime // winbase.h macro; clashes with Session::GetCurrentTime
 #endif
@@ -633,6 +634,14 @@ XrResult Session::EndFrame(const XrFrameEndInfo* frameEndInfo)
         }
     }
 
+#if defined(__linux__) && defined(XR_USE_GRAPHICS_API_VULKAN)
+    // Copy both eyes into one packed image on the app's queue, for the encoder's device to import.
+    if (streamFrame && graphicsContext_.api == GraphicsApi::Vulkan)
+    {
+        LinuxPackVulkanFrame(platformInterop_, frameSource);
+    }
+#endif
+
     frameSource.alphaBlend = oxrsys::runtime::IsAlphaFrameForStreaming(
         frameEndInfo->environmentBlendMode, sourceAlphaProjectionLayer);
 
@@ -774,6 +783,16 @@ XrResult Session::ValidateProjectionLayer(const XrCompositionLayerProjection& la
         auto* swapchain = Runtime::Get().FromHandle<Swapchain>(reinterpret_cast<uint64_t>(view.subImage.swapchain));
         FrameImageSource imageSource =
             swapchain->GetLastReleasedFrameImageSource(view.subImage.imageArrayIndex);
+#if defined(__linux__) && defined(XR_USE_GRAPHICS_API_VULKAN)
+        if (auto* eye = static_cast<LinuxEyeSlice*>(imageSource.GetImage()))
+        {
+            // The view's rect; both eyes may share one slice.
+            eye->x = view.subImage.imageRect.offset.x;
+            eye->y = view.subImage.imageRect.offset.y;
+            eye->width = static_cast<uint32_t>(view.subImage.imageRect.extent.width);
+            eye->height = static_cast<uint32_t>(view.subImage.imageRect.extent.height);
+        }
+#endif
         if (viewIndex == 0)
         {
             frameSource.left = std::move(imageSource);
