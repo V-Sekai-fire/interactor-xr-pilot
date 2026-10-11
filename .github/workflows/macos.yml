@@ -6,15 +6,7 @@
 name: macos
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  workflow_call:
 
 permissions:
   contents: write
@@ -57,10 +49,13 @@ jobs:
           ctest --test-dir build/macos-arm64 --output-on-failure -E '^oxrsys_pyrowave_tests$'
 
   swift-packages:
+    needs: runtime
+    if: ${{ !cancelled() }}
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 1 # one runner at a time (the repo's CI slot)
       matrix:
         package: [OXRSysStreaming, OXRSysSimulator]
     steps:
@@ -75,6 +70,8 @@ jobs:
         run: echo "UNCHECKED 1 - ${{ matrix.package }} has no test target; it is built only"
 
   apps:
+    needs: swift-packages
+    if: ${{ !cancelled() }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:

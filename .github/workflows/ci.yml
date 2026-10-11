@@ -4,14 +4,7 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  workflow_call:
 
 jobs:
   windows:
@@ -38,6 +31,8 @@ jobs:
           .lake/build/bin/tests
 
   linux-core:
+    needs: windows
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
