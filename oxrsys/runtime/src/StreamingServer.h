@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include "StreamingAbr.h"
 #include "StreamingFrameQueue.h"
 #include "StreamingReconfigure.h"
+#include "StreamingSpectators.h"
 
 // Shared protocol definitions
 #include <oxrsys/protocol/Protocol.h>
@@ -179,6 +181,14 @@ private:
     void HandleStreamConfigAck(const oxr::protocol::StreamConfigAck& ack);
     void HandleNackRequest(const oxr::protocol::NackRequest& request);
     void HandleControlPayload(const uint8_t* data, size_t size);
+    // Spectators (CLIENT_CAPABILITY_SPECTATOR), keyed by their control address.
+    void RefreshSpectator(const sockaddr_in& from);
+    bool RemoveSpectator(const sockaddr_in& from);
+    bool IsSpectator(const sockaddr_in& from);
+    void ExpireSpectators();
+    void SendToSpectators(SocketHandle socket, const uint8_t* data, size_t size);
+    // Whether a control message came from the client that owns the session.
+    bool IsSessionOwner(const sockaddr_in& from) const;
     void UpdatePredictionHorizon();
     void TickPendingStreamConfigTimeout(int64_t nowNs);
     void MaybeRequestStreamReconfigure(float targetResolutionScale);
@@ -266,6 +276,9 @@ private:
     // Client info
     std::string clientIp_;
     uint16_t clientPort_ = 0;
+
+    std::mutex spectatorMutex_;
+    oxrsys::streaming_spectators::List spectators_;
     std::string clientName_;
     mutable std::mutex clientMutex_;
 

@@ -220,6 +220,17 @@ The expected lifecycle is:
 4. The client sends latency feedback, stream config acknowledgements, and keyframe requests while streaming is active.
 5. Either side can disconnect and return to idle. USB TCP shutdown uses a best-effort `Disconnect` record on the control channel before sockets are closed; clients also treat closed video/control sockets as a connection loss and resume discovery/retry.
 
+## Spectators
+
+A client that sets `CLIENT_CAPABILITY_SPECTATOR` in its `ClientConnect` watches the session without owning it:
+
+- The runtime adds it to a spectator list instead of switching the session to it, and sends every live video packet (data, FEC parity, render pose) to it as well as to the owner, on its video port. NACK retransmissions go to the owner only.
+- The runtime takes no tracking, keyframe requests or latency reports from it.
+- It repeats its `ClientConnect` as a heartbeat; the runtime drops it after `SPECTATOR_TIMEOUT_MS` (5 s) without one, or when it sends `ServerDisconnect`.
+- A `ServerDisconnect` ends the session only when it comes from the session owner's address. One from another address that is not a spectator is ignored.
+
+XR Pilot watches this way in its streaming mode: a headset (the Steam Frame or a Quest running the Android client) owns the session, and the desk's pilot sends its spectator `ClientConnect` to the runtime on its own machine over loopback every 2 s, since the runtime does not announce while a session runs.
+
 ## Compatibility
 
 The protocol is still internal and may evolve with the runtime and client implementations. When updating the wire format, keep `common/protocol/include/oxrsys/protocol/Protocol.h`, the runtime, the Android client, and this document aligned in the same change.

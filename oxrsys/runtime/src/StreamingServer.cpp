@@ -894,6 +894,11 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce(
     return announce;
 }
 
+namespace
+{
+std::string AddressText(const sockaddr_in& address);
+}
+
 void StreamingServer::ControlThread()
 {
     uint8_t buffer[512];
@@ -942,6 +947,7 @@ void StreamingServer::ControlThread()
             continue;
         }
 
+        ExpireSpectators();
         uint8_t type = buffer[0];
         if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ClientConnect) &&
             received >= static_cast<int>(oxr::protocol::CLIENT_CONNECT_BASE_SIZE))
@@ -951,20 +957,120 @@ void StreamingServer::ControlThread()
                 oxr::protocol::ClientConnect clientConnect = {};
                 memcpy(&clientConnect, buffer, std::min<size_t>(
                     static_cast<size_t>(received), sizeof(clientConnect)));
-                HandleClientConnect(clientConnect, clientAddr);
+                // A spectator watches; it never takes the session from the client that owns it.
+                if ((clientConnect.clientCapabilities & oxr::protocol::CLIENT_CAPABILITY_SPECTATOR) != 0)
+                {
+                    RefreshSpectator(clientAddr);
+                }
+                else
+                {
+                    HandleClientConnect(clientConnect, clientAddr);
+                }
             }
         }
         else if (type == static_cast<uint8_t>(oxr::protocol::MessageType::ServerDisconnect))
         {
-            HandleClientDisconnect();
+            // Only the owner's goodbye ends the session; a spectator's ends its watching.
+            if (RemoveSpectator(clientAddr))
+            {
+                spdlog::info("StreamingServer: spectator {} left", AddressText(clientAddr));
+            }
+            else if (IsSessionOwner(clientAddr))
+            {
+                HandleClientDisconnect();
+            }
+            else
+            {
+                spdlog::info("StreamingServer: ignored a disconnect from {}, which does not own the session",
+                             AddressText(clientAddr));
+            }
         }
-        else
+        else if (!IsSpectator(clientAddr))
         {
             HandleControlPayload(buffer, static_cast<size_t>(received));
         }
     }
 
     spdlog::info("StreamingServer: Control thread ended");
+}
+
+namespace
+{
+
+std::string AddressText(const sockaddr_in& address)
+{
+    char ip[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &address.sin_addr, ip, sizeof(ip));
+    return std::string(ip) + ":" + std::to_string(ntohs(address.sin_port));
+}
+
+} // namespace
+
+namespace
+{
+
+oxrsys::streaming_spectators::Address SpectatorAddress(const sockaddr_in& address)
+{
+    return {ntohl(address.sin_addr.s_addr), ntohs(address.sin_port)};
+}
+
+} // namespace
+
+void StreamingServer::RefreshSpectator(const sockaddr_in& from)
+{
+    std::lock_guard<std::mutex> lock(spectatorMutex_);
+    if (spectators_.Refresh(SpectatorAddress(from), std::chrono::steady_clock::now()))
+    {
+        spdlog::info("StreamingServer: spectator {} is watching ({} now)", AddressText(from), spectators_.Size());
+    }
+}
+
+bool StreamingServer::RemoveSpectator(const sockaddr_in& from)
+{
+    std::lock_guard<std::mutex> lock(spectatorMutex_);
+    return spectators_.Remove(SpectatorAddress(from));
+}
+
+bool StreamingServer::IsSpectator(const sockaddr_in& from)
+{
+    std::lock_guard<std::mutex> lock(spectatorMutex_);
+    return spectators_.Contains(SpectatorAddress(from));
+}
+
+void StreamingServer::ExpireSpectators()
+{
+    std::lock_guard<std::mutex> lock(spectatorMutex_);
+    for (const oxrsys::streaming_spectators::Address& expired :
+         spectators_.Expire(std::chrono::steady_clock::now(),
+                            std::chrono::milliseconds(oxr::protocol::SPECTATOR_TIMEOUT_MS)))
+    {
+        sockaddr_in address = {};
+        address.sin_addr.s_addr = htonl(expired.ip);
+        address.sin_port = htons(expired.port);
+        spdlog::info("StreamingServer: spectator {} timed out", AddressText(address));
+    }
+}
+
+// The same bytes to each spectator's video port, best effort: a spectator never slows the owner down.
+void StreamingServer::SendToSpectators(SocketHandle socket, const uint8_t* data, size_t size)
+{
+    std::lock_guard<std::mutex> lock(spectatorMutex_);
+    for (const oxrsys::streaming_spectators::Address& spectator : spectators_.Addresses())
+    {
+        sockaddr_in video = {};
+        video.sin_family = AF_INET;
+        video.sin_addr.s_addr = htonl(spectator.ip);
+        video.sin_port = htons(oxr::protocol::VIDEO_PORT);
+        oxrsys::runtime_socket::SendTo(socket, data, size, kBestEffortSendFlags, (sockaddr*)&video, sizeof(video));
+    }
+}
+
+bool StreamingServer::IsSessionOwner(const sockaddr_in& from) const
+{
+    char ip[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+    std::lock_guard<std::mutex> lock(clientMutex_);
+    return oxrsys::streaming_spectators::IsSessionOwner(clientIp_, clientPort_, ip, ntohs(from.sin_port));
 }
 
 bool StreamingServer::StartUsbTcpListeners()
@@ -2683,6 +2789,7 @@ void StreamingServer::SendRenderPosePacket(const EncodedVideoFrame& frame)
                                    kBestEffortSendFlags,
                                    (sockaddr*)&destAddr,
                                    sizeof(destAddr));
+    SendToSpectators(videoSocket, buf, sizeof(buf));
 }
 
 void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& dispatchState,
@@ -2822,6 +2929,7 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
                                        kBestEffortSendFlags,
                                        (sockaddr*)&destAddr,
                                        sizeof(destAddr));
+        SendToSpectators(videoSocket, packetBuffer, packetSize);
 
         // Cache for NACK retransmission. The frame is advertised to NACK only
         // once all packets have been copied.
@@ -2880,6 +2988,7 @@ void StreamingServer::SendNalUnit(const std::shared_ptr<PacketDispatchState>& di
                 kBestEffortSendFlags,
                 (sockaddr*)&destAddr,
                 sizeof(destAddr));
+            SendToSpectators(videoSocket, packetBuffer, sizeof(fecHeader) + oxr::protocol::MAX_PACKET_PAYLOAD);
         }
     }
 

@@ -39,6 +39,8 @@ namespace
 {
 
 constexpr int64_t VideoSilenceReconnectNs = 3'000'000'000;
+// Well inside the server's oxr::protocol::SPECTATOR_TIMEOUT_MS.
+constexpr int64_t SpectatorHeartbeatNs = 2'000'000'000;
 // Runtimes announce every 100 ms; a second without one from this machine means none runs here.
 constexpr int64_t LocalRuntimeGraceNs = 1'000'000'000;
 
@@ -350,15 +352,42 @@ void Client::setAutoConnect(bool on)
     status_.autoConnect = on;
 }
 
-void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& announce)
+void Client::sendConnect(uint32_t address, uint32_t refreshRateHz, bool spectator)
 {
     oxr::protocol::ClientConnect connect = {};
     connect.type = oxr::protocol::MessageType::ClientConnect;
+    connect.versionMinor = 1; // carries clientCapabilities
     connect.preferredCodec = static_cast<uint32_t>(oxr::protocol::VideoCodec::PyroWave);
     connect.maxBitrateMbps = oxr::protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG;
-    connect.refreshRateHz = std::max<uint32_t>(announce.refreshRateHz, 60);
+    connect.refreshRateHz = std::max<uint32_t>(refreshRateHz, 60);
+    connect.clientCapabilities = spectator ? oxr::protocol::CLIENT_CAPABILITY_SPECTATOR : 0;
     std::strncpy(connect.deviceName, "OXRSys XR Pilot", sizeof(connect.deviceName) - 1);
     sendTo(sendSocket_, address, oxr::protocol::CONTROL_PORT, &connect, sizeof(connect));
+}
+
+void Client::setSpectator(bool on)
+{
+    const ClientStatus before = status();
+    if (before.connected)
+    {
+        disconnect(); // a session owner steps down; a spectator stops watching
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    status_.autoConnect = before.autoConnect; // disconnect turned it off; the mode change keeps it
+    spectator_.store(on);
+    lastSpectatorConnectNs_ = 0;
+    if (on)
+    {
+        serverAddress_ = htonl(INADDR_LOOPBACK);
+        connectedToLocal_ = true;
+        status_.server = "127.0.0.1";
+        status_.serverName = "this machine's runtime, watching";
+    }
+}
+
+void Client::connectTo(uint32_t address, const oxr::protocol::ServerAnnounce& announce)
+{
+    sendConnect(address, announce.refreshRateHz, false);
 
     const bool local = isLocalAddress(address);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -427,7 +456,7 @@ void Client::discoveryLoop()
             c.videoSilenceNs = now - lastVideoNs_;
             if (local)
                 lastLocalAnnounceNs_ = now;
-            reconnect = shouldConnectToAnnounce(c, VideoSilenceReconnectNs, LocalRuntimeGraceNs);
+            reconnect = !spectator_.load() && shouldConnectToAnnounce(c, VideoSilenceReconnectNs, LocalRuntimeGraceNs);
         }
         if (reconnect)
             connectTo(from.sin_addr.s_addr, announce);
@@ -495,7 +524,20 @@ void Client::trackingLoop()
             agent = agent_;
             address = serverAddress_;
             connected = status_.connected;
-            if (connected && fresh)
+            if (spectator_.load())
+            {
+                // Watching: the heartbeat keeps this spectator on the server's list; it sends no tracking.
+                const bool wanted = status_.connected || status_.autoConnect || connectRequested_;
+                if (wanted && now - lastSpectatorConnectNs_ >= SpectatorHeartbeatNs)
+                {
+                    lastSpectatorConnectNs_ = now;
+                    connectRequested_ = false;
+                    status_.connected = true;
+                    sendConnect(serverAddress_, status_.refreshHz, true);
+                }
+                connected = false;
+            }
+            else if (connected && fresh)
                 ++status_.trackingSent;
         }
         if (connected)
@@ -607,7 +649,7 @@ void Client::requestKeyframe(uint32_t reasonFlags, uint32_t detail)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     const int64_t now = monotonicNowNs();
-    if (!status_.connected || now - lastKeyframeRequestNs_ < 1'000'000'000)
+    if (spectator_.load() || !status_.connected || now - lastKeyframeRequestNs_ < 1'000'000'000)
         return;
     lastKeyframeRequestNs_ = now;
     oxr::protocol::RequestKeyframe request = {};
@@ -624,7 +666,7 @@ void Client::reportLatency(const AssembledVideoFrame& frame, int64_t decodeStart
     report.compositorLatencyMs = 0.0f;
     report.totalClientLatencyMs = report.receiveToDecoderSubmitMs + report.decodeLatencyMs;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (status_.connected)
+    if (status_.connected && !spectator_.load())
         sendTo(sendSocket_, serverAddress_, oxr::protocol::CONTROL_PORT, &report, sizeof(report));
 }
 
