@@ -25,6 +25,9 @@ struct HeadGizmo
         Yaw,     // forward to the facing direction, along the horizon
         Pitch,   // the horizon to the look direction, along its meridian
         Look,    // the centre to the look direction
+        AxisX,   // the world's +X (right), +Y (up) and +Z (toward the viewer at rest; forward is -Z)
+        AxisY,
+        AxisZ,
     };
 
     struct Point
@@ -55,6 +58,9 @@ struct HeadGizmo
 
 // Built from where the head's -Z points, so it stays right at the poles where yaw is undefined.
 HeadGizmo buildHeadGizmo(const Rotation& head);
+
+// World to the gizmo camera's space: x right, y up, z toward the viewer; a rotation, so never a mirror.
+HeadGizmo::Point gizmoView(const HeadGizmo::Point& world);
 
 // The angle in degrees between two directions.
 float angleBetween(const HeadGizmo::Point& a, const HeadGizmo::Point& b);

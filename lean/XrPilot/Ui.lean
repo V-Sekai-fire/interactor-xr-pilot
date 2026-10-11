@@ -170,6 +170,7 @@ inductive Action where
   -- The pilot window and its controls.
   | windowOpen | windowError | windowClose
   | connect | disconnect | autoConnect | fieldOfView | controllers | pointing | seated
+  | appearance | conventions | colourChecker
   deriving DecidableEq, Repr, Inhabited
 
 /-- Every action, once. -/
@@ -182,7 +183,8 @@ def Action.all : List Action :=
    .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit,
    .installFailed, .elevatedDone, .elevatedDeclined,
    .windowOpen, .windowError, .windowClose,
-   .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated]
+   .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated,
+   .appearance, .conventions, .colourChecker]
 
 /-- The span each action records. -/
 def Action.spanName : Action → String
@@ -228,6 +230,9 @@ def Action.spanName : Action → String
   | .controllers => "ui.window.controllers"
   | .pointing => "ui.window.pointing"
   | .seated => "ui.window.seated"
+  | .appearance => "ui.window.appearance"
+  | .conventions => "ui.window.conventions"
+  | .colourChecker => "ui.window.colour-checker"
 
 /-- The C++ enumerator for each action. -/
 def Action.cppName : Action → String
@@ -273,6 +278,9 @@ def Action.cppName : Action → String
   | .controllers => "Controllers"
   | .pointing => "Pointing"
   | .seated => "Seated"
+  | .appearance => "Appearance"
+  | .conventions => "Conventions"
+  | .colourChecker => "ColourChecker"
 
 def Action.ofSpanName? (name : String) : Option Action :=
   Action.all.find? (·.spanName == name)
@@ -433,7 +441,8 @@ def step (s : State) : Action → Option State
       some { s with opened := true, showWanted := false, exited := s.quitsOnClose } else none
   | .windowClose =>
     if s.window then some { s with window := false, exited := s.exited || s.quitsOnClose } else none
-  | .connect | .disconnect | .autoConnect | .fieldOfView | .controllers | .pointing | .seated =>
+  | .connect | .disconnect | .autoConnect | .fieldOfView | .controllers | .pointing | .seated
+  | .appearance | .conventions | .colourChecker =>
     if s.window && !s.uninstallAsked then some s else none
 
 /-- The state after a run, or `none` at the first action the UI did not offer. -/
@@ -489,6 +498,9 @@ def witness : Action → Desk × List Action
   | .controllers => ({}, [.launchWindow, .windowOpen, .controllers])
   | .pointing => ({}, [.launchWindow, .windowOpen, .pointing])
   | .seated => ({}, [.launchWindow, .windowOpen, .seated])
+  | .appearance => ({}, [.launchWindow, .windowOpen, .appearance])
+  | .conventions => ({}, [.launchWindow, .windowOpen, .conventions])
+  | .colourChecker => ({}, [.launchWindow, .windowOpen, .colourChecker])
 
 /-- `witness a` is valid and ends in `a`. -/
 def reaches (a : Action) : Bool :=

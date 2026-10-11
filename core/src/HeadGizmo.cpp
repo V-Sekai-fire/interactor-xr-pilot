@@ -41,6 +41,11 @@ HeadGizmo::Point toCamera(const HeadGizmo::Point& p)
 
 } // namespace
 
+HeadGizmo::Point gizmoView(const HeadGizmo::Point& world)
+{
+    return toCamera(world);
+}
+
 float angleBetween(const HeadGizmo::Point& a, const HeadGizmo::Point& b)
 {
     const float la = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
@@ -105,6 +110,9 @@ HeadGizmo buildHeadGizmo(const Rotation& head)
     g.arcs.push_back(pitchArc);
 
     g.arcs.push_back({HeadGizmo::Role::Look, {{0.0f, 0.0f, 0.0f}, g.look}});
+    g.arcs.push_back({HeadGizmo::Role::AxisX, {{0.0f, 0.0f, 0.0f}, {1.15f, 0.0f, 0.0f}}});
+    g.arcs.push_back({HeadGizmo::Role::AxisY, {{0.0f, 0.0f, 0.0f}, {0.0f, 1.15f, 0.0f}}});
+    g.arcs.push_back({HeadGizmo::Role::AxisZ, {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.15f}}});
     return g;
 }
 

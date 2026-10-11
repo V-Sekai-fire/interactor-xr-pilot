@@ -52,6 +52,7 @@ add_library(xrpilot_core STATIC
     core/src/SpanLog.cpp
     core/src/StreamRecord.cpp
     core/src/TraceStore.cpp
+    core/src/Theme.cpp
     third_party/sqlite/sqlite3.c
     core/src/Sparkline.cpp
 )
@@ -143,6 +144,7 @@ target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS human.gizmo-straight-up-and-down human.gizmo-arcs-measure-the-angles human.tracking-period-follows-refresh human.walk-on-sender-never-repeats human.wheel-sets-walk-speed human.shift-wheel-sets-hand-reach human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
                       human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
                       agent.packet-carries-the-controller-pose-its-tip-aims-from human.seated-lowers-head-and-hands
+                      human.gizmo-axes-right-handed human.gizmo-front-faces-ccw human.theme-contrast human.theme-appearance
                       sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample
                       sparkline.p90-scale-clips-a-spike sparkline.model-runs sparkline.zero-clears-the-base
                       sparkline.ticks-move-every-sample sparkline.pump-samples-without-frames)
