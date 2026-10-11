@@ -39,14 +39,9 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <set>
 #include <string>
 #include <thread>
-
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
 
 using namespace panelspun;
 using namespace xrpilot;
@@ -861,48 +856,21 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
 }
 
 
-// The MCP server's port on the loopback address; OXRSys's own ports are 9943 to 9948.
-constexpr uint16_t McpPort = 9950;
-
-// The install's MCP bearer token: made once, kept in the user's profile, which only they can read.
-std::string mcpToken(const std::string& dir)
+// The install's MCP bearer token, in the user's profile: made once, readable by this user alone.
+std::string mcpToken(std::string* error = nullptr)
 {
-    const std::string path = dir + "mcp-token";
-    if (SDL_IOStream* in = SDL_IOFromFile(path.c_str(), "rb"))
-    {
-        char buffer[129] = {};
-        const size_t n = SDL_ReadIO(in, buffer, sizeof(buffer) - 1);
-        SDL_CloseIO(in);
-        std::string token(buffer, n);
-        while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
-            token.pop_back();
-        if (token.size() >= 32)
-            return token;
-    }
-    std::random_device random;
+    char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
+    const std::string path = std::string(pref != nullptr ? pref : "") + "mcp-token";
+    SDL_free(pref);
     std::string token;
-    for (int i = 0; i < 32; ++i)
-    {
-        char hex[3];
-        std::snprintf(hex, sizeof(hex), "%02x", static_cast<unsigned>(random() & 0xFF));
-        token += hex;
-    }
-    SDL_IOStream* out = SDL_IOFromFile(path.c_str(), "wb");
-    if (out == nullptr)
-        return {};
-    SDL_WriteIO(out, token.data(), token.size());
-    SDL_CloseIO(out);
-#ifndef _WIN32
-    chmod(path.c_str(), 0600);
-#endif
-    return token;
+    return loadOrCreateMcpToken(path, token, error) ? token : std::string();
 }
 
 // xr_pilot_mcp --http --parent: its pilot commands reach the pilot window through the bridge.
 class McpHost final
 {
 public:
-    McpHost(CommandBridge& bridge, const std::string& token) : bridge_(bridge)
+    McpHost(CommandBridge& bridge, int port, const std::string& token) : bridge_(bridge)
     {
         const char* base = SDL_GetBasePath();
         const std::string exe = std::string(base != nullptr ? base : "") + "xr_pilot_mcp" +
@@ -911,10 +879,10 @@ public:
 #else
                                 "";
 #endif
-        if (token.empty() || !std::filesystem::exists(exe))
+        if (port == 0 || token.empty() || !std::filesystem::exists(exe))
             return;
-        const std::string port = std::to_string(McpPort);
-        const char* args[] = {exe.c_str(), "--http", port.c_str(), "--parent", nullptr};
+        const std::string portText = std::to_string(port);
+        const char* args[] = {exe.c_str(), "--http", portText.c_str(), "--parent", nullptr};
         SDL_Environment* env = SDL_CreateEnvironment(true);
         SDL_SetEnvironmentVariable(env, "XR_PILOT_MCP_TOKEN", token.c_str(), true);
         SDL_PropertiesID props = SDL_CreateProperties();
@@ -934,6 +902,8 @@ public:
         }
         thread_ = std::thread([this] { run(); });
     }
+
+    bool running() const { return process_ != nullptr; }
 
     ~McpHost()
     {
@@ -1016,6 +986,8 @@ UiAction launchAction(LaunchMode mode)
         return UiAction::LaunchShowRunning;
     case LaunchMode::PrintVersion:
         return UiAction::LaunchVersion;
+    case LaunchMode::PrintMcpConfig:
+        return UiAction::LaunchMcpConfig;
     case LaunchMode::Usage:
         break;
     }
@@ -1045,7 +1017,7 @@ int main(int argc, char** argv)
                 .count();
         if (!shared.traces.open(tracePath, wallMs, nowNs() / 1'000'000, &traceError))
             std::fprintf(stderr, "xr-pilot: traces not kept: %s\n", traceError.c_str());
-        else if (launch.mode != LaunchMode::PrintVersion)
+        else if (launch.mode != LaunchMode::PrintVersion && launch.mode != LaunchMode::PrintMcpConfig)
             std::fprintf(stderr, "xr-pilot: traces in %s, session %lld\n", tracePath.c_str(),
                          (long long)shared.traces.session());
     }
@@ -1056,11 +1028,25 @@ int main(int argc, char** argv)
         shared.ui.record(UiAction::LaunchVersion);
         std::printf("xr-pilot %s\n", Version);
         return 0;
+    case LaunchMode::PrintMcpConfig:
+    {
+        std::string error;
+        const std::string token = mcpToken(&error);
+        shared.ui.record(UiAction::LaunchMcpConfig, !token.empty(), error);
+        if (token.empty())
+        {
+            std::fprintf(stderr, "xr-pilot: no MCP token: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("%s\n", mcpClientConfig(launch.mcpPort, token).c_str());
+        return 0;
+    }
     case LaunchMode::Usage:
         shared.ui.record(UiAction::LaunchUsage, false);
         std::fprintf(stderr,
-                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite]\n"
-                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n");
+                     "usage: xr-pilot [--version] [--tray | --window | --agent] [--snapshot out.png] [--record-stream out.pwrec] [--no-autoconnect] [--traces db.sqlite] [--mcp-port port] [--mcp-config]\n"
+                     "With no flags it opens the pilot and keeps the OXRSys tray after the pilot closes; --tray starts the tray alone.\n"
+                     "The tray serves MCP at http://127.0.0.1:<--mcp-port, 9950>/mcp (0 turns it off); --mcp-config prints the client settings with this desk's token.\n");
         return 2;
     case LaunchMode::ShowRunning:
     {
@@ -1121,9 +1107,10 @@ int main(int argc, char** argv)
             show.type = Tray::showPilotEvent();
             SDL_PushEvent(&show);
         });
-        char* pref = SDL_GetPrefPath("V-Sekai-fire", "xr-pilot");
-        McpHost mcp(bridge, mcpToken(pref != nullptr ? pref : ""));
-        SDL_free(pref);
+        const std::string token = launch.mcpPort != 0 ? mcpToken() : std::string();
+        McpHost mcp(bridge, launch.mcpPort, token);
+        if (mcp.running())
+            Tray::setMcpConfig(mcpClientConfig(launch.mcpPort, token));
         // A first start opens the pilot; closing it leaves the tray, which can show it again.
         if (launch.mode == LaunchMode::PilotThenTray)
             rc = runPilot(shared, autoConnect, false, tray, false, &bridge);

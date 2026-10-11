@@ -70,14 +70,6 @@ def keptFrameName (sequence ms : Nat) : String :=
   let n := toString sequence
   ("".pushn '0' (6 - n.length)) ++ n ++ "_" ++ toString ms ++ ".png"
 
-/-- One command to the parent over stdout, its reply from stdin. -/
-def askParent (cmd : String) : IO (Option String) := do
-  let stdout ← IO.getStdout
-  stdout.putStrLn cmd
-  stdout.flush
-  let line ← (← IO.getStdin).getLine
-  return if line.isEmpty then none else some line.trimAsciiEnd.toString
-
 def main (args : List String) : IO UInt32 := do
   let options ← parseOptions args {}
   if options.parent && options.http.isNone then
@@ -94,10 +86,15 @@ def main (args : List String) : IO UInt32 := do
     let n ← spawns.modifyGet fun n => (n, n + 1)
     return some (← spawnPilot path (options.recordStream.map (recordingName · n)))
   let pilotRef ← IO.mkRef (← spawn)
+  -- The tray closing its end of the pipe, by quitting or crashing, ends this server too.
+  let parent ← if options.parent then
+      some <$> ParentLink.start (← IO.getStdin) (← IO.getStdout) (IO.Process.exit 0)
+    else pure none
   let askPilot (cmd : String) : IO (Option String) := do
-    match ← pilotRef.get with
-    | some pilot => ask pilot cmd
-    | none => askParent cmd
+    match ← pilotRef.get, parent with
+    | some pilot, _ => ask pilot cmd
+    | none, some link => link.ask cmd
+    | none, none => return none
   let temp := (← IO.getEnv "TEMP").getD ((← IO.getEnv "TMPDIR").getD "/tmp")
   if let some dir := options.frames then IO.FS.createDirAll dir
   let kept ← IO.mkRef (0 : Nat)

@@ -43,6 +43,7 @@ add_library(xrpilot_core STATIC
     core/src/HumanInput.cpp
     core/src/Json.cpp
     core/src/Launch.cpp
+    core/src/McpLink.cpp
     core/src/MouseLook.cpp
     core/src/UiTrace.cpp
     core/src/Pace.cpp
@@ -58,6 +59,10 @@ add_library(xrpilot_core STATIC
 target_include_directories(xrpilot_core PUBLIC core/include ${CMAKE_CURRENT_BINARY_DIR}/generated ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite
     PRIVATE third_party/sinew-align)
 target_compile_definitions(xrpilot_core PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_FOREIGN_KEYS=1)
+if(WIN32)
+    # The MCP token: BCryptGenRandom, and a user-only DACL on its file.
+    target_link_libraries(xrpilot_core PUBLIC bcrypt advapi32)
+endif()
 
 add_library(xrpilot_net STATIC core/src/Client.cpp)
 target_link_libraries(xrpilot_net PUBLIC xrpilot_core)
@@ -84,7 +89,8 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
                       client.stays-with-a-streaming-runtime
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
-                      launch.flags-keep-their-meaning client.local-runtime-wins
+                      launch.flags-keep-their-meaning launch.mcp-flags client.local-runtime-wins
+                      mcp.token-is-random-and-kept mcp.client-config-names-the-port-and-token
                       client.local-address-is-recognised client.second-pilot-is-refused
                       ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
                       mouse.look-turns-evenly mouse.look-lands-whole
