@@ -7,7 +7,7 @@ action, each recorded as a span named `spanName`. Two checks hold the app to it:
   restores the runtime before the swap (`unbind_restores_the_runtime`), and a round trip
   leaves multiple drivers as the desk had it (`round_trip_restores_multiple_drivers`).
 * The tray's three modes end in their rows (`modes_end_in_their_rows`): PCVR on OXRSys, SteamVR on
-  OXRSys, and streaming to a headset, where the desk's pilot only watches and lends its controllers
+  OXRSys, and streaming to a headset, where the desk's pilot only watches, read-only
   (`only_the_stream_mode_watches`).
 * Every action is reachable: `witness a` is a run from some desk that is valid and ends in `a`
   (`every_action_reachable`, by `decide`).
@@ -53,8 +53,8 @@ structure Desk where
   developerMode : Bool := false
   /-- Windows shows the tray icon; it can fail, as on a shell with no notification area. -/
   trayIcon : Bool := true
-  /-- The desk's pilot watches as a spectator (kept in the registry): a headset owns the session, and
-  the pilot lends its controllers to the hands the headset leaves free. -/
+  /-- The desk's pilot watches as a read-only spectator (kept in the registry): a headset owns the
+  session. -/
   deskWatches : Bool := false
   deriving DecidableEq, Repr, Inhabited
 

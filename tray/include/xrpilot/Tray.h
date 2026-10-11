@@ -41,7 +41,7 @@ public:
     // Shows the pilot: raises its window, or asks the tray loop to open one.
     static void showPilot();
     // The tray's mode is Stream to a headset: a headset owns this machine's session, and any pilot here
-    // watches as a spectator, lending its controllers to the hands the headset leaves free.
+    // only watches, read-only, as a spectator.
     static bool streamsToHeadset();
 
 private:
