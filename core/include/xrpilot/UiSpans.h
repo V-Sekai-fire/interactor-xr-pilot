@@ -27,6 +27,9 @@ enum class UiAction
     TrayUnbind,
     RuntimeOurs,
     RuntimeOther,
+    ModePcvr,
+    ModeSteamVr,
+    ModeStream,
     AddRuntime,
     AddRuntimeChosen,
     TrayUninstall,
@@ -88,6 +91,12 @@ inline const char* uiSpanName(UiAction action)
         return "ui.tray.runtime-ours";
     case UiAction::RuntimeOther:
         return "ui.tray.runtime-other";
+    case UiAction::ModePcvr:
+        return "ui.tray.mode-pcvr";
+    case UiAction::ModeSteamVr:
+        return "ui.tray.mode-steamvr";
+    case UiAction::ModeStream:
+        return "ui.tray.mode-stream";
     case UiAction::AddRuntime:
         return "ui.tray.add-runtime";
     case UiAction::AddRuntimeChosen:

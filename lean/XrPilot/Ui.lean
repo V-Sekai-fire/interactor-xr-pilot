@@ -2,10 +2,13 @@
 The XR Pilot UI as a transition system: every launch mode, tray entry, window and control is an
 action, each recorded as a span named `spanName`. Two checks hold the app to it:
 
-* The two tracks hold from any desk: swapping ends on OXRSys with SteamVR's multiple drivers on
+* The tracks hold from any desk: swapping ends on OXRSys with SteamVR's multiple drivers on
   (`swap_ends_on_oxrsys`), picking SteamVR ends on SteamVR (`pick_steamvr_ends_on_steamvr`), unbind
   restores the runtime before the swap (`unbind_restores_the_runtime`), and a round trip
   leaves multiple drivers as the desk had it (`round_trip_restores_multiple_drivers`).
+* The tray's three modes end in their rows (`modes_end_in_their_rows`): PCVR on OXRSys, SteamVR on
+  OXRSys, and streaming to a headset, where the desk's pilot only watches, read-only
+  (`only_the_stream_mode_watches`).
 * Every action is reachable: `witness a` is a run from some desk that is valid and ends in `a`
   (`every_action_reachable`, by `decide`).
 * A recorded run is a path of the model: `checkSession` replays a session's `ui.*` spans and accepts
@@ -50,6 +53,9 @@ structure Desk where
   developerMode : Bool := false
   /-- Windows shows the tray icon; it can fail, as on a shell with no notification area. -/
   trayIcon : Bool := true
+  /-- The desk's pilot watches as a read-only spectator (kept in the registry): a headset owns the
+  session. -/
+  deskWatches : Bool := false
   deriving DecidableEq, Repr, Inhabited
 
 inductive Mode where
@@ -64,10 +70,23 @@ def Desk.onOxrsys (d : Desk) : Bool := d.runtime == .oxrsys && d.forcedOxrsys &&
 driver off so it neither offers a headset nor holds the stream's port. -/
 def Desk.onSteamVr (d : Desk) : Bool := d.runtime == .steamVr && !d.forcedOxrsys && !d.oxrsysDriver
 
+/-- SteamVR on OXRSys: SteamVR stays the OpenXR runtime, and OXRSys is its headset, streaming to the
+desk's pilot or to a headset (the Steam Frame or a Quest 3 running the OXRSys client). -/
+def Desk.onSteamVrWithOxrsys (d : Desk) : Bool :=
+  d.runtime == .steamVr && d.forcedOxrsys && d.multipleDrivers && d.oxrsysDriver
+
 /-- Swap to OXRSys: the runtime, the forced headset and multiple drivers, remembering what to restore. -/
 def Desk.swapToOxrsys (d : Desk) : Desk :=
   { d with runtime := .oxrsys,
            previous := if d.runtime == .oxrsys then d.previous else d.runtime,
+           forcedOxrsys := true, multipleDrivers := true, oxrsysDriver := true,
+           multipleDriversBefore := some (d.multipleDriversBefore.getD d.multipleDrivers) }
+
+/-- SteamVR on OXRSys: SteamVR is the runtime and OXRSys its headset, with multiple drivers, remembering
+what to restore. -/
+def Desk.steamVrOnOxrsys (d : Desk) : Desk :=
+  { d with runtime := .steamVr,
+           previous := if d.runtime == .steamVr then d.previous else d.runtime,
            forcedOxrsys := true, multipleDrivers := true, oxrsysDriver := true,
            multipleDriversBefore := some (d.multipleDriversBefore.getD d.multipleDrivers) }
 
@@ -93,6 +112,13 @@ def Desk.unbind (d : Desk) : Desk :=
 /-- The swap ends on OXRSys with multiple drivers, from any desk. -/
 theorem swap_ends_on_oxrsys (d : Desk) : d.swapToOxrsys.onOxrsys = true := by
   simp [Desk.swapToOxrsys, Desk.onOxrsys]
+
+/-- SteamVR on OXRSys ends there from any desk, and each way back ends on SteamVR with its own headset. -/
+theorem steamvr_on_oxrsys_and_back (d : Desk) :
+    d.steamVrOnOxrsys.onSteamVrWithOxrsys = true ∧ d.steamVrOnOxrsys.pickSteamVr.onSteamVr = true ∧
+    d.steamVrOnOxrsys.unbind.onSteamVr = true := by
+  simp [Desk.steamVrOnOxrsys, Desk.onSteamVrWithOxrsys, Desk.pickSteamVr, Desk.unbind, Desk.handBackHeadset,
+    Desk.onSteamVr]
 
 /-- Picking SteamVR in the runtime menu ends on SteamVR, from the swap on any desk. -/
 theorem pick_steamvr_ends_on_steamvr (d : Desk) : d.swapToOxrsys.pickSteamVr.onSteamVr = true := by
@@ -125,6 +151,8 @@ theorem round_trip_restores_multiple_drivers (d : Desk) (fresh : d.multipleDrive
 /-- The change waiting on a background step: an administrator prompt, or the runtime copy before it. -/
 inductive Pending where
   | bind | ours | other | unbind
+  -- The tray's modes that keep SteamVR the runtime: the desk's pilot owns the session, or watches.
+  | steamVrOnOxrsys | stream
   deriving DecidableEq, Repr, Inhabited
 
 inductive Action where
@@ -134,6 +162,7 @@ inductive Action where
   | deskSetup | updateWarning | firstRunBind
   -- The tray menu.
   | trayShowPilot | showRequest | trayBind | trayUnbind | runtimeOurs | runtimeOther
+  | modePcvr | modeSteamVr | modeStream
   | addRuntime | addRuntimeChosen | trayUninstall | uninstallConfirm | uninstallCancel
   | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit
   -- How a background change ends.
@@ -148,6 +177,7 @@ def Action.all : List Action :=
   [.launchPilot, .launchTray, .launchWindow, .launchAgent, .launchShowRunning, .launchVersion, .launchUsage,
    .deskSetup, .updateWarning, .firstRunBind,
    .trayShowPilot, .showRequest, .trayBind, .trayUnbind, .runtimeOurs, .runtimeOther,
+   .modePcvr, .modeSteamVr, .modeStream,
    .addRuntime, .addRuntimeChosen, .trayUninstall, .uninstallConfirm, .uninstallCancel,
    .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit,
    .installFailed, .elevatedDone, .elevatedDeclined,
@@ -172,6 +202,9 @@ def Action.spanName : Action → String
   | .trayUnbind => "ui.tray.unbind"
   | .runtimeOurs => "ui.tray.runtime-ours"
   | .runtimeOther => "ui.tray.runtime-other"
+  | .modePcvr => "ui.tray.mode-pcvr"
+  | .modeSteamVr => "ui.tray.mode-steamvr"
+  | .modeStream => "ui.tray.mode-stream"
   | .addRuntime => "ui.tray.add-runtime"
   | .addRuntimeChosen => "ui.tray.add-runtime-chosen"
   | .trayUninstall => "ui.tray.uninstall"
@@ -214,6 +247,9 @@ def Action.cppName : Action → String
   | .trayUnbind => "TrayUnbind"
   | .runtimeOurs => "RuntimeOurs"
   | .runtimeOther => "RuntimeOther"
+  | .modePcvr => "ModePcvr"
+  | .modeSteamVr => "ModeSteamVr"
+  | .modeStream => "ModeStream"
   | .addRuntime => "AddRuntime"
   | .addRuntimeChosen => "AddRuntimeChosen"
   | .trayUninstall => "TrayUninstall"
@@ -332,6 +368,23 @@ def step (s : State) : Action → Option State
     if s.trayAnswers then
       if s.pending.isNone then some { s with warningDue := false, pending := some .other } else some { s with warningDue := false }
     else none
+  -- Each mode installs OXRSys first, as Bind does. PCVR on OXRSys is the swap; the other two keep SteamVR
+  -- the runtime with OXRSys its headset.
+  | .modePcvr =>
+    if s.trayAnswers then
+      if s.pending.isNone then some { s with warningDue := false, pending := some .ours, installing := true }
+      else some { s with warningDue := false }
+    else none
+  | .modeSteamVr =>
+    if s.trayAnswers then
+      if s.pending.isNone then some { s with warningDue := false, pending := some .steamVrOnOxrsys, installing := true }
+      else some { s with warningDue := false }
+    else none
+  | .modeStream =>
+    if s.trayAnswers then
+      if s.pending.isNone then some { s with warningDue := false, pending := some .stream, installing := true }
+      else some { s with warningDue := false }
+    else none
   | .addRuntime => if s.trayAnswers && !s.fileDialog then some { s with warningDue := false, fileDialog := true } else none
   | .addRuntimeChosen => if s.fileDialog && !s.exited then some { s with fileDialog := false } else none
   | .trayUninstall =>
@@ -352,7 +405,7 @@ def step (s : State) : Action → Option State
   | .trayQuit => if s.trayAnswers then some { s with exited := true } else none
   -- A background change may finish after a quit: its prompt was already up.
   | .installFailed =>
-    if s.pending == some .bind && s.installing then some { s with pending := none, installing := false } else none
+    if s.pending.isSome && s.installing then some { s with pending := none, installing := false } else none
   | .elevatedDone =>
     match s.pending with
     | some p =>
@@ -360,7 +413,10 @@ def step (s : State) : Action → Option State
           | .bind | .ours => s.desk.swapToOxrsys
           | .other => s.desk.pickSteamVr
           | .unbind => s.desk.unbind
-        some { s with pending := none, installing := false, desk }
+          | .steamVrOnOxrsys | .stream => s.desk.steamVrOnOxrsys
+        -- Only the stream mode makes the desk's pilot a watcher; every other change makes it the owner.
+        some { s with pending := none, installing := false,
+                      desk := { desk with deskWatches := p == .stream } }
     | none => none
   | .elevatedDeclined =>
     match s.pending with
@@ -403,6 +459,9 @@ def witness : Action → Desk × List Action
   | .trayUnbind => ({ firstRunDone := true, runtime := .oxrsys }, [.launchTray, .deskSetup, .trayUnbind])
   | .runtimeOurs => ({ firstRunDone := true }, [.launchTray, .deskSetup, .runtimeOurs])
   | .runtimeOther => ({ firstRunDone := true, runtime := .oxrsys }, [.launchTray, .deskSetup, .runtimeOther])
+  | .modePcvr => ({ firstRunDone := true }, [.launchTray, .deskSetup, .modePcvr])
+  | .modeSteamVr => ({ firstRunDone := true }, [.launchTray, .deskSetup, .modeSteamVr])
+  | .modeStream => ({ firstRunDone := true }, [.launchTray, .deskSetup, .modeStream])
   | .addRuntime => ({ firstRunDone := true }, [.launchTray, .deskSetup, .addRuntime])
   | .addRuntimeChosen => ({ firstRunDone := true }, [.launchTray, .deskSetup, .addRuntime, .addRuntimeChosen])
   | .trayUninstall => ({ firstRunDone := true, packaged := true }, [.launchTray, .deskSetup, .trayUninstall])
@@ -498,6 +557,37 @@ def backTracks : List (List Action) :=
 /-- Where a track ends from a desk, if the UI offers every step there. -/
 def trackEnd (d : Desk) (track : List Action) : Option Desk := (run (.start d) track).map (·.desk)
 
+/-! ## The tray's three modes -/
+
+/-- PCVR on OXRSys, SteamVR on OXRSys, and streaming to a headset (the Steam Frame, a Quest 3). -/
+def modeTracks : List (List Action) :=
+  [[.launchTray, .deskSetup, .modePcvr, .elevatedDone],
+   [.launchTray, .deskSetup, .modeSteamVr, .elevatedDone],
+   [.launchTray, .deskSetup, .modeStream, .elevatedDone]]
+
+/-- Each mode's row: OXRSys the runtime with the pilot owning; SteamVR the runtime on OXRSys with the
+pilot owning; the same with the pilot watching. -/
+def Desk.inMode (d : Desk) : Nat → Bool
+  | 0 => d.onOxrsys && !d.deskWatches
+  | 1 => d.onSteamVrWithOxrsys && !d.deskWatches
+  | _ => d.onSteamVrWithOxrsys && d.deskWatches
+
+/-- Each mode, accepted, ends in its row from any desk where the tray answers. -/
+theorem modes_end_in_their_rows (d : Desk) (fresh : d.firstRunDone = true) (icon : d.trayIcon = true)
+    (alone : d.runningCopy = false) :
+    ((trackEnd d [.launchTray, .deskSetup, .modePcvr, .elevatedDone]).map (·.inMode 0)) = some true ∧
+    ((trackEnd d [.launchTray, .deskSetup, .modeSteamVr, .elevatedDone]).map (·.inMode 1)) = some true ∧
+    ((trackEnd d [.launchTray, .deskSetup, .modeStream, .elevatedDone]).map (·.inMode 2)) = some true := by
+  simp [trackEnd, run, step, State.start, State.ownsDesk, State.trayAnswers, Desk.inMode, Desk.swapToOxrsys,
+    Desk.steamVrOnOxrsys, Desk.onOxrsys, Desk.onSteamVrWithOxrsys, fresh, icon, alone]
+
+/-- Only the stream mode makes the desk's pilot a watcher: no other step turns it on. -/
+theorem only_the_stream_mode_watches (s t : State) (a : Action) (h : step s a = some t)
+    (watching : t.desk.deskWatches = true) :
+    s.desk.deskWatches = true ∨ (a = .elevatedDone ∧ s.pending = some .stream) := by
+  cases a <;> simp only [step] at h <;> (repeat' split at h) <;> simp_all <;> subst_vars <;>
+    simp_all [Desk.unbind, Desk.handBackHeadset]
+
 /-- The first start's swap and both ways back, on a fresh desk running SteamVR. -/
 theorem fresh_desk_tracks :
     ((trackEnd {} [.launchPilot, .deskSetup, .firstRunBind, .elevatedDone]).map (·.onOxrsys)) = some true ∧
@@ -536,8 +626,10 @@ def Desk.all : List Desk := Id.run do
                   for oxrsysDriver in [false, true] do
                     for developerMode in [false, true] do
                       for trayIcon in [false, true] do
-                        out := { packaged, runningCopy, firstRunDone, runtime, previous, forcedOxrsys, multipleDrivers,
-                                 multipleDriversBefore, oxrsysDriver, developerMode, trayIcon } :: out
+                        for deskWatches in [false, true] do
+                          out := { packaged, runningCopy, firstRunDone, runtime, previous, forcedOxrsys,
+                                   multipleDrivers, multipleDriversBefore, oxrsysDriver, developerMode, trayIcon,
+                                   deskWatches } :: out
   return out.reverse
 
 /-- Replays one session's spans, in the order they started, from every desk at once; accepts the

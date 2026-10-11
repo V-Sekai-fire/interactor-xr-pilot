@@ -360,6 +360,23 @@ def main : IO UInt32 := do
     "a declined swap changes nothing"
   c (desks.any fun d => Ui.trackEnd d [.launchTray, .deskSetup, .runtimeOurs, .elevatedDone] != some d)
     "control: an accepted swap does change the desk"
+  -- The tray's three modes end in their rows from every such desk, and only streaming makes the pilot watch.
+  c (desks.all fun d => (List.range 3).all fun i =>
+      match Ui.modeTracks[i]? with
+      | some t => ((Ui.trackEnd d t).map (·.inMode i)) == some true
+      | Option.none => false)
+    s!"PCVR on OXRSys, SteamVR on OXRSys and streaming each end in their row from all {desks.length} desks"
+  c (desks.all fun d => ((Ui.trackEnd { d with deskWatches := true }
+      [.launchTray, .deskSetup, .modeSteamVr, .elevatedDone]).map (·.deskWatches)) == some false)
+    "leaving the stream mode makes the desk's pilot the owner again"
+  c (desks.all fun d => Ui.trackEnd d [.launchTray, .deskSetup, .modeStream, .elevatedDeclined] == some d)
+    "a declined mode changes nothing"
+  c (desks.all fun d => ((Ui.trackEnd d [.launchTray, .deskSetup, .modeStream, .installFailed]).map
+      (·.deskWatches)) == some d.deskWatches)
+    "a mode whose install fails changes nothing"
+  c (!(desks.all fun d => ((Ui.trackEnd d [.launchTray, .deskSetup, .modeSteamVr, .elevatedDone]).map
+      (·.inMode 2)) == some true))
+    "control: SteamVR on OXRSys is not the stream row"
   c ((Ui.emitCpp.splitOn "case UiAction::").length == Ui.Action.all.length + 1) "the header has a case per action"
   -- The app records every action of the model, and the checked-in header is what the model emits.
   let sources ← ([("../app/main.cpp" : System.FilePath), "../tray/src/Tray.cpp"]).mapM fun p => do
