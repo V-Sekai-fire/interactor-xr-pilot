@@ -1,0 +1,12 @@
+# Commit hooks, run by prek (or pre-commit): `prek install` once, then each commit checks the files it
+# changes; `prek run --all-files` checks the whole tree.
+repos:
+  - repo: local
+    hooks:
+      - id: require-braces
+        name: C, C++ and Objective-C bodies have curly braces
+        entry: python scripts/check_braces.py
+        language: python
+        additional_dependencies: ["libclang==18.1.1"]
+        types_or: [c, c++, objective-c, objective-c++]
+        exclude: ^third_party/|_spv\.h$|/shaders/pyrowave_msl\.h$
