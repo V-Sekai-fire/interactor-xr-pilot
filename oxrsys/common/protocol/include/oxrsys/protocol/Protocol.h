@@ -113,6 +113,9 @@ enum ServerFeatureFlags : uint32_t
     SERVER_FEATURE_SPATIAL_ENTITY = 0x00000100,
     SERVER_FEATURE_SCENE_CAPTURE = 0x00000200,
     SERVER_FEATURE_FEC_INTERLEAVED = 0x00000400,
+    // A client owns the session now, so a ClientConnect without CLIENT_CAPABILITY_SPECTATOR would take it.
+    // The high bit, clear of demonixis/oxrsys's numbering.
+    SERVER_FEATURE_SESSION_OWNED = 0x80000000,
 };
 
 enum ClientCapabilityFlags : uint32_t

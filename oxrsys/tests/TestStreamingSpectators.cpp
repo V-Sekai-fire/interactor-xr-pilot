@@ -5,6 +5,8 @@
 #include "StreamingSpectators.h"
 #include "StreamModelCases.h"
 
+#include <oxrsys/protocol/Spectator.h>
+
 #include <string>
 
 using namespace std::chrono_literals;
@@ -128,4 +130,34 @@ TEST_CASE("The spectator list follows the runs lean/XrPilot/Stream.lean works ou
             CHECK(Text(spectators.Addresses()) == op.after);
         }
     }
+}
+
+TEST_CASE("A headset that finds the session owned watches it instead of taking it", "[streaming][spectators]")
+{
+    using oxrsys::streaming_spectators::ControlPacket;
+    using oxrsys::streaming_spectators::ControlRoute;
+    using oxrsys::streaming_spectators::RouteControl;
+    namespace spectator = oxr::protocol::spectator;
+    const uint32_t owned = oxr::protocol::SERVER_FEATURE_SESSION_OWNED | oxr::protocol::SERVER_FEATURE_CLIENT_UPSCALING;
+
+    auto joinRoute = [](uint32_t features, bool usb) {
+        return RouteControl(spectator::ShouldWatch(features, usb) ? ControlPacket::SpectatorConnect : ControlPacket::Connect,
+                            false, false);
+    };
+    CHECK(joinRoute(owned, false) == ControlRoute::Watch);
+    // Control: the same headset takes a session nobody owns, and a runtime too old to say takes it as before.
+    CHECK(joinRoute(oxr::protocol::SERVER_FEATURE_CLIENT_UPSCALING, false) == ControlRoute::TakeSession);
+    CHECK(joinRoute(0, false) == ControlRoute::TakeSession);
+    // A USB cable is plugged in to drive, and spectators are sent video over UDP only.
+    CHECK(joinRoute(owned, true) == ControlRoute::TakeSession);
+}
+
+TEST_CASE("A spectator headset's heartbeat keeps it inside the server's timeout", "[streaming][spectators]")
+{
+    namespace spectator = oxr::protocol::spectator;
+    const int64_t t = 10'000'000'000;
+    CHECK(spectator::HeartbeatDue(t, 0));
+    CHECK_FALSE(spectator::HeartbeatDue(t + spectator::HeartbeatNs - 1, t));
+    CHECK(spectator::HeartbeatDue(t + spectator::HeartbeatNs, t));
+    CHECK(2 * spectator::HeartbeatNs < int64_t(oxr::protocol::SPECTATOR_TIMEOUT_MS) * 1'000'000);
 }
