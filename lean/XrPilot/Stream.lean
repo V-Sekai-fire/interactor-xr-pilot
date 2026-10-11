@@ -238,6 +238,16 @@ theorem spectator_connect_never_owns (s : Server) (a : Addr) (now : Nat) :
     have : s.owner ≠ some a := by rw [ho]; simp [hne]
     simp [step, Server.apply, Server.expireAt, route, ho, hne]
 
+/-- A headset's ClientConnect after reading the announce: a spectator's when it says another client owns
+the session (`oxrsys/protocol/Spectator.h`, `ShouldWatch`). -/
+def joinPacket (owned : Bool) : Packet := .connect owned
+
+/-- A headset that joins as the announce tells it never moves an owned session to itself. -/
+theorem joining_an_owned_session_keeps_its_owner (s : Server) (a o : Addr) (now : Nat)
+    (ho : s.owner = some o) (hne : o ≠ a) :
+    (step s (.control a (joinPacket true) now)).owner = some o :=
+  (spectator_connect_never_owns s a now).2 o ho hne
+
 /-- Only the owner's goodbye ends the session: anyone else's leaves the owner as it was. -/
 theorem only_the_owner_ends_the_session (s : Server) (a : Addr) (now : Nat) (o : Addr)
     (ho : s.owner = some o) (hne : o ≠ a) :

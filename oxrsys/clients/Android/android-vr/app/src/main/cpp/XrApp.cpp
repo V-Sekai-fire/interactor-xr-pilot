@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <openxr/openxr_platform.h>
 #include <oxrsys/protocol/Foveation.h>
+#include <oxrsys/protocol/Spectator.h>
 
 #define LOG_TAG "OXRSys-Android"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -1732,6 +1733,8 @@ void XrApp::ResetConnection(const char* reason)
 
     transportMode_ = TransportMode::WifiUdp;
     connectionState_.store(ConnectionState::Disconnected);
+    spectating_.store(false);
+    lastSpectatorHeartbeatNs_ = 0;
     shellStatusText_ = reason != nullptr ? reason : "Disconnected";
     needsReconnect_.store(false);
     serverIp_[0] = '\0';
@@ -2062,6 +2065,12 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
 
     transportMode_ = transportMode;
     const bool usbAdb = transportMode_ == TransportMode::UsbAdbTcp;
+    spectating_.store(protocol::spectator::ShouldWatch(server.serverFeatures, usbAdb));
+    lastSpectatorHeartbeatNs_ = 0;
+    if (spectating_.load())
+    {
+        LOGI("Another client owns the session on %s; watching its video", serverIp);
+    }
 
     LOGI("Server discovered via %s: %s at %s (%ux%u @ %uHz, encoded %ux%u)",
          usbAdb ? "USB ADB" : "WiFi",
@@ -2281,7 +2290,7 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
     }
 
     // Connect tracking sender to server
-    if (trackingSender_)
+    if (trackingSender_ && !spectating_.load())
     {
         bool trackingConnected = usbAdb
             ? trackingSender_->ConnectTcp(serverTrackingPort_)
@@ -2301,7 +2310,7 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
     {
         LOGE("Failed to open control socket");
     }
-    else if (!usbAdb && networkReceiver_)
+    else if (!usbAdb && networkReceiver_ && !spectating_.load())
     {
         // Share control socket with NetworkReceiver for NACK sending
         networkReceiver_->SetControlSocket(controlSocket_, serverIp);
@@ -2315,9 +2324,10 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
 
     // NOW send ClientConnect — server will start sending video, and we're already listening
     SendClientConnect(serverIp);
+    lastSpectatorHeartbeatNs_ = SteadyClockNowNs();
     StartControlReceiver();
     connectionState_.store(ConnectionState::Connected);
-    shellStatusText_ = "Waiting for video";
+    shellStatusText_ = spectating_.load() ? "Watching" : "Waiting for video";
     if (networkReceiver_)
     {
         networkReceiver_->StopDiscovery();
@@ -2348,6 +2358,16 @@ void XrApp::SendClientConnect(const char* serverIp)
         ? protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG
         : 100;
     connect.refreshRateHz = clientRefreshRateHz_;
+    connect.displayEyeWidth = swapchainWidth_;
+    connect.displayEyeHeight = swapchainHeight_;
+    if (spectating_.load())
+    {
+        // The owner's capabilities shape the stream; a spectator only asks to watch it.
+        connect.clientCapabilities = protocol::CLIENT_CAPABILITY_SPECTATOR;
+        strncpy(connect.deviceName, headsetSystemName_, sizeof(connect.deviceName) - 1);
+        send(controlSocket_, &connect, sizeof(connect), MSG_DONTWAIT);
+        return;
+    }
     connect.clientCapabilities =
         protocol::CLIENT_CAPABILITY_FOVEATED_ENCODING |
         protocol::CLIENT_CAPABILITY_CLIENT_UPSCALING |
@@ -2382,6 +2402,21 @@ void XrApp::SendClientConnect(const char* serverIp)
          (connect.clientCapabilities & protocol::CLIENT_CAPABILITY_MIXED_REALITY_PASSTHROUGH) != 0
              ? 1
              : 0);
+}
+
+// The server drops a spectator unheard for SPECTATOR_TIMEOUT_MS; its ClientConnect is the heartbeat.
+void XrApp::SendSpectatorHeartbeat()
+{
+    if (!spectating_.load() || connectionState_.load() != ConnectionState::Connected)
+    {
+        return;
+    }
+    const int64_t now = SteadyClockNowNs();
+    if (protocol::spectator::HeartbeatDue(now, lastSpectatorHeartbeatNs_))
+    {
+        SendClientConnect(serverIp_);
+        lastSpectatorHeartbeatNs_ = now;
+    }
 }
 
 void XrApp::StartControlReceiver()
@@ -2730,7 +2765,7 @@ void XrApp::ApplyCompletedStreamConfigUpdate()
 void XrApp::SendStreamConfigAck(const protocol::StreamConfigUpdate& update, uint8_t status)
 {
     const bool usbAdb = transportMode_ == TransportMode::UsbAdbTcp;
-    if ((!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
+    if (spectating_.load() || (!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
     {
         return;
     }
@@ -2755,7 +2790,7 @@ void XrApp::SendStreamConfigAck(const protocol::StreamConfigUpdate& update, uint
 void XrApp::SendLatencyReport()
 {
     const bool usbAdb = transportMode_ == TransportMode::UsbAdbTcp;
-    if ((!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
+    if (spectating_.load() || (!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
     {
         return;
     }
@@ -2831,7 +2866,7 @@ void XrApp::SendLatencyReport()
 void XrApp::RequestKeyframe(uint32_t reasonFlags, uint32_t detail)
 {
     const bool usbAdb = transportMode_ == TransportMode::UsbAdbTcp;
-    if ((!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
+    if (spectating_.load() || (!usbAdb && controlSocket_ < 0) || (usbAdb && controlTcpSocket_ < 0))
     {
         return;
     }
@@ -3063,6 +3098,7 @@ void XrApp::RunFrame()
     }
 
     RetryUsbAdbTransportIfNeeded();
+    SendSpectatorHeartbeat();
     ApplyCompletedStreamConfigUpdate();
 
     if (connectionState_.load() == ConnectionState::Connected &&
@@ -4553,7 +4589,7 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
 
 void XrApp::SendTracking(const protocol::TrackingPacket& packet)
 {
-    if (!trackingSender_ || !trackingSender_->IsConnected())
+    if (spectating_.load() || !trackingSender_ || !trackingSender_->IsConnected())
     {
         return;
     }

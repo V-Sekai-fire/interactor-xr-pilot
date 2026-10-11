@@ -59,7 +59,7 @@ structure Desk where
   deriving DecidableEq, Repr, Inhabited
 
 inductive Mode where
-  | pilotThenTray | trayOnly | pilotOnly | agent | showRunning | version | usage
+  | pilotThenTray | trayOnly | pilotOnly | agent | showRunning | version | mcpConfig | usage
   deriving DecidableEq, Repr, Inhabited
 
 /-- The swap track's end: OXRSys is the OpenXR runtime and SteamVR's headset, with SteamVR's other
@@ -158,31 +158,35 @@ inductive Pending where
 inductive Action where
   -- Starting xr-pilot.
   | launchPilot | launchTray | launchWindow | launchAgent | launchShowRunning | launchVersion | launchUsage
+  | launchMcpConfig
   -- The desk copy's set-up when it starts.
   | deskSetup | updateWarning | firstRunBind
   -- The tray menu.
   | trayShowPilot | showRequest | trayBind | trayUnbind | runtimeOurs | runtimeOther
   | modePcvr | modeSteamVr | modeStream
   | addRuntime | addRuntimeChosen | trayUninstall | uninstallConfirm | uninstallCancel
-  | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit
+  | openLogs | developerMode | openRuntimeFolder | openDriverFolder | trayQuit | copyMcpConfig
   -- How a background change ends.
   | installFailed | elevatedDone | elevatedDeclined
   -- The pilot window and its controls.
   | windowOpen | windowError | windowClose
   | connect | disconnect | autoConnect | fieldOfView | controllers | pointing | seated
+  | appearance | conventions | colourChecker
   deriving DecidableEq, Repr, Inhabited
 
 /-- Every action, once. -/
 def Action.all : List Action :=
   [.launchPilot, .launchTray, .launchWindow, .launchAgent, .launchShowRunning, .launchVersion, .launchUsage,
+   .launchMcpConfig,
    .deskSetup, .updateWarning, .firstRunBind,
    .trayShowPilot, .showRequest, .trayBind, .trayUnbind, .runtimeOurs, .runtimeOther,
    .modePcvr, .modeSteamVr, .modeStream,
    .addRuntime, .addRuntimeChosen, .trayUninstall, .uninstallConfirm, .uninstallCancel,
-   .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit,
+   .openLogs, .developerMode, .openRuntimeFolder, .openDriverFolder, .trayQuit, .copyMcpConfig,
    .installFailed, .elevatedDone, .elevatedDeclined,
    .windowOpen, .windowError, .windowClose,
-   .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated]
+   .connect, .disconnect, .autoConnect, .fieldOfView, .controllers, .pointing, .seated,
+   .appearance, .conventions, .colourChecker]
 
 /-- The span each action records. -/
 def Action.spanName : Action → String
@@ -193,6 +197,7 @@ def Action.spanName : Action → String
   | .launchShowRunning => "ui.launch.show-running"
   | .launchVersion => "ui.launch.version"
   | .launchUsage => "ui.launch.usage"
+  | .launchMcpConfig => "ui.launch.mcp-config"
   | .deskSetup => "ui.tray.setup"
   | .updateWarning => "ui.tray.update-warning"
   | .firstRunBind => "ui.tray.first-run-bind"
@@ -211,6 +216,7 @@ def Action.spanName : Action → String
   | .uninstallConfirm => "ui.tray.uninstall-confirm"
   | .uninstallCancel => "ui.tray.uninstall-cancel"
   | .openLogs => "ui.tray.open-logs"
+  | .copyMcpConfig => "ui.tray.copy-mcp-config"
   | .developerMode => "ui.tray.developer-mode"
   | .openRuntimeFolder => "ui.tray.open-runtime-folder"
   | .openDriverFolder => "ui.tray.open-driver-folder"
@@ -228,6 +234,9 @@ def Action.spanName : Action → String
   | .controllers => "ui.window.controllers"
   | .pointing => "ui.window.pointing"
   | .seated => "ui.window.seated"
+  | .appearance => "ui.window.appearance"
+  | .conventions => "ui.window.conventions"
+  | .colourChecker => "ui.window.colour-checker"
 
 /-- The C++ enumerator for each action. -/
 def Action.cppName : Action → String
@@ -238,6 +247,7 @@ def Action.cppName : Action → String
   | .launchShowRunning => "LaunchShowRunning"
   | .launchVersion => "LaunchVersion"
   | .launchUsage => "LaunchUsage"
+  | .launchMcpConfig => "LaunchMcpConfig"
   | .deskSetup => "DeskSetup"
   | .updateWarning => "UpdateWarning"
   | .firstRunBind => "FirstRunBind"
@@ -256,6 +266,7 @@ def Action.cppName : Action → String
   | .uninstallConfirm => "UninstallConfirm"
   | .uninstallCancel => "UninstallCancel"
   | .openLogs => "OpenLogs"
+  | .copyMcpConfig => "CopyMcpConfig"
   | .developerMode => "DeveloperMode"
   | .openRuntimeFolder => "OpenRuntimeFolder"
   | .openDriverFolder => "OpenDriverFolder"
@@ -273,6 +284,9 @@ def Action.cppName : Action → String
   | .controllers => "Controllers"
   | .pointing => "Pointing"
   | .seated => "Seated"
+  | .appearance => "Appearance"
+  | .conventions => "Conventions"
+  | .colourChecker => "ColourChecker"
 
 def Action.ofSpanName? (name : String) : Option Action :=
   Action.all.find? (·.spanName == name)
@@ -333,6 +347,7 @@ def step (s : State) : Action → Option State
     if s.mode.isNone && s.desk.runningCopy then some { s with mode := some .showRunning, exited := true } else none
   | .launchVersion => if s.mode.isNone then some { s with mode := some .version, exited := true } else none
   | .launchUsage => if s.mode.isNone then some { s with mode := some .usage, exited := true } else none
+  | .launchMcpConfig => if s.mode.isNone then some { s with mode := some .mcpConfig, exited := true } else none
   | .deskSetup =>
     if s.ownsDesk && !s.setUp then
       let due := !s.desk.firstRunDone && s.desk.runtime != .oxrsys
@@ -395,6 +410,7 @@ def step (s : State) : Action → Option State
     else none
   | .uninstallCancel => if s.uninstallAsked && !s.exited then some { s with uninstallAsked := false } else none
   | .openLogs => if s.trayAnswers then some { s with warningDue := false } else none
+  | .copyMcpConfig => if s.trayAnswers then some { s with warningDue := false } else none
   | .developerMode =>
     if s.trayAnswers then
       some { s with warningDue := false, desk := { s.desk with developerMode := !s.desk.developerMode } }
@@ -433,7 +449,8 @@ def step (s : State) : Action → Option State
       some { s with opened := true, showWanted := false, exited := s.quitsOnClose } else none
   | .windowClose =>
     if s.window then some { s with window := false, exited := s.exited || s.quitsOnClose } else none
-  | .connect | .disconnect | .autoConnect | .fieldOfView | .controllers | .pointing | .seated =>
+  | .connect | .disconnect | .autoConnect | .fieldOfView | .controllers | .pointing | .seated
+  | .appearance | .conventions | .colourChecker =>
     if s.window && !s.uninstallAsked then some s else none
 
 /-- The state after a run, or `none` at the first action the UI did not offer. -/
@@ -450,6 +467,7 @@ def witness : Action → Desk × List Action
   | .launchShowRunning => ({ runningCopy := true }, [.launchShowRunning])
   | .launchVersion => ({}, [.launchVersion])
   | .launchUsage => ({}, [.launchUsage])
+  | .launchMcpConfig => ({}, [.launchMcpConfig])
   | .deskSetup => ({}, [.launchPilot, .deskSetup])
   | .updateWarning => ({}, [.launchPilot, .deskSetup, .updateWarning])
   | .firstRunBind => ({}, [.launchPilot, .deskSetup, .firstRunBind])
@@ -470,6 +488,7 @@ def witness : Action → Desk × List Action
   | .uninstallCancel =>
     ({ firstRunDone := true, packaged := true }, [.launchTray, .deskSetup, .trayUninstall, .uninstallCancel])
   | .openLogs => ({ firstRunDone := true }, [.launchTray, .deskSetup, .openLogs])
+  | .copyMcpConfig => ({ firstRunDone := true }, [.launchTray, .deskSetup, .copyMcpConfig])
   | .developerMode => ({ firstRunDone := true }, [.launchTray, .deskSetup, .developerMode])
   | .openRuntimeFolder =>
     ({ firstRunDone := true }, [.launchTray, .deskSetup, .developerMode, .openRuntimeFolder])
@@ -489,6 +508,9 @@ def witness : Action → Desk × List Action
   | .controllers => ({}, [.launchWindow, .windowOpen, .controllers])
   | .pointing => ({}, [.launchWindow, .windowOpen, .pointing])
   | .seated => ({}, [.launchWindow, .windowOpen, .seated])
+  | .appearance => ({}, [.launchWindow, .windowOpen, .appearance])
+  | .conventions => ({}, [.launchWindow, .windowOpen, .conventions])
+  | .colourChecker => ({}, [.launchWindow, .windowOpen, .colourChecker])
 
 /-- `witness a` is valid and ends in `a`. -/
 def reaches (a : Action) : Bool :=

@@ -36,12 +36,14 @@ add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Body.cpp
     third_party/sinew-align/sinew_align.c
+    core/src/CommandLoop.cpp
     core/src/Commands.cpp
     core/src/FrameAssembler.cpp
     core/src/HeadGizmo.cpp
     core/src/HumanInput.cpp
     core/src/Json.cpp
     core/src/Launch.cpp
+    core/src/McpLink.cpp
     core/src/MouseLook.cpp
     core/src/UiTrace.cpp
     core/src/Pace.cpp
@@ -51,12 +53,17 @@ add_library(xrpilot_core STATIC
     core/src/SpanLog.cpp
     core/src/StreamRecord.cpp
     core/src/TraceStore.cpp
+    core/src/Theme.cpp
     third_party/sqlite/sqlite3.c
     core/src/Sparkline.cpp
 )
 target_include_directories(xrpilot_core PUBLIC core/include ${CMAKE_CURRENT_BINARY_DIR}/generated ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite
     PRIVATE third_party/sinew-align)
 target_compile_definitions(xrpilot_core PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_FOREIGN_KEYS=1)
+if(WIN32)
+    # The MCP token: BCryptGenRandom, and a user-only DACL on its file.
+    target_link_libraries(xrpilot_core PUBLIC bcrypt advapi32)
+endif()
 
 add_library(xrpilot_net STATIC core/src/Client.cpp)
 target_link_libraries(xrpilot_net PUBLIC xrpilot_core)
@@ -83,10 +90,13 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
                       client.stays-with-a-streaming-runtime
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
-                      launch.flags-keep-their-meaning client.local-runtime-wins
+                      launch.flags-keep-their-meaning launch.mcp-flags client.local-runtime-wins
+                      mcp.token-is-random-and-kept mcp.client-config-names-the-port-and-token
                       client.local-address-is-recognised client.second-pilot-is-refused
                       ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
-                      mouse.look-turns-evenly mouse.look-lands-whole)
+                      mouse.look-turns-evenly mouse.look-lands-whole
+                      commands.loop-normalizes-lines bridge.wakes-the-tray-and-waits bridge.no-pilot-is-an-error
+                      bridge.detach-waits-for-the-command)
     add_test(NAME ${name} COMMAND xrpilot-core-tests ${name})
 endforeach()
 # The 15.6 ms tick it guards against is Windows'; elsewhere a throttled shell (background QoS) fails it.
@@ -139,7 +149,8 @@ add_executable(xrpilot-human-tests core/tests/human.cpp)
 target_link_libraries(xrpilot-human-tests PRIVATE xrpilot_core)
 foreach(name IN ITEMS human.gizmo-straight-up-and-down human.gizmo-arcs-measure-the-angles human.tracking-period-follows-refresh human.walk-on-sender-never-repeats human.wheel-sets-walk-speed human.shift-wheel-sets-hand-reach human.walk-moves-head-shift-moves-hand human.mouse-look-not-inverted human.touch-keys
                       human.controllers-flag human.hands-aim-at-gaze human.agent-hand-overrides-body
-                      human.seated-lowers-head-and-hands
+                      agent.packet-carries-the-controller-pose-its-tip-aims-from human.seated-lowers-head-and-hands
+                      human.gizmo-axes-right-handed human.gizmo-front-faces-ccw human.theme-contrast human.theme-appearance
                       sparkline.deltas-over-ten-seconds sparkline.fault-colour-follows-its-sample
                       sparkline.p90-scale-clips-a-spike sparkline.model-runs sparkline.zero-clears-the-base
                       sparkline.ticks-move-every-sample sparkline.pump-samples-without-frames)
@@ -258,6 +269,10 @@ add_custom_command(TARGET xr-pilot POST_BUILD
 if(WIN32 AND XRPILOT_BUILD_OXRSYS)
     set(XRPILOT_DRIVER_ROOT ${CMAKE_CURRENT_BINARY_DIR}/oxrsys/driver/oxrsys)
     install(TARGETS xr-pilot RUNTIME DESTINATION bin COMPONENT xrpilot)
+    # The MCP server the tray runs, which `lake build xr_pilot_mcp` in lean/ makes before cpack packs it.
+    set(XRPILOT_MCP_EXE ${CMAKE_CURRENT_SOURCE_DIR}/lean/.lake/build/bin/xr_pilot_mcp.exe CACHE FILEPATH
+        "xr_pilot_mcp for the MSI")
+    install(PROGRAMS ${XRPILOT_MCP_EXE} DESTINATION bin COMPONENT xrpilot)
     install(DIRECTORY tray/resources/ DESTINATION bin/resources COMPONENT xrpilot)
     install(FILES $<TARGET_FILE:oxrsys_runtime> DESTINATION runtime COMPONENT xrpilot)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/package/oxrsys-runtime.json

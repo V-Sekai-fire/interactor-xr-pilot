@@ -8,6 +8,7 @@
 #include "xrpilot/HumanInput.h"
 #include "xrpilot/Pump.h"
 #include "xrpilot/Sparkline.h"
+#include "xrpilot/Theme.h"
 
 #include "SparkModelCases.h"
 
@@ -121,6 +122,60 @@ const std::map<std::string, std::function<void()>> cases = {
          check(std::fabs(rolled.yawDegrees - 20.0f) < 0.5f && std::fabs(rolled.pitchDegrees - 10.0f) < 0.5f, "roll moves neither arc");
          for (const HeadGizmo::Segment& s : rolled.segments(100.0f))
              check(s.x0 >= 0 && s.x0 <= 100 && s.y0 >= 0 && s.y0 <= 100, "every segment stays inside its box");
+     }},
+    {"human.gizmo-axes-right-handed",
+     [] {
+         const HeadGizmo::Point x = gizmoView({1, 0, 0}), y = gizmoView({0, 1, 0}), z = gizmoView({0, 0, 1});
+         const auto det = [](HeadGizmo::Point a, HeadGizmo::Point b, HeadGizmo::Point c) {
+             return a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) + a.z * (b.x * c.y - b.y * c.x);
+         };
+         check(std::fabs(det(x, y, z) - 1.0f) < 1e-4f, "the gizmo shows +X right, +Y up and +Z toward the viewer, right-handed");
+         const HeadGizmo g = buildHeadGizmo(Rotation{});
+         check(near(arcOf(g, HeadGizmo::Role::Look).points.back(), 0, 0, -1), "at rest the head looks along -Z");
+         check(arcOf(g, HeadGizmo::Role::AxisY).points.back().y > 1.0f, "the Y axis is drawn up");
+         // Control: the same axes seen in a mirror have the opposite handedness.
+         const auto mirror = [](HeadGizmo::Point p) { return HeadGizmo::Point{-p.x, p.y, p.z}; };
+         check(det(mirror(x), mirror(y), mirror(z)) < 0.0f, "control: a mirrored view is left-handed");
+     }},
+    {"human.gizmo-front-faces-ccw",
+     [] {
+         // A triangle wound counter-clockwise about +Z, the side facing the viewer at rest.
+         const HeadGizmo::Point tri[3] = {gizmoView({0, 0, 0}), gizmoView({1, 0, 0}), gizmoView({0, 1, 0})};
+         const float area = (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y);
+         check(area > 0.0f, "a front face reads counter-clockwise with y up (clockwise in screen pixels, y down)");
+         const float flipped = (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y) - (tri[1].x - tri[0].x) * (tri[2].y - tri[0].y);
+         check(flipped < 0.0f, "control: the reversed triangle reads clockwise");
+     }},
+    {"human.theme-contrast",
+     [] {
+         for (Scheme scheme : {Scheme::Dark, Scheme::Light})
+         {
+             const Palette& p = palette(scheme);
+             for (Rgb surface : {p.background, p.panel, p.header, p.control, p.controlHover})
+                 check(contrast(p.text, surface) >= 4.5, "text meets WCAG AA on every surface");
+             for (Rgb surface : {p.background, p.panel})
+             {
+                 check(contrast(p.muted, surface) >= 4.5, "muted text meets AA on panels");
+                 check(contrast(p.faultText, surface) >= 4.5, "fault text meets AA on panels");
+                 for (Rgb mark : {p.good, p.warning, p.fault, p.info, p.axisX, p.axisY, p.axisZ, p.accent, p.rule})
+                     check(contrast(mark, surface) >= 3.0, "marks meet the 3:1 non-text ratio");
+             }
+         }
+         check(std::fabs(contrast({0, 0, 0}, {255, 255, 255}) - 21.0) < 0.01, "black on white is 21:1");
+         // Control: the old dark theme's tick colour on its panel fails the non-text ratio.
+         check(contrast({65, 78, 94}, {43, 45, 48}) < 3.0, "control: a faint rule is caught");
+     }},
+    {"human.theme-appearance",
+     [] {
+         check(schemeFor(Appearance::Auto, true) == Scheme::Dark && schemeFor(Appearance::Auto, false) == Scheme::Light,
+               "auto follows the system");
+         check(schemeFor(Appearance::Light, true) == Scheme::Light && schemeFor(Appearance::Dark, false) == Scheme::Dark,
+               "a chosen scheme wins over the system");
+         Appearance a = Appearance::Auto;
+         for (int i = 0; i < 3; ++i)
+             a = nextAppearance(a);
+         check(a == Appearance::Auto, "the toggle cycles auto, light, dark and back");
+         check(nextAppearance(Appearance::Auto) != Appearance::Auto, "control: one press changes it");
      }},
     {"human.tracking-period-follows-refresh",
      [] {
@@ -270,11 +325,9 @@ const std::map<std::string, std::function<void()>> cases = {
          const TrackingPacket packet = packetOf(s);
          check(packet.rightTrigger == 1.0f, "the trigger pulls once the hand has hovered");
 
-         const float* p = packet.rightControllerPos;
-         const float* q = packet.rightControllerRot;
-         const float fx = -2.0f * (q[0] * q[2] + q[3] * q[1]);
-         const float fy = -2.0f * (q[1] * q[2] - q[3] * q[0]);
-         const float fz = -(1.0f - 2.0f * (q[0] * q[0] + q[1] * q[1]));
+         const Pose aim = handPose(s, 1);
+         const float* p = aim.position;
+         const float fx = -aim.rotation.m[2], fy = -aim.rotation.m[5], fz = -aim.rotation.m[8];
          const float ux = -std::sin(1.2f) * std::cos(-0.4f), uy = std::sin(-0.4f), uz = -std::cos(1.2f) * std::cos(-0.4f);
          const float hx = p[0] - 3.0f, hy = p[1] - 1.6f, hz = p[2];
          const float onLine = hx * ux + hy * uy + hz * uz;
@@ -297,13 +350,38 @@ const std::map<std::string, std::function<void()>> cases = {
          AgentState s;
          ClientStatus status;
          runCommand("hand right 0.5 1.2 -0.4 1 0 0 0 1 0 0 0 1", s, status, 0);
-         const TrackingPacket placed = packetOf(s);
-         check(placed.rightControllerPos[0] == 0.5f && placed.rightControllerPos[1] == 1.2f,
+         const Pose placed = handPose(s, 1);
+         check(placed.position[0] == 0.5f && placed.position[1] == 1.2f,
                "an agent-placed hand is sent where the agent put it");
          runCommand("release", s, status, 0);
          s.head.position[0] = 2.0f;
-         const TrackingPacket released = packetOf(s);
-         check(std::abs(released.rightControllerPos[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
+         check(std::abs(handPose(s, 1).position[0] - 2.22f) < 1e-4f, "release returns the hand to the body's side");
+     }},
+    {"agent.packet-carries-the-controller-pose-its-tip-aims-from",
+     [] {
+         AgentState s;
+         s.hands[1].manual = true;
+         s.hands[1].pose.position[0] = 0.1f;
+         s.hands[1].pose.position[1] = 1.3f;
+         s.hands[1].pose.position[2] = -0.4f;
+         s.hands[1].pose.rotation = fromEuler(EulerOrder::YXZ, 20.0f, -10.0f, 0.0f);
+         const TrackingPacket packet = packetOf(s);
+         Rotation raw;
+         check(fromQuaternion(packet.rightControllerRot, raw), "the packet's rotation is a quaternion");
+         // SteamVR's frame_controller tip: raw pitched -40 degrees, 1-3 cm forward of the raw origin.
+         const Rotation tip = multiply(raw, fromEuler(EulerOrder::XYZ, -40.0f, 0.0f, 0.0f));
+         const float origin[3] = {-0.012694f, -0.02522f, 0.020687f};
+         float offset[3];
+         apply(raw, origin, offset);
+         float worst = 0.0f;
+         for (int i = 0; i < 9; ++i)
+             worst = std::max(worst, std::abs(tip.m[i] - s.hands[1].pose.rotation.m[i]));
+         for (int i = 0; i < 3; ++i)
+             worst = std::max(worst, std::abs(packet.rightControllerPos[i] + offset[i] - s.hands[1].pose.position[i]));
+         check(worst < 1e-5f, "the app's tip lands on the hand the agent aimed");
+         // Control: sending the aim itself as the raw pose leaves the tip pitched 40 degrees down.
+         const Rotation wrong = multiply(s.hands[1].pose.rotation, fromEuler(EulerOrder::XYZ, -40.0f, 0.0f, 0.0f));
+         check(std::abs(wrong.m[5] - s.hands[1].pose.rotation.m[5]) > 0.1f, "the uncorrected tip misses");
      }},
     {"human.seated-lowers-head-and-hands",
      [] {

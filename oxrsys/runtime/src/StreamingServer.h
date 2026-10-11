@@ -91,6 +91,9 @@ public:
 
     // Access to tracking receiver (for InputManager integration)
     TrackingReceiver* GetTrackingReceiver() { return trackingReceiver_.get(); }
+    // The pixels per eye the connected headset recommends (ClientConnect v1.4); zero when it did not say.
+    uint32_t GetClientDisplayEyeWidth() const { return clientDisplayEyeWidth_.load(); }
+    uint32_t GetClientDisplayEyeHeight() const { return clientDisplayEyeHeight_.load(); }
 
 private:
     using SocketHandle = oxrsys::runtime_socket::SocketHandle;
@@ -222,6 +225,9 @@ private:
     std::atomic_bool clientSupportsMixedRealityPassthrough_{false};
     std::atomic_bool clientSupportsSpatialEntity_{false};
     std::atomic<uint32_t> targetRefreshRateHz_{90};
+    void RememberClientDisplayEye(const oxr::protocol::ClientConnect& clientConnect);
+    std::atomic<uint32_t> clientDisplayEyeWidth_{0};
+    std::atomic<uint32_t> clientDisplayEyeHeight_{0};
     std::atomic<float> clientPipelineLatencyMs_{18.0f};
     std::atomic<float> serverPipelineLatencyMs_{10.0f};
     std::atomic<float> clientReceiveToSubmitMs_{0.0f};

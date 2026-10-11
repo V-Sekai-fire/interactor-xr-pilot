@@ -17,6 +17,22 @@ cmake --build build
 
 Start an OpenXR app on OXRSys, then register `xr_pilot_mcp` with your agent.
 
+### The tray's MCP server
+
+The installed tray runs `xr_pilot_mcp` itself, at `http://127.0.0.1:9950/mcp` (MCP's streamable HTTP transport). An agent drives the pilot you see: its first command opens the pilot window, and while the window is closed no command is answered. The server listens on the loopback address only. It refuses a request without the install's bearer token (401), and one whose `Host` is not this machine's loopback or whose `Origin` is a web page (403), so a page in a browser cannot reach it.
+
+The token is 32 bytes from the system's random source, made at the tray's first start in `%APPDATA%\V-Sekai-fire\xr-pilot\mcp-token`, a file only your account can open. The quickest setup is the tray menu's **Copy MCP settings**, which puts the entry below on the clipboard with the token filled in; `xr-pilot --mcp-config` prints the same entry. `--mcp-port <port>` moves the server, and `--mcp-port 0` starts none. When the tray quits, or stops unexpectedly, the server stops with it. Register the server with Claude Code by putting the token in its header:
+
+```json
+"xr-pilot": {
+  "type": "http",
+  "url": "http://127.0.0.1:9950/mcp",
+  "headers": { "Authorization": "Bearer <the contents of mcp-token>" }
+}
+```
+
+`claude mcp add --transport http xr-pilot http://127.0.0.1:9950/mcp --header "Authorization: Bearer <token>"` writes the same entry. The stdio registration above still works when the tray is not running.
+
 ## Licence
 
 Apache-2.0 OR MIT. `oxrsys/` and the files ported from it are MPL-2.0 (`oxrsys/LICENSE`), and `third_party/` projects carry their own licences.

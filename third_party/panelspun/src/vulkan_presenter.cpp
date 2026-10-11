@@ -28,7 +28,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL onValidation(VkDebugUtilsMessageSeverityFlagBitsE
 
 }
 
-bool VulkanPresenter::init(SDL_Window* window, bool validation, bool allFeatures, std::string* error) {
+bool VulkanPresenter::init(SDL_Window* window, bool validation, bool allFeatures,
+                           const std::vector<std::string>& deviceExtensions, std::string* error) {
     window_ = window;
     ctx_.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
     if (!ctx_.getInstanceProcAddr) return fail(error, std::string("no Vulkan loader: ") + SDL_GetError());
@@ -126,8 +127,20 @@ bool VulkanPresenter::init(SDL_Window* window, bool validation, bool allFeatures
     VkDeviceCreateInfo& dci = deviceInfo_;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = 1;
-    dci.ppEnabledExtensionNames = deviceExtensions_;
+    std::uint32_t available = 0;
+    vkEnumerateDeviceExtensionProperties(ctx_.physicalDevice, nullptr, &available, nullptr);
+    std::vector<VkExtensionProperties> props(available);
+    vkEnumerateDeviceExtensionProperties(ctx_.physicalDevice, nullptr, &available, props.data());
+    extensionNames_ = deviceExtensions;
+    extensionNames_.insert(extensionNames_.begin(), VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    for (const std::string& name : extensionNames_) {
+        bool found = false;
+        for (const VkExtensionProperties& p : props) found = found || name == p.extensionName;
+        if (!found) return fail(error, "the Vulkan device lacks " + name);
+        deviceExtensions_.push_back(name.c_str());
+    }
+    dci.enabledExtensionCount = static_cast<std::uint32_t>(deviceExtensions_.size());
+    dci.ppEnabledExtensionNames = deviceExtensions_.data();
     if (allFeatures) {
         // Every supported core feature, as compute libraries sharing the device expect.
         features_.pNext = &features11_;

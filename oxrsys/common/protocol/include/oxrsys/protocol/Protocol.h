@@ -113,6 +113,9 @@ enum ServerFeatureFlags : uint32_t
     SERVER_FEATURE_SPATIAL_ENTITY = 0x00000100,
     SERVER_FEATURE_SCENE_CAPTURE = 0x00000200,
     SERVER_FEATURE_FEC_INTERLEAVED = 0x00000400,
+    // A client owns the session now, so a ClientConnect without CLIENT_CAPABILITY_SPECTATOR would take it.
+    // The high bit, clear of demonixis/oxrsys's numbering.
+    SERVER_FEATURE_SESSION_OWNED = 0x80000000,
 };
 
 enum ClientCapabilityFlags : uint32_t
@@ -232,8 +235,11 @@ struct ClientConnect
     // prefix so older servers can still parse the original connect message.
     uint32_t clientCapabilities = 0; // ClientCapabilityFlags
     uint32_t audioSampleRateHz = 48000;
-    uint32_t reserved2 = 0;
-    uint32_t reserved3 = 0;
+    // Protocol v1.4: the pixels per eye the headset's compositor recommends (recommendedImageRect), in
+    // what were two reserved words; zero when the client does not say. A server that renders a fixed size
+    // (the SteamVR driver) saves it for its next start.
+    uint32_t displayEyeWidth = 0;
+    uint32_t displayEyeHeight = 0;
 };
 
 // ─── Video Stream (Server → Client, UDP on VIDEO_PORT) ──────────────────────

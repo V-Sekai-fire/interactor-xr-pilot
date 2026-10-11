@@ -6,11 +6,13 @@
 // frame presented at or before t; the left eye is fitted into the canvas, letterboxed on black.
 // Audio is silent 16-bit stereo at 48 kHz.
 //
-//   pyro2cfhd <in.pwrec> <out.cfhd> [--fps 30] [--size 3840x2160] [--quality 0..5] [--gpu <vid>:<pid>]
+//   pyro2cfhd <in.pwrec> <out.cfhd> [--fps 30] [--size 3840x2160] [--quality 0..5] [--gpu <vid>:<pid>] [--cpu]
+//   pyro2cfhd --parity <in.pwrec> [--size 3840x2160] [--gpu <vid>:<pid>]
 //   pyro2cfhd --self-test <dir> [--gpu <vid>:<pid>]
 //
-// --gpu takes the PCI vendor and device ids in hex (10de:2684 is an RTX 4090); without it PyroWave
-// takes its default device.
+// --gpu takes the PCI vendor and device ids in hex (10de:2204 is an RTX 3090); without it PyroWave
+// takes its default device. The eye_fit_bgra kernel fits each frame on that GPU; --cpu does it on the
+// CPU instead, the reference --parity compares it with.
 
 #include "cfhd_clip.h"
 #include "xrpilot/GpuDecoder.h"
@@ -24,6 +26,7 @@
 #include "CFHDTypes.h"
 
 #include <pyrowave.h>
+#include <volk.h>
 
 #include <algorithm>
 #include <chrono>
@@ -131,6 +134,7 @@ struct Options
     uint32_t fps = 30;
     int W = 3840, H = 2160, quality = 2;
     uint32_t vid = 0, pid = 0;
+    bool cpu = false;
 };
 
 bool makeDevice(const Options& o, pyrowave_device& device)
@@ -139,12 +143,193 @@ bool makeDevice(const Options& o, pyrowave_device& device)
                            : pyrowave_create_default_device(&device)) == PYROWAVE_SUCCESS;
 }
 
+// A headless Vulkan 1.3 device on the --gpu card with every core feature on, which GpuDecoder shares with PyroWave.
+struct Vulkan
+{
+    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceVulkan11Features features11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    VkPhysicalDeviceVulkan12Features features12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan13Features features13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    xrpilot::GpuContext context;
+
+    ~Vulkan()
+    {
+        if (context.device)
+            vkDestroyDevice(context.device, nullptr);
+        if (context.instance)
+            vkDestroyInstance(context.instance, nullptr);
+    }
+
+    bool create(const Options& o)
+    {
+        if (volkInitialize() != VK_SUCCESS)
+            return false;
+        app.pApplicationName = "pyro2cfhd";
+        app.apiVersion = VK_API_VERSION_1_3;
+        instanceInfo.pApplicationInfo = &app;
+        if (vkCreateInstance(&instanceInfo, nullptr, &context.instance) != VK_SUCCESS)
+            return false;
+        volkLoadInstanceOnly(context.instance);
+        uint32_t count = 0;
+        vkEnumeratePhysicalDevices(context.instance, &count, nullptr);
+        std::vector<VkPhysicalDevice> gpus(count);
+        vkEnumeratePhysicalDevices(context.instance, &count, gpus.data());
+        for (VkPhysicalDevice gpu : gpus)
+        {
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(gpu, &props);
+            if (props.apiVersion < VK_API_VERSION_1_3 || ((o.vid || o.pid) && (props.vendorID != o.vid || props.deviceID != o.pid)))
+                continue;
+            uint32_t families = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(gpu, &families, nullptr);
+            std::vector<VkQueueFamilyProperties> family(families);
+            vkGetPhysicalDeviceQueueFamilyProperties(gpu, &families, family.data());
+            for (uint32_t i = 0; i < families && !context.physicalDevice; ++i)
+                if (family[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+                {
+                    context.physicalDevice = gpu;
+                    context.queueFamily = i;
+                }
+            if (context.physicalDevice)
+                break;
+        }
+        if (!context.physicalDevice)
+            return false;
+        queueInfo.queueFamilyIndex = context.queueFamily;
+        queueInfo.queueCount = 1;
+        queueInfo.pQueuePriorities = &priority;
+        features.pNext = &features11;
+        features11.pNext = &features12;
+        features12.pNext = &features13;
+        vkGetPhysicalDeviceFeatures2(context.physicalDevice, &features);
+        features.features.robustBufferAccess = VK_FALSE;
+        deviceInfo.pNext = &features;
+        deviceInfo.queueCreateInfoCount = 1;
+        deviceInfo.pQueueCreateInfos = &queueInfo;
+        if (vkCreateDevice(context.physicalDevice, &deviceInfo, nullptr, &context.device) != VK_SUCCESS)
+            return false;
+        volkLoadDevice(context.device);
+        vkGetDeviceQueue(context.device, context.queueFamily, 0, &context.queue);
+        context.getInstanceProcAddr = vkGetInstanceProcAddr;
+        context.instanceInfo = &instanceInfo;
+        context.deviceInfo = &deviceInfo;
+        return true;
+    }
+};
+
+// fitInto's taps for eye_fit_bgra, zero-padded to one length; shift is the self-test's wrong kernel.
+struct GpuTaps
+{
+    int sw = 0, sh = 0, n = 0, dw = 0, dh = 0;
+    std::vector<int32_t> first;
+    std::vector<float> w;
+
+    void make(int eyeW, int eyeH, const Options& o, int shift)
+    {
+        if (eyeW == sw && eyeH == sh)
+            return;
+        const cfhdclip::Fit fit = cfhdclip::fitInto(eyeW, eyeH, o.W, o.H);
+        sw = eyeW;
+        sh = eyeH;
+        dw = fit.dw;
+        dh = fit.dh;
+        n = std::max(fit.x.n, fit.y.n);
+        first.clear();
+        w.assign(size_t(dw + dh) * n, 0.0f);
+        size_t line = 0;
+        for (const cfhdclip::Taps* t : {&fit.x, &fit.y})
+            for (size_t i = 0; i < t->first.size(); ++i, ++line)
+            {
+                first.push_back(t->first[i] + shift);
+                std::copy_n(&t->w[i * t->n], t->n, &w[line * n]);
+            }
+    }
+};
+
+struct Gpu
+{
+    Vulkan vulkan;
+    xrpilot::GpuDecoder decoder;
+    GpuTaps taps;
+
+    bool create(const Options& o, std::string& err)
+    {
+        if (!vulkan.create(o))
+            return err = "no Vulkan 1.3 device for that --gpu", false;
+        return decoder.initialize(vulkan.context, &err);
+    }
+
+    bool fit(const std::vector<uint8_t>& stream, const Options& o, std::vector<uint8_t>& canvas, int shift = 0)
+    {
+        if (!decoder.decode(stream.data(), stream.size()))
+            return false;
+        taps.make((decoder.width() / 2) & ~1, decoder.height(), o, shift);
+        return decoder.fitLeftEye(taps.first, taps.w, taps.n, taps.dw, taps.dh, o.W, o.H, canvas);
+    }
+};
+
+// Both paths on every frame of a recording: how their canvases differ and the time each took.
+struct Parity
+{
+    uint64_t frames = 0, bytes = 0, differing = 0;
+    int worst = 0;
+    double cpuS = 0, gpuS = 0;
+};
+
+bool parity(pyrowave_device device, const std::string& in, const Options& o, int shift, Parity& p, std::string& err)
+{
+    Gpu gpu;
+    if (!gpu.create(o, err))
+        return false;
+    Decoder dec;
+    dec.device = device;
+    xrpilot::StreamRecordReader r;
+    if (!r.open(in, &err))
+        return false;
+    using Clock = std::chrono::steady_clock;
+    StreamFrame f;
+    std::vector<uint8_t> rgba, cpu, gpuCanvas;
+    while (r.next(f, &err))
+    {
+        int ew = 0, eh = 0;
+        const Clock::time_point t0 = Clock::now();
+        if (!dec.leftEye(f.payload, rgba, ew, eh, err))
+            return false;
+        fitBgraBottomUp(rgba, ew, eh, o.W, o.H, cpu);
+        const Clock::time_point t1 = Clock::now();
+        if (!gpu.fit(f.payload, o, gpuCanvas, shift))
+            return err = "the GPU path failed at frame " + std::to_string(f.frameIndex), false;
+        const Clock::time_point t2 = Clock::now();
+        p.cpuS += std::chrono::duration<double>(t1 - t0).count();
+        p.gpuS += std::chrono::duration<double>(t2 - t1).count();
+        if (cpu.size() != gpuCanvas.size())
+            return err = "the canvases differ in size", false;
+        for (size_t i = 0; i < cpu.size(); ++i)
+        {
+            const int d = std::abs(int(cpu[i]) - int(gpuCanvas[i]));
+            p.worst = std::max(p.worst, d);
+            p.differing += d != 0;
+        }
+        p.bytes += cpu.size();
+        p.frames++;
+    }
+    return err.empty();
+}
+
+// Float rounding at a .5 boundary may move a byte by one.
+constexpr int ParityTolerance = 1;
+
 struct Summary
 {
     uint32_t frames = 0;
     uint64_t streamed = 0, distinct = 0;
     int64_t spanNs = 0;
-    double decodeS = 0, totalS = 0;
+    double canvasS = 0, totalS = 0;
 };
 
 int convert(pyrowave_device device, const std::string& in, const std::string& out, const Options& o, Summary& sum)
@@ -175,6 +360,14 @@ int convert(pyrowave_device device, const std::string& in, const std::string& ou
     }
     if (times.size() < 2)
         return fail("fewer than two streamed frames in " + in);
+    std::unique_ptr<Gpu> gpu;
+    if (!o.cpu)
+    {
+        gpu = std::make_unique<Gpu>();
+        std::string err;
+        if (!gpu->create(o, err))
+            return fail(err);
+    }
     sum.streamed = times.size();
     sum.spanNs = times.back() - times.front();
     // Rounded up, so the last tick reaches the stream's last frame.
@@ -237,10 +430,13 @@ int convert(pyrowave_device device, const std::string& in, const std::string& ou
         {
             int ew = 0, eh = 0;
             const Clock::time_point d0 = Clock::now();
-            if (!dec.leftEye(current.payload, rgba, ew, eh, err))
+            if (gpu && !gpu->fit(current.payload, o, canvas))
+                return fail("frame " + std::to_string(current.frameIndex) + ": the GPU path failed");
+            if (!gpu && !dec.leftEye(current.payload, rgba, ew, eh, err))
                 return fail("frame " + std::to_string(current.frameIndex) + ": " + err);
-            sum.decodeS += std::chrono::duration<double>(Clock::now() - d0).count();
-            fitBgraBottomUp(rgba, ew, eh, o.W, o.H, canvas);
+            if (!gpu)
+                fitBgraBottomUp(rgba, ew, eh, o.W, o.H, canvas);
+            sum.canvasS += std::chrono::duration<double>(Clock::now() - d0).count();
             sum.distinct++;
         }
         if (!haveCurrent)
@@ -289,11 +485,16 @@ int selfTest(const std::string& dir, const Options& base)
     wrBad.open(bad);
     for (int n = 0; n < count; ++n)
     {
-        std::vector<uint8_t> Y(size_t(w) * h), C(size_t(w / 2) * (h / 2), 128);
+        std::vector<uint8_t> Y(size_t(w) * h), C(size_t(w / 2) * (h / 2)), Cr(C.size());
         for (int j = 0; j < h; ++j)
             for (int i = 0; i < w; ++i)
                 Y[size_t(j) * w + i] = uint8_t(((i + n * 2) / 16 + j / 16) % 2 ? 200 : 40);
-        std::vector<uint8_t> Cr = C;
+        for (int j = 0; j < h / 2; ++j)
+            for (int i = 0; i < w / 2; ++i)
+            {
+                C[size_t(j) * (w / 2) + i] = uint8_t(68 + 60 * ((i / 6 + j / 5) % 3));
+                Cr[size_t(j) * (w / 2) + i] = uint8_t(88 + 40 * ((i / 9 + j / 3) % 3));
+            }
         pyrowave_cpu_buffer b = {};
         b.data[0] = Y.data();
         b.data[1] = C.data();
@@ -350,6 +551,20 @@ int selfTest(const std::string& dir, const Options& base)
     o.fps = 30;
     Summary sb;
     check(convert(device, bad, dir + "/selftest_bad.cfhd", o, sb) != 0, "control: a damaged frame stops the conversion");
+    for (const auto& [W, H] : {std::pair{640, 360}, std::pair{150, 64}})
+    {
+        o.W = W;
+        o.H = H;
+        Parity p, shifted;
+        std::string err;
+        const std::string size = std::to_string(W) + "x" + std::to_string(H);
+        check(parity(device, rec, o, 0, p, err) && p.frames == 90 && p.worst <= ParityTolerance,
+              "into " + size + " the GPU canvas matches the CPU one within " + std::to_string(ParityTolerance) +
+                  " (worst " + std::to_string(p.worst) + ", " + std::to_string(p.differing) + " of " +
+                  std::to_string(p.bytes) + " bytes differ)" + err);
+        check(parity(device, rec, o, 1, shifted, err) && shifted.worst > ParityTolerance,
+              "control: into " + size + " taps one pixel off do not match (worst " + std::to_string(shifted.worst) + ")" + err);
+    }
     std::printf("%d wrong\n", bad_);
     return bad_ == 0 ? 0 : 1;
 }
@@ -371,22 +586,37 @@ int main(int argc, char** argv)
             o.quality = std::clamp(std::atoi(argv[++i]), 0, 5);
         else if (a == "--gpu" && i + 1 < argc)
             std::sscanf(argv[++i], "%x:%x", &o.vid, &o.pid);
+        else if (a == "--cpu")
+            o.cpu = true;
         else
             pos.push_back(a);
     }
     if (pos.size() == 2 && pos[0] == "--self-test")
         return selfTest(pos[1], o);
     if (pos.size() != 2)
-        return fail("usage: pyro2cfhd <in.pwrec> <out.cfhd> [--fps 30] [--size 3840x2160] [--quality 0..5] [--gpu vid:pid]");
+        return fail("usage: pyro2cfhd <in.pwrec> <out.cfhd> [--fps 30] [--size 3840x2160] [--quality 0..5] [--gpu vid:pid] [--cpu]");
     pyrowave_device device = nullptr;
     if (!makeDevice(o, device))
         return fail("no PyroWave device for that --gpu");
+    if (pos[0] == "--parity")
+    {
+        Parity p;
+        std::string err;
+        if (!parity(device, pos[1], o, 0, p, err))
+            return fail(err);
+        std::printf("pyro2cfhd: %llu frames into %dx%d, worst difference %d, %llu of %llu bytes differ; per frame "
+                    "CPU %.1f ms, GPU %.1f ms\n",
+                    (unsigned long long)p.frames, o.W, o.H, p.worst, (unsigned long long)p.differing,
+                    (unsigned long long)p.bytes, 1e3 * p.cpuS / double(p.frames), 1e3 * p.gpuS / double(p.frames));
+        return p.worst <= ParityTolerance ? 0 : 1;
+    }
     Summary s;
     const int rc = convert(device, pos[0], pos[1], o, s);
     if (rc == 0)
         std::printf("pyro2cfhd: %s  %dx%d  %u fps  %u frames (%.3f s) from %llu streamed frames over %.3f s, %llu shown; "
-                    "decode %.1f s, total %.1f s, quality %d\n",
+                    "%s path %.1f s to canvas, total %.1f s, quality %d\n",
                     pos[1].c_str(), o.W, o.H, o.fps, s.frames, double(s.frames) / o.fps, (unsigned long long)s.streamed,
-                    double(s.spanNs) / 1e9, (unsigned long long)s.distinct, s.decodeS, s.totalS, o.quality);
+                    double(s.spanNs) / 1e9, (unsigned long long)s.distinct, o.cpu ? "CPU" : "GPU",
+                    s.canvasS, s.totalS, o.quality);
     return rc;
 }

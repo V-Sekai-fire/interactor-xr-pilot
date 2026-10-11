@@ -787,10 +787,11 @@ void StreamingServer::Stop()
 
 void StreamingServer::BroadcastThread()
 {
-    oxr::protocol::ServerAnnounce announce = BuildServerAnnounce(false);
-
-    while (running_.load() && state_.load() == State::Broadcasting)
+    // It keeps announcing through a session, with SERVER_FEATURE_SESSION_OWNED, so a second headset
+    // finds the runtime and watches instead of taking the session.
+    while (running_.load())
     {
+        const oxr::protocol::ServerAnnounce announce = BuildServerAnnounce(false);
         // Every adapter's subnet each second, so a headset reached through another one (the Steam Frame's
         // dongle beside the router's Ethernet) hears it and streams over that link.
         for (uint32_t target : oxrsys::streaming_discovery::AnnounceTargets(oxrsys::streaming_discovery::LocalAdapters()))
@@ -807,7 +808,7 @@ void StreamingServer::BroadcastThread()
                                            sizeof(broadcastAddr));
         }
 
-        for (int i = 0; i < 10 && running_.load() && state_.load() == State::Broadcasting; i++)
+        for (int i = 0; i < 10 && running_.load(); i++)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -876,6 +877,10 @@ oxr::protocol::ServerAnnounce StreamingServer::BuildServerAnnounce(
     if (config.passthroughEnabled)
     {
         announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_MIXED_REALITY_PASSTHROUGH;
+    }
+    if (state_.load() == State::Connected)
+    {
+        announce.serverFeatures |= oxr::protocol::SERVER_FEATURE_SESSION_OWNED;
     }
     // Occlusion is configured separately from support advertisement. Keep it
     // fail-closed until a valid app depth layer, headset depth, or scene mesh
@@ -1683,6 +1688,17 @@ void StreamingServer::EncodeThread()
     spdlog::info("StreamingServer: Encode thread ended");
 }
 
+void StreamingServer::RememberClientDisplayEye(const oxr::protocol::ClientConnect& clientConnect)
+{
+    clientDisplayEyeWidth_.store(clientConnect.displayEyeWidth);
+    clientDisplayEyeHeight_.store(clientConnect.displayEyeHeight);
+    if (clientConnect.displayEyeHeight > 0)
+    {
+        spdlog::info("StreamingServer: the client shows {}x{} per eye", clientConnect.displayEyeWidth,
+                     clientConnect.displayEyeHeight);
+    }
+}
+
 void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& clientConnect,
                                           const sockaddr_in& clientAddr)
 {
@@ -1722,6 +1738,7 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
         ? clientConnect.refreshRateHz
         : refreshRateHz_;
     targetRefreshRateHz_.store(negotiatedRefresh);
+    RememberClientDisplayEye(clientConnect);
     UpdatePredictionHorizon();
 
     if (trackingReceiver_ != nullptr)
@@ -1730,11 +1747,6 @@ void StreamingServer::HandleClientConnect(const oxr::protocol::ClientConnect& cl
     }
 
     state_.store(State::Connected);
-
-    {
-        std::lock_guard<std::mutex> broadcastLock(broadcastThreadMutex_);
-        JoinWorkerThread(broadcastThread_, "broadcast");
-    }
     if (!running_.load())
     {
         return;
@@ -1870,6 +1882,7 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
         ? clientConnect.refreshRateHz
         : refreshRateHz_;
     targetRefreshRateHz_.store(negotiatedRefresh);
+    RememberClientDisplayEye(clientConnect);
     UpdatePredictionHorizon();
 
     if (trackingReceiver_ != nullptr)
@@ -1878,11 +1891,6 @@ void StreamingServer::HandleUsbClientConnect(const oxr::protocol::ClientConnect&
     }
 
     state_.store(State::Connected);
-
-    {
-        std::lock_guard<std::mutex> broadcastLock(broadcastThreadMutex_);
-        JoinWorkerThread(broadcastThread_, "broadcast");
-    }
     if (!running_.load())
     {
         return;
@@ -2058,12 +2066,6 @@ void StreamingServer::HandleClientDisconnect()
     lastVideoSendDroppedFrameCountForAbr_ = 0;
     lastEncoderDroppedFrameCountForAbr_ = 0;
     UpdatePredictionHorizon();
-
-    if (previousState == State::Connected)
-    {
-        std::lock_guard<std::mutex> broadcastLock(broadcastThreadMutex_);
-        JoinWorkerThread(broadcastThread_, "broadcast");
-    }
 
     if (previousState == State::Connected && wifiEnabled_ && running_.load())
     {

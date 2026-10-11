@@ -60,6 +60,8 @@ private:
 };
 
 constexpr std::uint8_t kLineRgb[3] = {230, 40, 200};
+// The panel colour --theme-check switches to while the window runs.
+constexpr std::uint8_t kThemePanelRgb[3] = {214, 120, 40};
 
 // Counts the input that reaches it; with a line, draws a thick one across its middle.
 class ProbePanel : public Panel {
@@ -174,7 +176,7 @@ bool pixelMatches(SDL_Surface* s, int x, int y, const std::uint8_t rgb[3]) {
 }
 
 // The video region must show the Vulkan clear colour and the controls panel must not.
-int checkCapture(const std::string& path, SplitTree tree, bool line) {
+int checkCapture(const std::string& path, SplitTree tree, bool line, bool theme) {
     SDL_Surface* s = SDL_LoadBMP(path.c_str());
     if (!s) {
         std::fprintf(stderr, "FAIL could not read %s: %s\n", path.c_str(), SDL_GetError());
@@ -182,6 +184,19 @@ int checkCapture(const std::string& path, SplitTree tree, bool line) {
     }
     std::vector<LeafRect> leaves = tree.layout(Rect{0, 0, s->w, s->h});
     int failures = 0;
+    if (theme) {
+        for (const LeafRect& l : leaves) {
+            if (l.id != "controls") continue;
+            int x = l.rect.x + l.rect.w / 2;
+            int y = l.rect.y + l.rect.h - 8;
+            bool hit = pixelMatches(s, x, y, kThemePanelRgb);
+            std::printf("%s pixel (%d,%d) in 'controls' %s the switched panel colour\n", hit ? "PASS" : "FAIL", x, y,
+                        hit ? "is" : "is not");
+            failures += hit ? 0 : 1;
+        }
+        SDL_DestroySurface(s);
+        return failures == 0 ? 0 : 3;
+    }
     if (line) {
         for (const LeafRect& l : leaves) {
             if (l.id != "video") continue;
@@ -226,6 +241,8 @@ int main(int argc, char** argv) {
     int tickCheck = 0;
     bool tick = true;
     bool polylineCheck = false;
+    bool themeCheck = false;
+    bool themeSwitch = true;
     bool polyline = true;
     bool lockCheck = false;
     bool locked = true;
@@ -250,6 +267,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--no-tick")) tick = false;
         else if (!std::strcmp(argv[i], "--polyline-check")) polylineCheck = true;
         else if (!std::strcmp(argv[i], "--no-polyline")) polyline = false;
+        else if (!std::strcmp(argv[i], "--theme-check")) themeCheck = true;
+        else if (!std::strcmp(argv[i], "--no-theme-switch")) themeSwitch = false;
         else if (!std::strcmp(argv[i], "--lock-check")) lockCheck = true;
         else if (!std::strcmp(argv[i], "--unlocked")) locked = false;
         else if (!std::strcmp(argv[i], "--touch-check")) touchCheck = true;
@@ -261,7 +280,8 @@ int main(int argc, char** argv) {
                          "usage: panelspun-demo [--frames N] [--screenshot out.bmp] [--check] [--validate] "
                          "[--no-vulkan-region] [--all-features] [--check-features] [--wake-check N [--no-wake] [--minimized]] "
                          "[--input-check [--no-focus-click]] [--tick-check HZ [--no-tick]] [--polyline-check [--no-polyline]] "
-                         "[--lock-check [--unlocked]] [--touch-check [--single-touch]] [--gamepad-check [--no-gamepads]]\n");
+                         "[--lock-check [--unlocked]] [--touch-check [--single-touch]] [--gamepad-check [--no-gamepads]] "
+                         "[--theme-check [--no-theme-switch]]\n");
             return 2;
         }
     }
@@ -597,6 +617,11 @@ int main(int argc, char** argv) {
         }
     } else if (frames > 0) {
         if (frames > 1) rc = window->run(frames - 1);
+        if (themeCheck && themeSwitch) {
+            Theme t = window->theme();
+            t.panel = Color{kThemePanelRgb[0], kThemePanelRgb[1], kThemePanelRgb[2]};
+            window->setTheme(t);
+        }
         if (!screenshot.empty()) window->captureNextFrame(screenshot);
         if (rc == 0) rc = window->run(1);
         if (!screenshot.empty() && !window->lastCaptureSucceeded()) {
@@ -612,7 +637,7 @@ int main(int argc, char** argv) {
     }
     SplitTree finalLayout = window->layout();
     window.reset();
-    if (rc == 0 && check) rc = checkCapture(screenshot, finalLayout, polylineCheck);
+    if (rc == 0 && check) rc = checkCapture(screenshot, finalLayout, polylineCheck, themeCheck);
     SDL_Quit();
     return rc;
 }

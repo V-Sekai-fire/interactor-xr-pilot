@@ -85,6 +85,7 @@ enum ETrackedDeviceProperty
     Prop_SerialNumber_String = 1002,
     Prop_RenderModelName_String = 1003,
     Prop_ManufacturerName_String = 1005,
+    Prop_ContainsProximitySensor_Bool = 1025,
     Prop_ControllerRoleHint_Int32 = 3007,
     Prop_SecondsFromVsyncToPhotons_Float = 2001,
     Prop_DisplayFrequency_Float = 2002,

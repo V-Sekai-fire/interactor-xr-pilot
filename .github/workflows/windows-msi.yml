@@ -42,6 +42,11 @@ jobs:
         run: echo "UNCHECKED 1 - oxrsys_pyrowave_tests needs a Vulkan GPU, which this runner lacks; it runs on the Windows desk"
       - name: D3D11 loader test, unchecked when elevated
         run: echo "UNCHECKED 1 - oxrsys_runtime_d3d11_tests selects the runtime through XR_RUNTIME_JSON, which the OpenXR loader ignores in this runner's elevated context; it runs on the Windows desk"
+      # Builds lean/'s default target, xr_pilot_mcp, the MCP server the tray runs and the MSI ships.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: lean
+          test: false
       - name: WiX Toolset
         shell: pwsh
         run: |

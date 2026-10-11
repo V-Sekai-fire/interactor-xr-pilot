@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "xrpilot/McpLink.h"
+
 #include <string>
 
 namespace xrpilot
@@ -22,6 +24,8 @@ enum class LaunchMode
     // Asks the copy already running to show its pilot, then quits.
     ShowRunning,
     PrintVersion,
+    // Prints what an MCP client adds to reach the desk copy's server, with this desk's token.
+    PrintMcpConfig,
     Usage,
 };
 
@@ -32,6 +36,8 @@ struct LaunchOptions
     std::string snapshotPath;
     std::string recordStreamPath;
     std::string tracePath;
+    // The desk copy's MCP server port; 0 starts none.
+    int mcpPort = DefaultMcpPort;
 };
 
 // alreadyRunning: another desk copy (not an agent's pilot) holds the tray.

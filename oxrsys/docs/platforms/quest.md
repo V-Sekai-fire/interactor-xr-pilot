@@ -80,6 +80,7 @@ The Android client:
 - tries USB ADB reverse TCP first, then falls back to local-network UDP discovery when USB is unavailable
 - returns to discovery/retry automatically when the runtime or OpenXR app session stops
 - connects and advertises codec, active refresh rate, streaming capabilities, and the headset OpenXR `systemName`
+- watches instead, when the announce carries `SERVER_FEATURE_SESSION_OWNED` and the link is WiFi: it connects with `CLIENT_CAPABILITY_SPECTATOR` alone, repeats that `ClientConnect` every 2 s as its heartbeat, shows the owner's frames at the render pose they carry, and sends no tracking, NACKs, keyframe requests, latency reports or stream-config acks. The shell reads "Watching". When the owner leaves, the video stops, the client returns to discovery and takes the session that nobody owns
 - accepts protocol v1.2 stream reconfiguration messages on USB TCP when the runtime adjusts encoded resolution in `abr_mode = "full"`
 - requests the server-announced display refresh rate when `XR_FB_display_refresh_rate` is available
 - receives encoded video frames and matches render-pose metadata to each decoded frame before projection submission

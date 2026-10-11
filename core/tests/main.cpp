@@ -4,7 +4,9 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/Client.h"
+#include "xrpilot/CommandLoop.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/McpLink.h"
 #include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
 #include "xrpilot/Body.h"
@@ -22,14 +24,32 @@
 #include <oxrsys/protocol/FecCodec.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <aclapi.h>
+#undef far
+#undef near
+#else
+#include <sys/stat.h>
+#endif
 
 using namespace xrpilot;
 
@@ -181,6 +201,30 @@ void check(bool ok, const char* what)
         std::fprintf(stderr, "FAIL %s\n", what);
         ++failures;
     }
+}
+
+// Whether only the current user can open the file: a protected DACL whose one entry is this user, or
+// no group or other bits.
+bool userOnly(const std::string& path)
+{
+#if defined(_WIN32)
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    PACL dacl = nullptr;
+    if (GetNamedSecurityInfoA(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl,
+                              nullptr, &descriptor) != ERROR_SUCCESS)
+        return false;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    GetSecurityDescriptorControl(descriptor, &control, &revision);
+    ACL_SIZE_INFORMATION size{};
+    const bool one =
+        dacl != nullptr && GetAclInformation(dacl, &size, sizeof(size), AclSizeInformation) && size.AceCount == 1;
+    LocalFree(descriptor);
+    return one && (control & SE_DACL_PROTECTED) != 0;
+#else
+    struct stat st{};
+    return stat(path.c_str(), &st) == 0 && (st.st_mode & 077) == 0;
+#endif
 }
 
 // A frame of `count` full packets, each byte its packet index.
@@ -441,11 +485,21 @@ const std::map<std::string, std::function<void()>> cases = {
          runCommand("trigger right 1", s, status, 0);
          runCommand("button a 1", s, status, 0);
          runCommand("head 1 1.7 2 0 0 1 0 1 0 -1 0 0", s, status, 0);
+         const float fixed[4] = {-1.6547f, 1.6547f, 1.7369f, -1.7369f};
+         std::copy(fixed, fixed + 4, s.renderTangents);
          runCommand("release", s, status, 0);
          oxr::protocol::TrackingPacket p;
          fillTrackingPacket(s, 1, p);
          check(p.rightTrigger == 0.0f && p.buttonState == 0, "release lets go of every input");
          check(s.head.rotation.m[2] == 1.0f && s.head.rotation.m[6] == -1.0f, "release keeps where the head looks");
+         const std::string after = runCommand("state", s, status, 0).reply;
+         check(after.find("\"half_fov_vertical\":60.0") != std::string::npos &&
+                   after.find("\"half_fov_horizontal\":58.8") != std::string::npos,
+               "release keeps the runtime's field of view, so screenshot pixels map to the same rays");
+         // Control: without the runtime's tangents the pilot falls back to its own 100 degrees, as it did.
+         AgentState fresh;
+         check(runCommand("state", fresh, status, 0).reply.find("\"half_fov_vertical\":50") != std::string::npos,
+               "a state without the runtime's tangents reports the fallback");
      }},
     {"agent.absent-hands-clear-flags",
      [] {
@@ -735,6 +789,60 @@ const std::map<std::string, std::function<void()>> cases = {
          check(parseLaunch(2, bad, false).mode == LaunchMode::Usage, "an unknown flag prints usage");
          const char* both[] = {"xr-pilot.exe", "--tray", "--window"};
          check(parseLaunch(3, both, false).mode == LaunchMode::Usage, "--tray with a pilot flag prints usage");
+     }},
+    {"launch.mcp-flags",
+     [] {
+         const char* plain[] = {"xr-pilot.exe"};
+         check(parseLaunch(1, plain, false).mcpPort == 9950, "the desk serves MCP on 9950 by default");
+         const char* config[] = {"xr-pilot.exe", "--mcp-config", "--mcp-port", "9960"};
+         const LaunchOptions o = parseLaunch(4, config, true);
+         check(o.mode == LaunchMode::PrintMcpConfig && o.mcpPort == 9960, "--mcp-config prints, even beside a running copy");
+         const char* off[] = {"xr-pilot.exe", "--tray", "--mcp-port", "0"};
+         const LaunchOptions t = parseLaunch(4, off, false);
+         check(t.mode == LaunchMode::TrayOnly && t.mcpPort == 0, "--mcp-port 0 starts no server");
+         for (const char* bad : {"abc", "65536", "-1", "", "99x"})
+         {
+             const char* argv[] = {"xr-pilot.exe", "--mcp-port", bad};
+             check(parseLaunch(3, argv, false).mode == LaunchMode::Usage, bad);
+         }
+         const char* agent[] = {"xr-pilot.exe", "--mcp-config", "--agent"};
+         check(parseLaunch(3, agent, false).mode == LaunchMode::Usage, "--mcp-config with a pilot flag prints usage");
+     }},
+    {"mcp.token-is-random-and-kept",
+     [] {
+         namespace fs = std::filesystem;
+         const fs::path dir =
+             fs::temp_directory_path() /
+             ("xrpilot-mcp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+         const std::string a = (dir / "a" / "mcp-token").string();
+         const std::string b = (dir / "b" / "mcp-token").string();
+         std::string first, again, other, error;
+         check(loadOrCreateMcpToken(a, first, &error), error.c_str());
+         check(first.size() == 64 && first.find_first_not_of("0123456789abcdef") == std::string::npos,
+               "a token is 64 hex digits");
+         check(loadOrCreateMcpToken(a, again) && again == first, "the token is kept across starts");
+         check(loadOrCreateMcpToken(b, other) && other != first, "control: another install draws another token");
+         {
+             std::ofstream broken(fs::path(a), std::ios::trunc);
+             broken << "short";
+         }
+         check(loadOrCreateMcpToken(a, again) && again != first && again.size() == 64, "a damaged token is replaced");
+         check(userOnly(a), "only this user can open the token");
+         const std::string plain = (dir / "plain").string();
+         std::ofstream(fs::path(plain)) << first;
+         check(!userOnly(plain), "control: a file written the ordinary way is caught as readable by others");
+         std::error_code ignored;
+         fs::remove_all(dir, ignored);
+     }},
+    {"mcp.client-config-names-the-port-and-token",
+     [] {
+         const std::string token(64, 'a');
+         const std::string config = mcpClientConfig(9950, token);
+         check(config == "{\"type\":\"http\",\"url\":\"http://127.0.0.1:9950/mcp\",\"headers\":{\"Authorization\":"
+                         "\"Bearer " + token + "\"}}",
+               "Claude Code's entry: the loopback URL and the bearer token");
+         check(mcpClientConfig(9960, token).find("127.0.0.1:9960/mcp") != std::string::npos,
+               "a moved port moves the URL");
      }},
     {"pace.ticks-evenly-at-90hz",
      [] {
@@ -1177,6 +1285,61 @@ const std::map<std::string, std::function<void()>> cases = {
          check(runCommand("hand left 0 1 0 0 0 1 0 1 0 -1 0 0", s, status, 0).reply == "{\"ok\":true}" &&
                    s.hands[0].manual && s.hands[0].pose.rotation.m[2] == 1.0f,
                "a hand takes a rotation matrix");
+     }},
+    {"commands.loop-normalizes-lines",
+     [] {
+         std::istringstream in("health\r\n\xEF\xBB\xBFstate\n\n\r\nwait 1");
+         std::ostringstream out;
+         runCommandLoop(in, out, [](const std::string& line) { return "<" + line + ">"; });
+         check(out.str() == "<health>\n<state>\n<wait 1>\n", "CRs and a byte order mark go, blank lines are skipped");
+         std::string blank = "\r";
+         check(!normalizeCommandLine(blank), "a lone CR is blank");
+     }},
+    {"bridge.wakes-the-tray-and-waits",
+     [] {
+         CommandBridge* self = nullptr;
+         std::thread opener;
+         int wakes = 0;
+         CommandBridge bridge([&] {
+             ++wakes;
+             opener = std::thread([&] {
+                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                 self->attach([](const std::string& line) { return "pilot:" + line; });
+             });
+         });
+         self = &bridge;
+         check(bridge.ask("state", std::chrono::seconds(5)) == "pilot:state", "the pilot the tray opened answers");
+         opener.join();
+         check(bridge.ask("health", std::chrono::seconds(5)) == "pilot:health" && wakes == 1,
+               "an attached pilot answers without waking the tray again");
+     }},
+    {"bridge.no-pilot-is-an-error",
+     [] {
+         CommandBridge bridge([] {});
+         check(bridge.ask("state", std::chrono::milliseconds(50)).rfind("{\"ok\":false", 0) == 0,
+               "with no pilot window the command fails as JSON");
+         bridge.attach([](const std::string&) { return std::string("{\"ok\":true}"); });
+         bridge.detach();
+         check(!bridge.attached() && bridge.ask("state", std::chrono::milliseconds(50)).rfind("{\"ok\":false", 0) == 0,
+               "a detached pilot answers nothing");
+     }},
+    {"bridge.detach-waits-for-the-command",
+     [] {
+         CommandBridge bridge([] {});
+         std::atomic<bool> answering{false};
+         std::atomic<bool> answered{false};
+         bridge.attach([&](const std::string&) {
+             answering = true;
+             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+             answered = true;
+             return std::string("{\"ok\":true}");
+         });
+         std::thread asker([&] { bridge.ask("state", std::chrono::seconds(5)); });
+         while (!answering)
+             std::this_thread::yield();
+         bridge.detach();
+         check(answered, "the window closes only after the command it is answering has its reply");
+         asker.join();
      }},
 };
 

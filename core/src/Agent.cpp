@@ -14,7 +14,24 @@ namespace
 
 constexpr float DegreesToRadians = 0.017453292519943295f;
 
+// The Steam Frame controller's tip in its raw pose, from SteamVR's frame_controller render model; apps
+// aim along it. Mirrored in x for the left hand.
+constexpr float TipPitchDegrees = -40.0f;
+constexpr float TipOrigin[3] = {-0.012694f, -0.02522f, 0.020687f};
+
 } // namespace
+
+Pose controllerFromAim(const Pose& aim, int hand)
+{
+    Pose raw;
+    raw.rotation = multiply(aim.rotation, fromEuler(EulerOrder::XYZ, -TipPitchDegrees, 0.0f, 0.0f));
+    const float tip[3] = {hand == 0 ? -TipOrigin[0] : TipOrigin[0], TipOrigin[1], TipOrigin[2]};
+    float offset[3];
+    apply(raw.rotation, tip, offset);
+    for (int i = 0; i < 3; ++i)
+        raw.position[i] = aim.position[i] - offset[i];
+    return raw;
+}
 
 
 AgentState::AgentState()
@@ -64,8 +81,8 @@ void fillTrackingPacket(const AgentState& state, int64_t timestampNs, oxr::proto
 
     const HandState& left = state.hands[0];
     const HandState& right = state.hands[1];
-    const Pose leftPose = handPose(state, 0);
-    const Pose rightPose = handPose(state, 1);
+    const Pose leftPose = controllerFromAim(handPose(state, 0), 0);
+    const Pose rightPose = controllerFromAim(handPose(state, 1), 1);
     std::copy(std::begin(leftPose.position), std::end(leftPose.position), std::begin(packet.leftControllerPos));
     std::copy(std::begin(rightPose.position), std::end(rightPose.position), std::begin(packet.rightControllerPos));
     poseQuaternion(leftPose, packet.leftControllerRot);
