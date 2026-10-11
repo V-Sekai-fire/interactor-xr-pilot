@@ -2,6 +2,17 @@
 cmake_minimum_required(VERSION 3.24)
 project(xr_pilot VERSION 0.1.0 LANGUAGES C CXX)
 
+# compile_commands.json, copied to the repository root, where clang-tidy (the commit hook in
+# .pre-commit-config.yaml) and editors find it.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+add_custom_target(xrpilot_sync_compile_commands ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DINPUT_FILE=${CMAKE_BINARY_DIR}/compile_commands.json
+        -DOUTPUT_FILE=${CMAKE_SOURCE_DIR}/compile_commands.json
+        -P ${CMAKE_SOURCE_DIR}/oxrsys/cmake/SyncCompileCommands.cmake
+    COMMENT "Copying compile_commands.json to the repository root"
+)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

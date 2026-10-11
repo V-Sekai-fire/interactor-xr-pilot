@@ -3,3 +3,4 @@ build*/
 lean/.lake/
 .pixi/
 /dist/
+/compile_commands.json
