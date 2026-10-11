@@ -46,6 +46,7 @@ target_link_libraries(native_app_glue PUBLIC
 
 # ─── Shared protocol definitions ────────────────────────────────────────────
 set(OXRSYS_PROTOCOL_INCLUDE_DIR "${OXRSYS_REPO_ROOT}/common/protocol/include")
+set(OXRSYS_STREAMING_INCLUDE_DIR "${OXRSYS_REPO_ROOT}/common/streaming/include")
 
 # ─── Native client library ──────────────────────────────────────────────────
 add_library(oxrsys_android SHARED
@@ -61,6 +62,7 @@ add_library(oxrsys_android SHARED
 target_include_directories(oxrsys_android PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${OXRSYS_PROTOCOL_INCLUDE_DIR}
+    ${OXRSYS_STREAMING_INCLUDE_DIR}
     ${openxr_SOURCE_DIR}/include
 )
 

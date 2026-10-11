@@ -293,12 +293,10 @@ bool VideoFrameAssembler::tryFecRecovery()
             continue;
         }
 
-        uint32_t groupStart = 0;
-        uint32_t groupEnd = 0;
-        oxr::fec::GroupRange(static_cast<uint32_t>(groupIndex),
-                             pendingTotalPackets_,
-                             groupStart,
-                             groupEnd);
+        // XR Pilot never advertises CLIENT_CAPABILITY_FEC_INTERLEAVED, so its groups are contiguous runs.
+        const oxr::fec::GroupLayout layout{pendingTotalPackets_, false};
+        const uint32_t groupStart = layout.Member(static_cast<uint32_t>(groupIndex), 0);
+        const uint32_t groupEnd = groupStart + layout.MemberCount(static_cast<uint32_t>(groupIndex));
 
         int missingIndex = -1;
         int missingCount = 0;

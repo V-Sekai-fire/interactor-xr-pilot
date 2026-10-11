@@ -71,6 +71,9 @@ This file tracks user-facing, integration-facing, and runtime-relevant changes f
 
 ### Fixed
 
+- Ported the interleaved FEC layout from demonixis/oxrsys#30 (commits `875a76b6` and `ea0893e6`, by nburns), negotiated with `CLIENT_CAPABILITY_FEC_INTERLEAVED` (`0x1000`) and `SERVER_FEATURE_FEC_INTERLEAVED` (`0x400`). A contiguous parity group lost any two adjacent packets together, the common case on Wi-Fi; interleaving spreads each group across the frame and recovers bursts up to the group count at the same parity overhead. The Android client advertises it and assembles frames with the shared `common/streaming` `VideoFrameAssembler`, which also recovers as soon as the parity held covers everything missing. The Apple client and XR Pilot keep the contiguous layout, and a spectator gets parity only for that layout.
+- Moved `CLIENT_CAPABILITY_SPECTATOR` from `0x400` to `0x80000000`. Upstream oxrsys ships `0x400` as `CLIENT_CAPABILITY_TEN_BIT_ENCODING`, so an upstream client decoding 10-bit HEVC would have been taken for a spectator and never given the session.
+
 - The SteamVR driver renders the headset's own field of view. It rendered a fixed 90 degree square into a 0.9-wide eye, which the Steam Frame (about 109 degrees, lopsided) showed magnified and squashed. A connected headset's view is saved to `driver_oxrsys.eyeFov` and used from the next SteamVR start; `driver_oxrsys.eyeHeight` sets the eye height (default 1680), and the width keeps pixels square.
 - The runtime announces on every network adapter, so the Steam Frame finds it over its dongle and streams over that direct link, not through the router.
 - The Android client keeps sending its last pose, with buttons released, while the runtime hides it (the dashboard is up, or the headset is off the face). The server dropped it after 5 s without tracking, and the headset looped between black and reconnecting.

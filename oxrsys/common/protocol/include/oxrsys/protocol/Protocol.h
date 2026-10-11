@@ -112,6 +112,7 @@ enum ServerFeatureFlags : uint32_t
     SERVER_FEATURE_DEPTH_OCCLUSION = 0x00000080,
     SERVER_FEATURE_SPATIAL_ENTITY = 0x00000100,
     SERVER_FEATURE_SCENE_CAPTURE = 0x00000200,
+    SERVER_FEATURE_FEC_INTERLEAVED = 0x00000400,
 };
 
 enum ClientCapabilityFlags : uint32_t
@@ -126,10 +127,18 @@ enum ClientCapabilityFlags : uint32_t
     CLIENT_CAPABILITY_DEPTH_OCCLUSION = 0x00000080,
     CLIENT_CAPABILITY_SPATIAL_ENTITY = 0x00000100,
     CLIENT_CAPABILITY_SCENE_CAPTURE = 0x00000200,
+    // Upstream's bits (demonixis/oxrsys), kept at upstream's numbers so its clients negotiate correctly here.
+    CLIENT_CAPABILITY_TEN_BIT_ENCODING = 0x00000400, // client can decode HEVC Main10 (unused by PyroWave)
+    CLIENT_CAPABILITY_FOVEATION_CENTER = 0x00000800, // gaze foveation in demonixis/oxrsys#30; reserved here
+    // The client assigns FEC groups by the interleaved layout (fec::GroupLayout). Must be
+    // negotiated: a receiver using a different layout from the sender XORs a packet out of the
+    // wrong group and produces plausible garbage rather than failing cleanly.
+    CLIENT_CAPABILITY_FEC_INTERLEAVED = 0x00001000,
+    // This fork's own bit, from the top down so it never takes one upstream assigns next.
     // Watches the session's video without owning it: the server also sends every video packet to it,
     // and never takes its tracking, keyframe requests or latency reports. It repeats its ClientConnect
     // as a heartbeat and is dropped after SPECTATOR_TIMEOUT_MS without one, or on its ServerDisconnect.
-    CLIENT_CAPABILITY_SPECTATOR = 0x00000400,
+    CLIENT_CAPABILITY_SPECTATOR = 0x80000000,
 };
 
 constexpr uint32_t SPECTATOR_TIMEOUT_MS = 5000;

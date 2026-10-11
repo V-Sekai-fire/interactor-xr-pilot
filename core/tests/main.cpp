@@ -205,9 +205,9 @@ oxr::protocol::VideoPacketHeader header(uint32_t frame, uint16_t index, uint16_t
 
 std::vector<uint8_t> parity(const std::vector<std::vector<uint8_t>>& data, uint32_t group, uint16_t total)
 {
-    uint32_t start = 0;
-    uint32_t end = 0;
-    oxr::fec::GroupRange(group, total, start, end);
+    const oxr::fec::GroupLayout layout{total, false};
+    const uint32_t start = layout.Member(group, 0);
+    const uint32_t end = start + layout.MemberCount(group);
     std::vector<uint8_t> out(oxr::protocol::MAX_PACKET_PAYLOAD, 0);
     for (uint32_t i = start; i < end; ++i)
         for (size_t b = 0; b < out.size(); ++b)
