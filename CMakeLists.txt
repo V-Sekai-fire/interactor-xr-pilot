@@ -213,8 +213,7 @@ add_executable(trace_roundtrip tools/trace_roundtrip.cpp)
 target_link_libraries(trace_roundtrip PRIVATE xrpilot_gpu xrpilot_core)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
-# The CineForm SDK (V-Sekai-fire/cineform-sdk, subtreed) adds the recording tools: frames2cfhd from kept
-# PNG frames, pyro2cfhd from a --record-stream recording. An empty path leaves them out.
+# The subtreed CineForm SDK adds frames2cfhd and pyro2cfhd; an empty path leaves them out.
 set(XRPILOT_CINEFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cineform-sdk" CACHE PATH
     "CineForm SDK for frames2cfhd and pyro2cfhd")
 if(XRPILOT_CINEFORM_DIR)

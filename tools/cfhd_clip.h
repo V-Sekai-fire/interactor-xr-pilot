@@ -21,14 +21,13 @@
 namespace cfhdclip
 {
 
-inline double mitchell(double x)
+inline double catmullRom(double x)
 {
-    constexpr double B = 1.0 / 3.0, C = 1.0 / 3.0;
     x = std::abs(x);
     if (x < 1.0)
-        return ((12 - 9 * B - 6 * C) * x * x * x + (-18 + 12 * B + 6 * C) * x * x + (6 - 2 * B)) / 6.0;
+        return 1.5 * x * x * x - 2.5 * x * x + 1.0;
     if (x < 2.0)
-        return ((-B - 6 * C) * x * x * x + (6 * B + 30 * C) * x * x + (-12 * B - 48 * C) * x + (8 * B + 24 * C)) / 6.0;
+        return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
     return 0.0;
 }
 
@@ -53,15 +52,14 @@ inline Taps resampleTaps(int src, int dst)
         const int f0 = int(std::floor(c - support)) + 1;
         double sum = 0.0;
         for (int k = 0; k < t.n; k++)
-            sum += mitchell((f0 + k - c) / widen);
+            sum += catmullRom((f0 + k - c) / widen);
         for (int k = 0; k < t.n; k++)
-            t.w[size_t(i) * t.n + k] = float(mitchell((f0 + k - c) / widen) / sum);
+            t.w[size_t(i) * t.n + k] = float(catmullRom((f0 + k - c) / widen) / sum);
         t.first[size_t(i)] = f0;
     }
     return t;
 }
 
-// Runs body(begin, end) over [0, count) on every core.
 template <typename Body> void parallelRows(int count, const Body& body)
 {
     const int threads = std::max(1, std::min(int(std::thread::hardware_concurrency()), count));
@@ -72,8 +70,7 @@ template <typename Body> void parallelRows(int count, const Body& body)
         th.join();
 }
 
-// Fits src into a W x H canvas, Catmull-Rom, letterboxed on black, as BGRA stored bottom row first (AVI).
-// Bilinear softened a 1.7x enlargement of the stream visibly; Lanczos-3 haloed its hard edges.
+// Fits src into a W x H canvas, letterboxed, BGRA bottom row first (AVI); Catmull-Rom was the most faithful on Alyx.
 inline void fitBgraBottomUp(const std::vector<uint8_t>& src, int sw, int sh, int W, int H, std::vector<uint8_t>& out)
 {
     out.assign(size_t(W) * size_t(H) * 4, 0);

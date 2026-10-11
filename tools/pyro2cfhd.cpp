@@ -101,8 +101,7 @@ struct Decoder
         ew = (w / 2) & ~1;
         eh = h;
         rgba.resize(size_t(ew) * eh * 4);
-        // Chroma is half size and centred between luma pairs; bilinear between its samples, since repeating
-        // them made colour edges twice as wide as luma ones.
+        // Half-size chroma, centred between luma pairs: repeating it doubled the width of colour edges.
         const int cw = w / 2, ch = h / 2, eyeCw = ew / 2;
         auto chroma = [&](const std::vector<uint8_t>& p, int i, int j) {
             const float fx = std::clamp(i * 0.5f - 0.25f, 0.0f, float(eyeCw - 1));
