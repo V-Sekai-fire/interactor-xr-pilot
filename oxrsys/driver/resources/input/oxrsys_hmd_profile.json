@@ -4,6 +4,7 @@
   "input_bindingui_mode": "hmd",
   "input_source": {
     "/input/system": { "type": "button", "click": true },
+    "/proximity": { "type": "button" },
     "/pose/raw": { "type": "pose" }
   },
   "default_bindings": [

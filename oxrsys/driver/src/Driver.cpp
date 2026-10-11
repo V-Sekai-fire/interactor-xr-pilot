@@ -717,10 +717,16 @@ public:
             if (!left_)
                 gInput->CreateBooleanComponent(c, "/input/system/click", &systemClick_);
         }
+        // The headset's tick updates hands from now on; before, it found handles still 0.
+        ready_ = true;
         return VRInitError_None;
     }
 
-    void Deactivate() override { id_ = kInvalidId; }
+    void Deactivate() override
+    {
+        ready_ = false;
+        id_ = kInvalidId;
+    }
     void EnterStandby() override {}
     void* GetComponent(const char* /*name*/) override { return nullptr; }
     void DebugRequest(const char* /*pchRequest*/, char* pchResponseBuffer, uint32_t unResponseBufferSize) override
@@ -732,7 +738,7 @@ public:
 
     void Update(const oxr::protocol::TrackingPacket& packet)
     {
-        if (id_ == kInvalidId)
+        if (!ready_ || id_ == kInvalidId)
             return;
         const float grip = left_ ? packet.leftGrip : packet.rightGrip;
         const float trigger = left_ ? packet.leftTrigger : packet.rightTrigger;
@@ -775,6 +781,7 @@ private:
     bool left_;
     const ControllerLayout& layout_;
     uint32_t id_ = kInvalidId;
+    std::atomic_bool ready_{false};
     VRInputComponentHandle_t systemClick_ = 0;
     DriverPose_t pose_ = {};
     std::vector<VRInputComponentHandle_t> handles_;
@@ -820,8 +827,14 @@ public:
         // The headset's button, as on a headset whose button selects by gaze when no controller is held.
         WriteString(c, Prop_ControllerType_String, "oxrsys_hmd");
         WriteString(c, Prop_InputProfilePath_String, "{oxrsys}/input/oxrsys_hmd_profile.json");
+        // Worn while a client streams: without a proximity sensor SteamVR idles a still head into standby,
+        // and apps stop taking poses and input there.
+        WriteProperty(c, Prop_ContainsProximitySensor_Bool, true, k_unBoolPropertyTag);
         if (gInput != nullptr)
+        {
             gInput->CreateBooleanComponent(c, "/input/system/click", &systemClick_);
+            gInput->CreateBooleanComponent(c, "/proximity", &proximity_);
+        }
         active_ = true;
         tick_ = std::thread([this]() { TickThread(); });
         return VRInitError_None;
@@ -916,11 +929,14 @@ private:
             gHost->TrackedDevicePoseUpdated(id_, pose, sizeof(pose));
             gHost->VsyncEvent(0.0);
             if (gInput != nullptr)
+            {
                 gInput->UpdateBooleanComponent(
                     systemClick_,
                     (packet.trackingFlags & oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE) == 0 &&
                         (packet.buttonState & oxr::protocol::BUTTON_HEADSET_SYSTEM) != 0,
                     0.0);
+                gInput->UpdateBooleanComponent(proximity_, server_ != nullptr && server_->IsClientConnected(), 0.0);
+            }
             for (Controller* hand : hands_)
                 if (hand != nullptr)
                     hand->Update(packet);
@@ -950,6 +966,7 @@ private:
     uint32_t id_ = 0;
     oxrsys::eye_fov::Angles savedView_ = oxrsys::eye_fov::kDefault;
     VRInputComponentHandle_t systemClick_ = 0;
+    VRInputComponentHandle_t proximity_ = 0;
     std::array<Controller*, 2> hands_ = {nullptr, nullptr};
     std::atomic_bool active_{false};
     std::thread tick_;
