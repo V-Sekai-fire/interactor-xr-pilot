@@ -7,13 +7,19 @@
 namespace xrpilot
 {
 
-void Sparkline::sample(uint64_t total)
+void Sparkline::sample(uint64_t total, bool expecting)
 {
-    deltas_.push_back(primed_ && total >= last_ ? total - last_ : 0);
+    const uint64_t delta = primed_ && total >= last_ ? total - last_ : 0;
+    deltas_.push_back(delta);
+    starved_.push_back(expecting && delta == 0);
     last_ = total;
     primed_ = true;
+    ++count_;
     if (deltas_.size() > size_t(Samples))
+    {
         deltas_.pop_front();
+        starved_.pop_front();
+    }
 }
 
 std::vector<Sparkline::Segment> Sparkline::segments(float width, float height, bool faultSeries) const
@@ -26,15 +32,30 @@ std::vector<Sparkline::Segment> Sparkline::segments(float width, float height, b
     const uint64_t scale = std::max<uint64_t>(1, sorted[(sorted.size() - 1) * 9 / 10] * 3 / 2);
     const float step = width / float(Samples - 1);
     const float x0 = width - step * float(deltas_.size() - 1);
+    const float span = std::max(0.0f, height - 1.0f);
     std::vector<float> ys;
     for (uint64_t d : deltas_)
-        ys.push_back(height - height * std::min(1.0f, float(d) / float(scale)));
+        ys.push_back(span - span * std::min(1.0f, float(d) / float(scale)));
     for (size_t i = 1; i < deltas_.size(); ++i)
     {
-        const Colour colour = faultSeries && deltas_[i] > 0 ? Colour::Fault
+        const Colour colour = (faultSeries && deltas_[i] > 0) || starved_[i] ? Colour::Fault
                               : deltas_[i] > scale          ? Colour::Clipped
                                                             : Colour::Normal;
         out.push_back({x0 + step * float(i - 1), ys[i - 1], x0 + step * float(i), ys[i], colour});
+    }
+    return out;
+}
+
+std::vector<float> Sparkline::ticks(float width) const
+{
+    std::vector<float> out;
+    const float step = width / float(Samples - 1);
+    const float x0 = width - step * float(deltas_.size() - 1);
+    const uint64_t first = count_ - deltas_.size();
+    for (size_t i = 0; i < deltas_.size(); ++i)
+    {
+        if ((first + i) % TickEvery == 0)
+            out.push_back(x0 + step * float(i));
     }
     return out;
 }

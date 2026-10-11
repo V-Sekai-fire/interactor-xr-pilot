@@ -393,6 +393,8 @@ def main : IO UInt32 := do
     c (!recorded "Teleport") "control: an action the app does not record is caught"
     let header ← try IO.FS.readFile "../core/include/xrpilot/UiSpans.h" catch _ => pure ""
     c (header == Ui.emitCpp) "core/include/xrpilot/UiSpans.h is what the model emits (lake exe emit_ui_spans)"
+    let spark ← try IO.FS.readFile "../core/tests/SparkModelCases.h" catch _ => pure ""
+    c (spark == Spark.emitCpp) "core/tests/SparkModelCases.h is what the model emits (lake exe emit_spark_cases)"
 
   let n ← failures.get
   if n == 0 then IO.println "all tests passed" else IO.eprintln s!"{n} failure(s)"
