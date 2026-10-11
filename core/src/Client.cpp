@@ -361,6 +361,8 @@ void Client::sendConnect(uint32_t address, uint32_t refreshRateHz, bool spectato
     connect.maxBitrateMbps = oxr::protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG;
     connect.refreshRateHz = std::max<uint32_t>(refreshRateHz, 60);
     connect.clientCapabilities = spectator ? oxr::protocol::CLIENT_CAPABILITY_SPECTATOR : 0;
+    connect.displayEyeWidth = displayEyeWidth_.load();
+    connect.displayEyeHeight = displayEyeHeight_.load();
     std::strncpy(connect.deviceName, "OXRSys XR Pilot", sizeof(connect.deviceName) - 1);
     sendTo(sendSocket_, address, oxr::protocol::CONTROL_PORT, &connect, sizeof(connect));
 }

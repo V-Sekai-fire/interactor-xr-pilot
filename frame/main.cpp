@@ -888,6 +888,7 @@ bool App::run()
         std::fprintf(stderr, "xr-pilot-frame: PyroWave decoder: %s\n", error.c_str());
         return false;
     }
+    client_.setDisplayEye(eyes_[0].width, eyes_[0].height);
     if (!client_.start(&error))
     {
         std::fprintf(stderr, "xr-pilot-frame: client: %s\n", error.c_str());

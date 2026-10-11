@@ -44,7 +44,7 @@
    explicitly. Apple's clang folds them in elsewhere and has no such file, which is
    why the codec guarded this with __APPLE__ rather than by architecture -- and why
    an arm64 Linux builder was the first thing to fail on it. */
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(_MSC_VER) /* MSVC declares them in its intrinsics headers */
 #include <mm_malloc.h>
 #endif
 

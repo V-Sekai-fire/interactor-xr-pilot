@@ -67,3 +67,16 @@ TEST_CASE("A client that sends no field of view is not one to use", "[eyefov]")
     const float sent[4] = {frame.left, frame.right, frame.up, frame.down};
     CHECK(Valid(FromPacket(sent)));
 }
+
+TEST_CASE("A headset's own eye height is saved once for the next start", "[eyefov]")
+{
+    // The Steam Frame's compositor recommends more than the 1680 the driver starts with.
+    CHECK(HeightToSave(2160, 1680, 0) == 2160);
+    CHECK(HeightToSave(2160, 1680, 2160) == 0); // already saved
+    CHECK(HeightToSave(2160, 2160, 0) == 0);    // already rendered
+    CHECK(HeightToSave(0, 1680, 0) == 0);       // a client that does not say
+    CHECK(HeightToSave(8192, 1680, 0) == 0);    // past what the driver renders
+    CHECK(ValidHeight(kMinEyeHeight));
+    CHECK(ValidHeight(kMaxEyeHeight));
+    CHECK_FALSE(ValidHeight(kMinEyeHeight - 1));
+}

@@ -926,6 +926,7 @@ private:
             oxr::protocol::TrackingPacket packet = {};
             const DriverPose_t pose = CurrentPose(&packet);
             RememberHeadsetView(packet);
+            RememberHeadsetHeight();
             gHost->TrackedDevicePoseUpdated(id_, pose, sizeof(pose));
             gHost->VsyncEvent(0.0);
             if (gInput != nullptr)
@@ -963,8 +964,26 @@ private:
                                           : "It could not be saved");
     }
 
+    // Saves the eye height a headset shows when SteamVR renders another, so the next start renders the panel's
+    // own pixels instead of the default.
+    void RememberHeadsetHeight()
+    {
+        if (server_ == nullptr || !server_->IsClientConnected())
+            return;
+        const uint32_t height =
+            oxrsys::eye_fov::HeightToSave(server_->GetClientDisplayEyeHeight(), gEyeHeight, savedHeight_);
+        if (height == 0)
+            return;
+        savedHeight_ = height;
+        EVRSettingsError error = VRSettingsError_None;
+        gSettings->SetInt32(kSettingsSection, "eyeHeight", static_cast<int32_t>(height), &error);
+        Log("oxrsys: the headset shows %u pixels per eye high; SteamVR renders %u. %s", height, gEyeHeight,
+            error == VRSettingsError_None ? "Saved: restart SteamVR to render it" : "It could not be saved");
+    }
+
     uint32_t id_ = 0;
     oxrsys::eye_fov::Angles savedView_ = oxrsys::eye_fov::kDefault;
+    uint32_t savedHeight_ = 0;
     VRInputComponentHandle_t systemClick_ = 0;
     VRInputComponentHandle_t proximity_ = 0;
     std::array<Controller*, 2> hands_ = {nullptr, nullptr};
@@ -986,8 +1005,9 @@ void LoadEyeView()
     const bool fromSettings = error == VRSettingsError_None && oxrsys::eye_fov::Parse(text, &angles);
     gEyeAngles = angles;
     const int32_t height = gSettings->GetInt32(kSettingsSection, "eyeHeight", &error);
-    gEyeHeight = error == VRSettingsError_None && height >= 512 && height <= 4096 ? static_cast<uint32_t>(height)
-                                                                                    : kDefaultEyeHeight;
+    gEyeHeight = error == VRSettingsError_None && oxrsys::eye_fov::ValidHeight(static_cast<uint32_t>(height))
+                     ? static_cast<uint32_t>(height)
+                     : kDefaultEyeHeight;
     gEyeWidth = oxrsys::eye_fov::EyeWidth(oxrsys::eye_fov::ToTangents(gEyeAngles), gEyeHeight);
     Log("oxrsys: renders %ux%u per eye, view %s (%s)", gEyeWidth, gEyeHeight, oxrsys::eye_fov::Format(gEyeAngles).c_str(),
         fromSettings ? "the headset's, saved" : "default");
