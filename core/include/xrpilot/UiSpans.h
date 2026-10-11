@@ -55,6 +55,9 @@ enum class UiAction
     Controllers,
     Pointing,
     Seated,
+    Appearance,
+    Conventions,
+    ColourChecker,
 };
 
 inline const char* uiSpanName(UiAction action)
@@ -149,6 +152,12 @@ inline const char* uiSpanName(UiAction action)
         return "ui.window.pointing";
     case UiAction::Seated:
         return "ui.window.seated";
+    case UiAction::Appearance:
+        return "ui.window.appearance";
+    case UiAction::Conventions:
+        return "ui.window.conventions";
+    case UiAction::ColourChecker:
+        return "ui.window.colour-checker";
     }
     return "ui.unknown";
 }
