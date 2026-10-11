@@ -2,6 +2,8 @@
 
 #include "TrackingReceiver.h"
 
+#include "StreamingSpectators.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -220,15 +222,20 @@ void TrackingReceiver::ReceiveThread()
         {
             continue;
         }
-        // Another client on the network (a second pilot still sending) must not mix its poses in.
+        oxr::protocol::TrackingPacket packet = {};
+        memcpy(&packet, buffer, sizeof(packet));
+        // A spectator's packets are co-pilot input, even with no owner address (USB) to tell them apart;
+        // another client on the network (a second pilot still sending) must not mix its poses in.
+        if (IsCopilot(from.sin_addr.s_addr))
+        {
+            StoreCopilot(packet, SteadyClockNowNs());
+            continue;
+        }
         if (!AcceptsSource(sourceAddress_.load(), from.sin_addr.s_addr))
         {
             foreignDropCount_.fetch_add(1);
             continue;
         }
-
-        oxr::protocol::TrackingPacket packet = {};
-        memcpy(&packet, buffer, sizeof(packet));
         StorePacket(packet, SteadyClockNowNs());
     }
 }
@@ -253,11 +260,52 @@ bool TrackingReceiver::GetLatestPose(oxr::protocol::TrackingPacket& outPacket) c
     }
 
     std::lock_guard<std::mutex> lock(poseMutex_);
-    outPacket = latestPacket_;
+    outPacket = WithCopilot(latestPacket_);
     return true;
 }
 
+void TrackingReceiver::SetCopilotSources(std::vector<uint32_t> sourceAddresses)
+{
+    std::lock_guard<std::mutex> lock(copilotSourceMutex_);
+    copilotSources_ = std::move(sourceAddresses);
+}
+
+bool TrackingReceiver::IsCopilot(uint32_t from) const
+{
+    std::lock_guard<std::mutex> lock(copilotSourceMutex_);
+    return std::find(copilotSources_.begin(), copilotSources_.end(), from) != copilotSources_.end();
+}
+
+void TrackingReceiver::StoreCopilot(const oxr::protocol::TrackingPacket& packet, int64_t receiveTimeNs)
+{
+    copilotPacketCount_.fetch_add(1);
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    copilotPacket_ = packet;
+    copilotAtNs_ = receiveTimeNs;
+}
+
+oxr::protocol::TrackingPacket TrackingReceiver::WithCopilot(const oxr::protocol::TrackingPacket& owner) const
+{
+    // A co-pilot that stopped sending lets go of its hands after half a second.
+    if (copilotAtNs_ == 0 || SteadyClockNowNs() - copilotAtNs_ >= CopilotFreshNs)
+    {
+        return owner;
+    }
+    return oxrsys::streaming_spectators::MergeCopilot(owner, copilotPacket_);
+}
+
 bool TrackingReceiver::GetPredictedPose(oxr::protocol::TrackingPacket& outPacket) const
+{
+    if (!PredictedOwnerPose(outPacket))
+    {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    outPacket = WithCopilot(outPacket);
+    return true;
+}
+
+bool TrackingReceiver::PredictedOwnerPose(oxr::protocol::TrackingPacket& outPacket) const
 {
     if (!hasData_.load())
     {

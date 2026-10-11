@@ -225,11 +225,12 @@ The expected lifecycle is:
 A client that sets `CLIENT_CAPABILITY_SPECTATOR` in its `ClientConnect` watches the session without owning it:
 
 - The runtime adds it to a spectator list instead of switching the session to it, and sends every live video packet (data, FEC parity, render pose) to it as well as to the owner, on its video port. NACK retransmissions go to the owner only.
-- The runtime takes no tracking, keyframe requests or latency reports from it.
+- The runtime takes no keyframe requests or latency reports from it.
+- Its tracking packets are co-pilot input. The session always follows the owner's head, eyes and hand joints. A spectator's controller (pose, trigger, grip, thumbstick and that side's buttons) is used only for a hand where the owner has neither its controller nor its tracked hand active, and only while the spectator's packets keep arriving (500 ms).
 - It repeats its `ClientConnect` as a heartbeat; the runtime drops it after `SPECTATOR_TIMEOUT_MS` (5 s) without one, or when it sends `ServerDisconnect`.
 - A `ServerDisconnect` ends the session only when it comes from the session owner's address. One from another address that is not a spectator is ignored.
 
-XR Pilot watches this way in its streaming mode: a headset (the Steam Frame or a Quest running the Android client) owns the session, and the desk's pilot sends its spectator `ClientConnect` to the runtime on its own machine over loopback every 2 s, since the runtime does not announce while a session runs.
+XR Pilot watches this way in its streaming mode: a headset (the Steam Frame or a Quest running the Android client) owns the session, the desk's pilot lends its controllers to the hands the headset leaves free, and it sends its spectator `ClientConnect` to the runtime on its own machine over loopback every 2 s, since the runtime does not announce while a session runs.
 
 ## Compatibility
 

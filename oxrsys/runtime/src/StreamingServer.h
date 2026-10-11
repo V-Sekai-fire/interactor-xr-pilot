@@ -186,6 +186,7 @@ private:
     bool RemoveSpectator(const sockaddr_in& from);
     bool IsSpectator(const sockaddr_in& from);
     void ExpireSpectators();
+    void ShareSpectatorsWithTracking();
     void SendToSpectators(SocketHandle socket, const uint8_t* data, size_t size);
     // Whether a control message came from the client that owns the session.
     bool IsSessionOwner(const sockaddr_in& from) const;

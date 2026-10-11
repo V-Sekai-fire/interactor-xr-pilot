@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
+
+#include <oxrsys/protocol/Protocol.h>
 
 namespace oxrsys::streaming_spectators
 {
@@ -108,6 +111,53 @@ inline bool IsSessionOwner(const std::string& ownerIp, uint16_t ownerPort, const
                            uint16_t fromPort)
 {
     return !ownerIp.empty() && ownerIp == fromIp && (ownerPort == 0 || ownerPort == fromPort);
+}
+
+// A spectator's tracking is co-pilot input: the session follows the owner's head, eyes and hand joints
+// always, and a spectator's controller only for a hand the owner is not using (neither its controller
+// nor its tracked hand is active). Each side's pose, trigger, grip, thumbstick and buttons move together.
+inline oxr::protocol::TrackingPacket MergeCopilot(const oxr::protocol::TrackingPacket& owner,
+                                                  const oxr::protocol::TrackingPacket& copilot)
+{
+    using namespace oxr::protocol;
+    TrackingPacket merged = owner;
+    struct Side
+    {
+        uint32_t controller;
+        uint32_t hand;
+        uint32_t buttons;
+        float TrackingPacket::*trigger;
+        float TrackingPacket::*grip;
+        float (TrackingPacket::*position)[3];
+        float (TrackingPacket::*rotation)[4];
+        float (TrackingPacket::*thumbstick)[2];
+    };
+    const Side sides[] = {
+        {TRACKING_FLAG_LEFT_CONTROLLER_ACTIVE, TRACKING_FLAG_LEFT_HAND_ACTIVE,
+         BUTTON_X | BUTTON_Y | BUTTON_MENU | BUTTON_LEFT_THUMBSTICK | BUTTON_LEFT_TRIGGER | BUTTON_LEFT_GRIP,
+         &TrackingPacket::leftTrigger, &TrackingPacket::leftGrip, &TrackingPacket::leftControllerPos,
+         &TrackingPacket::leftControllerRot, &TrackingPacket::leftThumbstick},
+        {TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE, TRACKING_FLAG_RIGHT_HAND_ACTIVE,
+         BUTTON_A | BUTTON_B | BUTTON_RIGHT_THUMBSTICK | BUTTON_RIGHT_TRIGGER | BUTTON_RIGHT_GRIP,
+         &TrackingPacket::rightTrigger, &TrackingPacket::rightGrip, &TrackingPacket::rightControllerPos,
+         &TrackingPacket::rightControllerRot, &TrackingPacket::rightThumbstick},
+    };
+    for (const Side& side : sides)
+    {
+        const bool ownerUses = (owner.trackingFlags & (side.controller | side.hand)) != 0;
+        if (ownerUses || (copilot.trackingFlags & side.controller) == 0)
+        {
+            continue;
+        }
+        merged.trackingFlags |= side.controller;
+        merged.buttonState = (merged.buttonState & ~side.buttons) | (copilot.buttonState & side.buttons);
+        merged.*side.trigger = copilot.*side.trigger;
+        merged.*side.grip = copilot.*side.grip;
+        std::memcpy(merged.*side.position, copilot.*side.position, sizeof(float) * 3);
+        std::memcpy(merged.*side.rotation, copilot.*side.rotation, sizeof(float) * 4);
+        std::memcpy(merged.*side.thumbstick, copilot.*side.thumbstick, sizeof(float) * 2);
+    }
+    return merged;
 }
 
 } // namespace oxrsys::streaming_spectators

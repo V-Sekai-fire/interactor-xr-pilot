@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 #include "RuntimeSockets.h"
 
@@ -45,6 +46,10 @@ public:
     void BeginClient(uint32_t sourceAddress);
     static bool AcceptsSource(uint32_t expected, uint32_t from) { return expected == 0 || expected == from; }
 
+    // Spectators' addresses (network byte order): their packets are co-pilot input, merged into the
+    // owner's by streaming_spectators::MergeCopilot while one arrived in the last CopilotFreshNs.
+    void SetCopilotSources(std::vector<uint32_t> sourceAddresses);
+
     void SetPredictionHorizonMs(float predictionHorizonMs);
     float GetPredictionHorizonMs() const { return predictionHorizonMs_.load(); }
 
@@ -56,6 +61,7 @@ public:
     uint64_t GetPacketCount() const { return packetCount_.load(); }
     uint64_t GetReorderedDropCount() const { return reorderedDropCount_.load(); }
     uint64_t GetForeignDropCount() const { return foreignDropCount_.load(); }
+    uint64_t GetCopilotPacketCount() const { return copilotPacketCount_.load(); }
 
 private:
     struct HistorySample
@@ -66,6 +72,11 @@ private:
 
     void ReceiveThread();
     void StorePacket(const oxr::protocol::TrackingPacket& packet, int64_t receiveTimeNs);
+    bool PredictedOwnerPose(oxr::protocol::TrackingPacket& outPacket) const;
+    bool IsCopilot(uint32_t from) const;
+    void StoreCopilot(const oxr::protocol::TrackingPacket& packet, int64_t receiveTimeNs);
+    // Under poseMutex_.
+    oxr::protocol::TrackingPacket WithCopilot(const oxr::protocol::TrackingPacket& owner) const;
 
     oxrsys::runtime_socket::SocketHandle socket_ = oxrsys::runtime_socket::InvalidSocket;
     std::thread receiveThread_;
@@ -75,12 +86,20 @@ private:
     std::atomic<uint64_t> reorderedDropCount_{0};
     std::atomic<uint64_t> foreignDropCount_{0};
     std::atomic<uint32_t> sourceAddress_{0};
+    std::atomic<uint64_t> copilotPacketCount_{0};
+
+    mutable std::mutex copilotSourceMutex_;
+    std::vector<uint32_t> copilotSources_;
 
     mutable std::mutex poseMutex_;
     oxr::protocol::TrackingPacket latestPacket_ = {};
     std::deque<HistorySample> history_;
     std::atomic<float> predictionHorizonMs_{0.0f};
     mutable std::atomic<int64_t> lastPredictionDiagnosticNs_{0};
+    oxr::protocol::TrackingPacket copilotPacket_ = {}; // under poseMutex_
+    int64_t copilotAtNs_ = 0;                          // under poseMutex_
+
+    static constexpr int64_t CopilotFreshNs = 500'000'000;
 
     static constexpr size_t MaxHistorySamples = 8;
 };
