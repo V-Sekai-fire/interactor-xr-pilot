@@ -5,6 +5,7 @@
 #include "xrpilot/Install.h"
 #include "xrpilot/Json.h"
 #include "xrpilot/SteamVrSettings.h"
+#include "xrpilot/StreamTracks.h"
 #include "xrpilot/UiTrace.h"
 #include "xrpilot/Version.h"
 
@@ -347,6 +348,36 @@ std::string stateFolder()
     return native(environment("LOCALAPPDATA") + "/OXRSys");
 }
 
+// The runtime's config file, where Config::ResolveConfigFilePath looks first (RuntimePlatform's ConfigRoot).
+fs::path runtimeConfigPath()
+{
+#if defined(_WIN32)
+    return fs::path(native(environment("APPDATA") + "/OXRSys/oxrsys-runtime.toml"));
+#elif defined(__APPLE__)
+    return fs::path(environment("HOME") + "/Library/Application Support/OXRSys/oxrsys-runtime.toml");
+#else
+    const std::string xdg = environment("XDG_CONFIG_HOME");
+    return fs::path((xdg.empty() ? environment("HOME") + "/.config" : xdg) + "/oxrsys/oxrsys-runtime.toml");
+#endif
+}
+
+// The config text the runtime reads now: the preferred file, else the one beside the installed runtime,
+// which the runtime falls back to; writing the preferred file then keeps that one's other settings.
+std::string runtimeConfigText()
+{
+    for (const fs::path& path : {runtimeConfigPath(), fs::path(native(installBase() + "/runtime/oxrsys-runtime.toml"))})
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in)
+        {
+            std::ostringstream text;
+            text << in.rdbuf();
+            return text.str();
+        }
+    }
+    return {};
+}
+
 // A package ships the runtime and driver beside the app, which sits in the package's bin folder.
 fs::path packageRoot()
 {
@@ -587,6 +618,19 @@ struct CommandTarget
     Command command;
 };
 
+struct TrackTarget
+{
+    Tray* tray;
+    bool abr;
+    size_t index;
+};
+
+std::vector<std::unique_ptr<TrackTarget>>& trackTargets()
+{
+    static std::vector<std::unique_ptr<TrackTarget>> targets;
+    return targets;
+}
+
 std::vector<std::unique_ptr<CommandTarget>>& commandTargets()
 {
     static std::vector<std::unique_ptr<CommandTarget>> targets;
@@ -651,6 +695,24 @@ Tray::Tray(bool setUpDesk, xrpilot::UiTrace* ui)
         modeEntries_[i] = SDL_InsertTrayEntryAt(modeMenu, -1, modes[i].first, SDL_TRAYENTRY_CHECKBOX);
         commandTargets().push_back(std::make_unique<CommandTarget>(CommandTarget{this, modes[i].second}));
         SDL_SetTrayEntryCallback(modeEntries_[i], &Tray::onCommand, commandTargets().back().get());
+    }
+
+    // The stream's bitrate and adaptive bitrate, as named tracks.
+    SDL_TrayMenu* bitrateMenu = SDL_CreateTraySubmenu(SDL_InsertTrayEntryAt(menu_, -1, "Bitrate", SDL_TRAYENTRY_SUBMENU));
+    for (size_t i = 0; i < xrpilot::bitrateTracks().size(); ++i)
+    {
+        bitrateEntries_.push_back(
+            SDL_InsertTrayEntryAt(bitrateMenu, -1, xrpilot::bitrateTracks()[i].name, SDL_TRAYENTRY_CHECKBOX));
+        trackTargets().push_back(std::make_unique<TrackTarget>(TrackTarget{this, false, i}));
+        SDL_SetTrayEntryCallback(bitrateEntries_.back(), &Tray::onTrack, trackTargets().back().get());
+    }
+    SDL_TrayMenu* abrMenu =
+        SDL_CreateTraySubmenu(SDL_InsertTrayEntryAt(menu_, -1, "Adaptive bitrate", SDL_TRAYENTRY_SUBMENU));
+    for (size_t i = 0; i < xrpilot::abrTracks().size(); ++i)
+    {
+        abrEntries_.push_back(SDL_InsertTrayEntryAt(abrMenu, -1, xrpilot::abrTracks()[i].name, SDL_TRAYENTRY_CHECKBOX));
+        trackTargets().push_back(std::make_unique<TrackTarget>(TrackTarget{this, true, i}));
+        SDL_SetTrayEntryCallback(abrEntries_.back(), &Tray::onTrack, trackTargets().back().get());
     }
 
     const std::pair<const char*, Command> commands[] = {
@@ -755,6 +817,49 @@ void Tray::refresh()
     }
     rebuildRuntimeMenu();
     refreshModeEntries();
+    refreshTrackEntries();
+}
+
+// Checks the tracks the runtime's config is on; an unset value shows the runtime's default (50 Mbps, bitrate).
+void Tray::refreshTrackEntries()
+{
+    const std::string text = runtimeConfigText();
+    const std::string mbps = xrpilot::tomlValue(text, "streaming", "bitrate_mbps");
+    const std::string mode = xrpilot::tomlValue(text, "streaming", "abr_mode");
+    const size_t bitrate = xrpilot::bitrateTrackFor(mbps.empty() ? 50u : uint32_t(std::strtoul(mbps.c_str(), nullptr, 10)));
+    const size_t abr = xrpilot::abrTrackFor(mode.empty() ? "bitrate" : mode);
+    for (size_t i = 0; i < bitrateEntries_.size(); ++i)
+        SDL_SetTrayEntryChecked(bitrateEntries_[i], i == bitrate);
+    for (size_t i = 0; i < abrEntries_.size(); ++i)
+        SDL_SetTrayEntryChecked(abrEntries_[i], i == abr);
+}
+
+// Writes the picked track into the runtime's config; the runtime reads it when a headset next connects.
+void Tray::pickTrack(bool abr, size_t index)
+{
+    const std::string key = abr ? "abr_mode" : "bitrate_mbps";
+    const std::string value = abr ? "\"" + std::string(xrpilot::abrTracks()[index].mode) + "\""
+                                  : std::to_string(xrpilot::bitrateTracks()[index].mbps);
+    const std::string name = abr ? xrpilot::abrTracks()[index].name : xrpilot::bitrateTracks()[index].name;
+    const fs::path path = runtimeConfigPath();
+    std::error_code error;
+    fs::create_directories(path.parent_path(), error);
+    const std::string text = xrpilot::setTomlValue(runtimeConfigText(), "streaming", key, value);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << text;
+    out.close();
+    const bool ok = bool(out);
+    record(abr ? xrpilot::UiAction::StreamAbr : xrpilot::UiAction::StreamBitrate, ok, name);
+    setMessage(ok ? std::string(abr ? "Adaptive bitrate" : "Bitrate") + ": " + name +
+                        ". The headset gets it when it next connects."
+                  : "Could not write " + path.string());
+    refreshTrackEntries();
+}
+
+void Tray::onTrack(void* userdata, SDL_TrayEntry*)
+{
+    const TrackTarget* target = static_cast<const TrackTarget*>(userdata);
+    target->tray->pickTrack(target->abr, target->index);
 }
 
 // The mode the desk is in, as lean/XrPilot/Ui.lean's Desk.inMode reads it: OXRSys the runtime and

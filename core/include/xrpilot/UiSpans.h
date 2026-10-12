@@ -42,6 +42,8 @@ enum class UiAction
     OpenDriverFolder,
     TrayQuit,
     CopyMcpConfig,
+    StreamBitrate,
+    StreamAbr,
     InstallFailed,
     ElevatedDone,
     ElevatedDeclined,
@@ -126,6 +128,10 @@ inline const char* uiSpanName(UiAction action)
         return "ui.tray.quit";
     case UiAction::CopyMcpConfig:
         return "ui.tray.copy-mcp-config";
+    case UiAction::StreamBitrate:
+        return "ui.tray.stream-bitrate";
+    case UiAction::StreamAbr:
+        return "ui.tray.stream-abr";
     case UiAction::InstallFailed:
         return "ui.tray.install-failed";
     case UiAction::ElevatedDone:

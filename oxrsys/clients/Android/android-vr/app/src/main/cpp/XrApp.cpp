@@ -2343,9 +2343,8 @@ void XrApp::SendClientConnect(const char* serverIp)
     connect.versionMajor = 1;
     connect.versionMinor = 2;
     connect.preferredCodec = static_cast<uint32_t>(protocol::VideoCodec::PyroWave);
-    connect.maxBitrateMbps = usbAdb
-        ? protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG
-        : 100;
+    // The bitrate track picked on the desk is the stream's, over Wi-Fi as over USB.
+    connect.maxBitrateMbps = protocol::CLIENT_MAX_BITRATE_USE_SERVER_CONFIG;
     connect.refreshRateHz = clientRefreshRateHz_;
     connect.displayEyeWidth = swapchainWidth_;
     connect.displayEyeHeight = swapchainHeight_;
