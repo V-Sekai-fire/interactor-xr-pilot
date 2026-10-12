@@ -17,6 +17,7 @@
 #include "NetworkReceiver.h"
 #include "QuestPassthroughAlphaPolicy.h"
 #include "QuestShellInteraction.h"
+#include "StreamEyeGeometry.h"
 #include "TrackingSender.h"
 #include "VideoDecoder.h"
 
@@ -244,6 +245,11 @@ private:
     int32_t blitOffsetX_ = 0;
     int32_t blitOffsetY_ = 0;
     float macEyeAspect_ = 0.0f;
+    // The left eye's view the server renders whatever this client sends (announce renderEyeTangents), and the
+    // left view this client last sent; a streamed frame is declared with the one it was rendered with.
+    bool serverRendersFixedFov_ = false;
+    oxrsys::client::Fov serverLeftFov_{};
+    oxrsys::client::Fov sentLeftFov_{};
 
     // Decoded frame state
     uint32_t videoWidth_ = 0;

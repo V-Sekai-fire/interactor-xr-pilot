@@ -2077,6 +2077,17 @@ void XrApp::ConfigureServerConnection(const protocol::ServerAnnounce& server,
          server.serverName, serverIp, server.renderWidth, server.renderHeight,
          server.refreshRateHz, server.encodedWidth, server.encodedHeight);
 
+    serverRendersFixedFov_ = oxrsys::client::FovFromTangents(server.renderEyeTangents, &serverLeftFov_);
+    if (serverRendersFixedFov_)
+    {
+        LOGI("Server renders a fixed left eye view: L=%.3f R=%.3f U=%.3f D=%.3f (rad); frames are declared with it",
+             serverLeftFov_.left, serverLeftFov_.right, serverLeftFov_.up, serverLeftFov_.down);
+    }
+    else
+    {
+        LOGI("Server renders the left eye view this client sends");
+    }
+
     serverVideoPort_ = server.videoPort;
     serverTrackingPort_ = server.trackingPort;
     serverSpatialPort_ = server.spatialPort != 0 ? static_cast<uint16_t>(server.spatialPort)
@@ -3264,7 +3275,18 @@ void XrApp::RunFrame()
             projectionViews[eye].pose = useRenderPose
                 ? BuildEyePoseFromRenderPose(currentRenderPose_, eye)
                 : views_[eye].pose;
-            projectionViews[eye].fov = views_[eye].fov;
+            if (useRenderPose && oxrsys::client::IsValid(serverRendersFixedFov_ ? serverLeftFov_ : sentLeftFov_))
+            {
+                // The view the frame's pixels were rendered with, not the headset's: a different one scales the
+                // picture, so the world turns with the head.
+                const oxrsys::client::Fov f =
+                    oxrsys::client::DeclaredFov(serverRendersFixedFov_, serverLeftFov_, sentLeftFov_, eye);
+                projectionViews[eye].fov = {f.left, f.right, f.up, f.down};
+            }
+            else
+            {
+                projectionViews[eye].fov = views_[eye].fov;
+            }
             projectionViews[eye].subImage.swapchain = swapchains_[eye];
             if (renderedVideo && blitWidth_ > 0)
             {
@@ -4159,6 +4181,7 @@ protocol::TrackingPacket XrApp::BuildTrackingPacket(XrTime predictedDisplayTime)
     packet.eyeFov[1] = views_[0].fov.angleRight;
     packet.eyeFov[2] = views_[0].fov.angleUp;
     packet.eyeFov[3] = views_[0].fov.angleDown;
+    sentLeftFov_ = {views_[0].fov.angleLeft, views_[0].fov.angleRight, views_[0].fov.angleUp, views_[0].fov.angleDown};
 
     // Hand tracking joints
     if (xrLocateHandJointsEXT_ != nullptr)
