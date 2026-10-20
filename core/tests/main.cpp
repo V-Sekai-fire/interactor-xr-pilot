@@ -583,9 +583,10 @@ const std::map<std::string, std::function<void()>> cases = {
          const double flat[6] = {2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
          check(Interval::exact(2.0).ulps64(12).contains(makima(flat, t, 0.37)), "equal samples give the sample");
          // Rotation: identity to a quarter turn about +Y, held at both ends, is an eighth turn halfway.
+         constexpr double Pi = 3.14159265358979323846; // MSVC's <cmath> has no M_PI
          float q[6][4];
          const float id[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-         const float quarter[4] = {0.0f, float(std::sin(M_PI / 4)), 0.0f, float(std::cos(M_PI / 4))};
+         const float quarter[4] = {0.0f, float(std::sin(Pi / 4)), 0.0f, float(std::cos(Pi / 4))};
          for (int k = 0; k < 6; ++k)
              std::copy(k < 3 ? id : quarter, (k < 3 ? id : quarter) + 4, q[k]);
          float r[4];
@@ -593,9 +594,9 @@ const std::map<std::string, std::function<void()>> cases = {
          // The inputs are float quaternions (one float rounding each), the curve runs in double and
          // the result is cast to float: 4 float ulps cover it, and a tolerance of 1e-3 would not notice
          // a curve that was 0.05 degrees off.
-         check(sinI(M_PI / 8).ulps32(4).contains(r[1]) && cosI(M_PI / 8).ulps32(4).contains(r[3]),
+         check(sinI(Pi / 8).ulps32(4).contains(r[1]) && cosI(Pi / 8).ulps32(4).contains(r[3]),
                "halfway is an eighth turn");
-         check(!sinI(M_PI / 8).ulps32(4).contains(std::sin(M_PI / 8) + 1e-4), "the bound sees a 1e-4 drift");
+         check(!sinI(Pi / 8).ulps32(4).contains(std::sin(Pi / 8) + 1e-4), "the bound sees a 1e-4 drift");
          check(!Interval{0.0, 1.0}.ulps64(12).contains(1.0 + 1e-12), "the step bound sees a 1e-12 overshoot");
      }},
     {"hand.hops-make-one-monotone-motion",
