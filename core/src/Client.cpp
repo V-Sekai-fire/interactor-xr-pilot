@@ -521,6 +521,7 @@ void Client::trackingLoop()
             float mouseDx = 0.0f, mouseDy = 0.0f;
             mouseLook_.take(now, mouseDx, mouseDy);
             advanceHuman(agent_, mouseDx, mouseDy, std::clamp(float(now - last) * 1e-9f, 0.0f, 0.05f));
+            advanceHands(agent_, agentClockS());
             last = now;
             fresh = nextTrackingPacket(agent_, now, lastSampleNs, packet);
             agent = agent_;

@@ -6,6 +6,8 @@
 #include "xrpilot/Client.h"
 #include "xrpilot/CommandLoop.h"
 #include "xrpilot/Launch.h"
+#include "xrpilot/Interval.h"
+#include "xrpilot/Makima.h"
 #include "xrpilot/McpLink.h"
 #include "xrpilot/MouseLook.h"
 #include "xrpilot/Pace.h"
@@ -562,6 +564,126 @@ const std::map<std::string, std::function<void()>> cases = {
          oxr::protocol::TrackingPacket p;
          check(nextTrackingPacket(s, 10, last, p) && p.timestampNs == 10, "a head with no sample time goes out now");
          check(nextTrackingPacket(s, 20, last, p) && p.timestampNs == 20, "and again on the next tick");
+     }},
+    {"makima.holds-flat-and-does-not-overshoot",
+     [] {
+         // A step held on both sides: the curve stays inside the two values, where a straight-line
+         // extrapolation of the last slope would run past them.
+         // Held flat on both sides the makima tangents are 0, so the exact curve is the smoothstep
+         // 3s^2 - 2s^3 in [0, 1]; the Hermite sum is 12 double roundings away from it.
+         const double v[6] = {0.0, 0.0, 0.0, 1.0, 1.0, 1.0};
+         const double t[6] = {0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
+         const Interval unit = Interval{0.0, 1.0}.ulps64(12);
+         bool inside = true;
+         for (int i = 0; i <= 20; ++i)
+             inside = inside && unit.contains(makima(v, t, i / 20.0));
+         check(inside, "the step stays between its two values");
+         // At the ends every term but the sample's is an exact zero, so the samples come back exactly.
+         check(makima(v, t, 0.0) == 0.0 && makima(v, t, 1.0) == 1.0, "the ends are the samples");
+         const double flat[6] = {2.0, 2.0, 2.0, 2.0, 2.0, 2.0};
+         check(Interval::exact(2.0).ulps64(12).contains(makima(flat, t, 0.37)), "equal samples give the sample");
+         // Rotation: identity to a quarter turn about +Y, held at both ends, is an eighth turn halfway.
+         float q[6][4];
+         const float id[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+         const float quarter[4] = {0.0f, float(std::sin(M_PI / 4)), 0.0f, float(std::cos(M_PI / 4))};
+         for (int k = 0; k < 6; ++k)
+             std::copy(k < 3 ? id : quarter, (k < 3 ? id : quarter) + 4, q[k]);
+         float r[4];
+         sphericalMakima(q, t, 0.5, r);
+         // The inputs are float quaternions (one float rounding each), the curve runs in double and
+         // the result is cast to float: 4 float ulps cover it, and a tolerance of 1e-3 would not notice
+         // a curve that was 0.05 degrees off.
+         check(sinI(M_PI / 8).ulps32(4).contains(r[1]) && cosI(M_PI / 8).ulps32(4).contains(r[3]),
+               "halfway is an eighth turn");
+         check(!sinI(M_PI / 8).ulps32(4).contains(std::sin(M_PI / 8) + 1e-4), "the bound sees a 1e-4 drift");
+         check(!Interval{0.0, 1.0}.ulps64(12).contains(1.0 + 1e-12), "the step bound sees a 1e-12 overshoot");
+     }},
+    {"hand.hops-make-one-monotone-motion",
+     [] {
+         // The pilot drawing a stroke: 30 mm hops along +X, one every 60 ms, as a person's arm would
+         // trace them. Sampled at 90 Hz the sent hand must never move backward, and it must end on
+         // the last hop. A planted path that steps back must be caught by the same check.
+         AgentState s;
+         Pose p;
+         p.position[0] = 0.0f;
+         p.position[1] = 1.0f;
+         p.position[2] = -0.3f;
+         placeHand(s, 1, p, -2.0);
+         advanceHands(s, 0.0); // settled on the start
+         double t = 0.0;
+         float lastX = s.hands[1].pose.position[0];
+         bool monotone = true;
+         int hops = 0;
+         for (int tick = 1; tick <= 120; ++tick)
+         {
+             t = tick / 90.0;
+             if (hops < 10 && t >= 0.06 * (hops + 1))
+             {
+                 p.position[0] = 0.03f * float(++hops);
+                 placeHand(s, 1, p, t);
+             }
+             advanceHands(s, t);
+             const float x = s.hands[1].pose.position[0];
+             monotone = monotone && x >= lastX;
+             lastX = x;
+         }
+         check(monotone, "the sent hand never moves backward through the hops");
+         // Past the last waypoint the pose is the waypoint itself, so the compare is exact.
+         check(s.hands[1].pose.position[0] == 0.03f * 10.0f, "it ends on the last hop");
+         check(s.hands[1].pose.position[1] == 1.0f && s.hands[1].pose.position[2] == -0.3f, "the other axes hold");
+         // Planted: hops that go back and forth must trip the monotone check.
+         AgentState planted;
+         placeHand(planted, 1, p, -2.0);
+         advanceHands(planted, 0.0);
+         bool plantedMonotone = true;
+         lastX = planted.hands[1].pose.position[0];
+         for (int tick = 1; tick <= 60; ++tick)
+         {
+             t = tick / 90.0;
+             if (tick == 1 || tick == 20)
+             {
+                 p.position[0] = tick == 1 ? 0.0f : 0.30f;
+                 placeHand(planted, 1, p, t);
+             }
+             advanceHands(planted, t);
+             const float x = planted.hands[1].pose.position[0];
+             plantedMonotone = plantedMonotone && x >= lastX;
+             lastX = x;
+         }
+         check(!plantedMonotone, "a path that steps back is caught");
+     }},
+    {"hand.momentum-carries-through-a-hop",
+     [] {
+         // A hop that arrives mid-transit bends the motion without stopping it: the speed at the first
+         // hop's arrival stays up. A hop after the hand has rested starts from no speed.
+         AgentState s;
+         Pose p;
+         p.position[1] = 1.0f;
+         placeHand(s, 1, p, -2.0);
+         advanceHands(s, 0.0); // settled at x = 0
+         p.position[0] = 0.03f;
+         placeHand(s, 1, p, 0.0);
+         p.position[0] = 0.06f;
+         placeHand(s, 1, p, 0.03);
+         const double arrival = s.hands[1].pathTimes[2];
+         advanceHands(s, arrival - 0.005);
+         const float before = s.hands[1].pose.position[0];
+         advanceHands(s, arrival + 0.005);
+         const float after = s.hands[1].pose.position[0];
+         const float speedThrough = (after - before) / 0.01f;
+         check(speedThrough > 0.2f, "the hand is still moving as it passes the first hop");
+         // From rest: the first 5 ms of a fresh motion cover almost nothing.
+         AgentState r;
+         placeHand(r, 1, p, -2.0);
+         advanceHands(r, 0.0); // settled at x = 0.06
+         p.position[0] = 0.09f;
+         placeHand(r, 1, p, 1.0);
+         advanceHands(r, 1.005);
+         const float speedFromRest = (r.hands[1].pose.position[0] - 0.06f) / 0.005f;
+         check(speedFromRest < 0.5f * speedThrough, "a motion from rest starts slower than one carried through");
+         // And it comes to rest on the target.
+         advanceHands(r, 5.0);
+         check(r.hands[1].pose.position[0] == 0.09f, "it settles on the target");
      }},
     {"client.stays-with-a-streaming-runtime",
      [] {
@@ -1284,8 +1406,10 @@ const std::map<std::string, std::function<void()>> cases = {
                "a mirror is refused");
          check(s.head.rotation.m[2] == 1.0f, "a refused command leaves the head where it was");
          check(runCommand("hand left 0 1 0 0 0 1 0 1 0 -1 0 0", s, status, 0).reply == "{\"ok\":true}" &&
-                   s.hands[0].manual && s.hands[0].pose.rotation.m[2] == 1.0f,
-               "a hand takes a rotation matrix");
+                   s.hands[0].manual && s.hands[0].pathPoses[s.hands[0].pathCount - 1].rotation.m[2] == 1.0f,
+               "a hand takes a rotation matrix as its target");
+         advanceHands(s, agentClockS() + 2.0);
+         check(s.hands[0].pose.rotation.m[2] == 1.0f, "and arrives at it once the transit is over");
      }},
     {"commands.loop-normalizes-lines",
      [] {
