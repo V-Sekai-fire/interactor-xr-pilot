@@ -148,9 +148,7 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         Pose pose;
         if (i < 0 || !readPose(in, pose))
             return {errorJson("hand needs left|right, x y z and a 3x3 rotation matrix row by row"), {}};
-        state.hands[i].pose = pose;
-        state.hands[i].present = true;
-        state.hands[i].manual = true;
+        placeHand(state, i, pose, agentClockS());
         result.reply = ok;
     }
     else if (verb == "reach")
@@ -162,9 +160,7 @@ CommandResult runCommand(const std::string& line, AgentState& state, const Clien
         if (i < 0 || !readFloats(in, target, 3))
             return {errorJson("reach needs left|right x y z"), {}};
         const ArmSolve arm = solveArm(state, i, target);
-        state.hands[i].pose = arm.hand;
-        state.hands[i].present = true;
-        state.hands[i].manual = true;
+        placeHand(state, i, arm.hand, agentClockS());
         result.reply = std::string("{\"ok\":true,\"reachable\":") + (arm.reachable ? "true" : "false") +
                        ",\"distance\":" + number(arm.distance) + ",\"hand\":" + poseJson(arm.hand) +
                        ",\"elbow\":[" + number(arm.elbow[0]) + "," + number(arm.elbow[1]) + "," +

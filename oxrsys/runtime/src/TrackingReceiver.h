@@ -36,6 +36,9 @@ public:
     // Get the latest tracking data (thread-safe)
     bool GetLatestPose(oxr::protocol::TrackingPacket& outPacket) const;
     bool GetPredictedPose(oxr::protocol::TrackingPacket& outPacket) const;
+    // Every button bit seen down in a packet since the last call, so a press that went down and
+    // up between two reads of the latest packet is not lost. Clears on return.
+    uint32_t TakeButtonsPressed();
 
     // Inject a tracking packet from TCP (USB mode) — same effect as receiving via UDP
     void InjectPacket(const uint8_t* data, size_t size);
@@ -78,6 +81,7 @@ private:
 
     mutable std::mutex poseMutex_;
     oxr::protocol::TrackingPacket latestPacket_ = {};
+    uint32_t buttonsPressedSinceTaken_ = 0;
     std::deque<HistorySample> history_;
     std::atomic<float> predictionHorizonMs_{0.0f};
     mutable std::atomic<int64_t> lastPredictionDiagnosticNs_{0};

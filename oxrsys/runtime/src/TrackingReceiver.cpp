@@ -245,6 +245,14 @@ void TrackingReceiver::InjectPacket(const uint8_t* data, size_t size)
     StorePacket(packet, SteadyClockNowNs());
 }
 
+uint32_t TrackingReceiver::TakeButtonsPressed()
+{
+    std::lock_guard<std::mutex> lock(poseMutex_);
+    const uint32_t pressed = buttonsPressedSinceTaken_;
+    buttonsPressedSinceTaken_ = 0;
+    return pressed;
+}
+
 bool TrackingReceiver::GetLatestPose(oxr::protocol::TrackingPacket& outPacket) const
 {
     if (!hasData_.load())
@@ -466,6 +474,7 @@ void TrackingReceiver::StorePacket(const oxr::protocol::TrackingPacket& packet, 
                   CanonicalizeQuat(LoadQuat(packet.rightControllerRot), rightControllerReference));
 
         latestPacket_ = normalizedPacket;
+        buttonsPressedSinceTaken_ |= normalizedPacket.buttonState;
         history_.push_back({normalizedPacket, receiveTimeNs});
         while (history_.size() > MaxHistorySamples)
         {

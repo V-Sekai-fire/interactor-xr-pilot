@@ -35,6 +35,7 @@ set(XRPILOT_PROTOCOL_INCLUDE ${XRPILOT_OXRSYS_DIR}/common/protocol/include)
 add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Body.cpp
+    core/src/Makima.cpp
     third_party/sinew-align/sinew_align.c
     core/src/CommandLoop.cpp
     core/src/Commands.cpp
@@ -88,6 +89,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
+                      makima.holds-flat-and-does-not-overshoot hand.hops-make-one-monotone-motion hand.momentum-carries-through-a-hop
                       client.stays-with-a-streaming-runtime
                       launch.plain-start-opens-the-pilot launch.second-start-shows-the-first
                       launch.flags-keep-their-meaning launch.mcp-flags client.local-runtime-wins

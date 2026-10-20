@@ -350,6 +350,7 @@ const std::map<std::string, std::function<void()>> cases = {
          AgentState s;
          ClientStatus status;
          runCommand("hand right 0.5 1.2 -0.4 1 0 0 0 1 0 0 0 1", s, status, 0);
+         advanceHands(s, agentClockS() + 2.0); // the transit from the body's side is over
          const Pose placed = handPose(s, 1);
          check(placed.position[0] == 0.5f && placed.position[1] == 1.2f,
                "an agent-placed hand is sent where the agent put it");

@@ -434,6 +434,79 @@ TEST_CASE("InputManager — select follows trigger and squeeze follows grab", "[
     CHECK_FALSE(im.GetButtonClick(InputManager::Hand::Left, "squeeze/click"));
 }
 
+TEST_CASE("InputManager — a press released before the next sync still reaches that sync", "[input]")
+{
+    // An app whose frame stalls longer than the press would otherwise never see it:
+    // xrSyncActions reads the level, and the level is already back to false.
+    InputManager im;
+    const auto hand = InputManager::Hand::Left;
+
+    im.SetAutomationBoolean(hand, "menu/click", true);
+    im.SetAutomationBoolean(hand, "menu/click", false);
+    CHECK(im.GetBooleanComponent(hand, "menu/click"));
+    im.EndSync();
+    CHECK_FALSE(im.GetBooleanComponent(hand, "menu/click"));
+    im.EndSync();
+    CHECK_FALSE(im.GetBooleanComponent(hand, "menu/click"));
+
+    // A held press stays held across syncs; once a sync has read it, a release reads false.
+    im.SetAutomationBoolean(hand, "menu/click", true);
+    im.EndSync();
+    CHECK(im.GetBooleanComponent(hand, "menu/click"));
+    im.EndSync();
+    CHECK(im.GetBooleanComponent(hand, "menu/click"));
+    im.SetAutomationBoolean(hand, "menu/click", false);
+    CHECK_FALSE(im.GetBooleanComponent(hand, "menu/click"));
+    im.EndSync();
+    CHECK_FALSE(im.GetBooleanComponent(hand, "menu/click"));
+
+    // The other hand and other buttons are untouched.
+    CHECK_FALSE(im.GetBooleanComponent(InputManager::Hand::Right, "menu/click"));
+    CHECK_FALSE(im.GetBooleanComponent(hand, "a/click"));
+}
+
+TEST_CASE("InputManager — a streamed press released before the next sync still reaches that sync", "[input]")
+{
+    // XR Pilot's press tool sends the button down and up as tracking packets. The runtime reads
+    // only the latest packet once per frame, so a stalled frame would otherwise skip the press.
+    InputManager im;
+    TrackingReceiver receiver;
+    im.SetTrackingReceiver(&receiver);
+    im.SetStreamingClientName("Oculus Quest");
+
+    oxr::protocol::TrackingPacket packet = {};
+    packet.headOrientation[3] = 1.0f;
+    packet.trackingFlags = oxr::protocol::TRACKING_FLAG_RIGHT_CONTROLLER_ACTIVE;
+    packet.rightControllerRot[3] = 1.0f;
+    auto inject = [&](uint32_t buttons, int64_t t) {
+        packet.timestampNs = t;
+        packet.buttonState = buttons;
+        receiver.InjectPacket(reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    };
+
+    inject(oxr::protocol::BUTTON_MENU | oxr::protocol::BUTTON_A, 1'000'000'000);
+    inject(0, 1'100'000'000);
+    im.Update(0.0f);
+    CHECK(im.GetBooleanComponent(InputManager::Hand::Right, "menu/click"));
+    CHECK(im.GetMenuClick());
+    CHECK(im.GetBooleanComponent(InputManager::Hand::Right, "a/click"));
+    CHECK_FALSE(im.GetBooleanComponent(InputManager::Hand::Right, "b/click"));
+    im.EndSync();
+    im.Update(0.0f);
+    CHECK_FALSE(im.GetBooleanComponent(InputManager::Hand::Right, "menu/click"));
+    CHECK_FALSE(im.GetMenuClick());
+    CHECK_FALSE(im.GetBooleanComponent(InputManager::Hand::Right, "a/click"));
+
+    // A button still down in the latest packet stays down after the sync.
+    inject(oxr::protocol::BUTTON_MENU, 1'200'000'000);
+    im.Update(0.0f);
+    im.EndSync();
+    CHECK(im.GetBooleanComponent(InputManager::Hand::Right, "menu/click"));
+    inject(0, 1'300'000'000);
+    im.Update(0.0f);
+    CHECK_FALSE(im.GetBooleanComponent(InputManager::Hand::Right, "menu/click"));
+}
+
 TEST_CASE("TrackingReceiver — predicted pose extrapolates recent motion", "[input]")
 {
     TrackingReceiver receiver;

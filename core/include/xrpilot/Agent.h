@@ -22,12 +22,21 @@ struct Pose
     Rotation rotation;
 };
 
+// The most waypoints a hand's path keeps: makima reads two on each side of the segment it samples.
+constexpr int MaxWaypoints = 8;
+
 struct HandState
 {
     bool present = true;
     // Set when the agent places the hand; otherwise it follows the body (HumanInput's handPose).
     bool manual = false;
+    // The pose sent now. While a path is open it is the makima curve through the waypoints at the
+    // packet's time (advanceHands), so commanded hops reach the runtime as one motion with momentum.
     Pose pose;
+    // The commanded poses with the time the hand arrives at each, rising; the last is the target.
+    Pose pathPoses[MaxWaypoints];
+    double pathTimes[MaxWaypoints] = {};
+    int pathCount = 0;
     float trigger = 0.0f;
     float grip = 0.0f;
     float stick[2] = {0.0f, 0.0f};
@@ -61,6 +70,22 @@ struct AgentState
 
     AgentState();
 };
+
+// A hand moves at this speed between commanded poses, so a 3 cm hop takes 60 ms; a transit is
+// at least one packet and at most MaxTransitS. After RestHoldS with no new pose it is at rest,
+// and the next pose starts a fresh motion from rest instead of carrying momentum.
+constexpr float HandSpeedMps = 0.5f;
+constexpr double MinTransitS = 0.011;
+constexpr double MaxTransitS = 0.6;
+constexpr double RestHoldS = 0.25;
+
+// The agent places a hand: appends a waypoint the hand reaches at nowS plus the transit from the
+// previous one. The pose sent follows the curve (advanceHands), not this target at once.
+void placeHand(AgentState& state, int hand, const Pose& pose, double nowS);
+// Moves every placed hand along its path to nowS. Called before each tracking packet.
+void advanceHands(AgentState& state, double nowS);
+// Seconds on a steady clock, for commands that arrive outside the tracking loop.
+double agentClockS();
 
 // The left eye's half fields of view in radians: the runtime's when it fixes them, else verticalFovDegrees and eyeAspect.
 void eyeHalfFov(const AgentState& state, float& horizontal, float& vertical);

@@ -2,8 +2,10 @@
 
 #include "xrpilot/Agent.h"
 #include "xrpilot/HumanInput.h"
+#include "xrpilot/Makima.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace xrpilot
@@ -49,7 +51,65 @@ void setSeated(AgentState& state, bool seated)
     for (HandState& hand : state.hands)
     {
         if (hand.manual)
+        {
             hand.pose.position[1] += dy;
+            for (int i = 0; i < hand.pathCount; ++i)
+                hand.pathPoses[i].position[1] += dy;
+        }
+    }
+}
+
+double agentClockS()
+{
+    using Clock = std::chrono::steady_clock;
+    return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
+
+void placeHand(AgentState& state, int hand, const Pose& pose, double nowS)
+{
+    HandState& h = state.hands[hand];
+    const bool atRest = h.pathCount == 0 || nowS > h.pathTimes[h.pathCount - 1] + RestHoldS;
+    if (!h.manual || atRest)
+    {
+        // A fresh motion from rest: the hand where it is now, held for a moment, so the curve
+        // starts with no speed.
+        const Pose current = handPose(state, hand);
+        h.pathPoses[0] = current;
+        h.pathTimes[0] = nowS - RestHoldS;
+        h.pathPoses[1] = current;
+        h.pathTimes[1] = nowS;
+        h.pathCount = 2;
+    }
+    if (h.pathCount == MaxWaypoints)
+    {
+        for (int i = 1; i < MaxWaypoints; ++i)
+        {
+            h.pathPoses[i - 1] = h.pathPoses[i];
+            h.pathTimes[i - 1] = h.pathTimes[i];
+        }
+        --h.pathCount;
+    }
+    const Pose& last = h.pathPoses[h.pathCount - 1];
+    const double start = std::max(nowS, h.pathTimes[h.pathCount - 1]);
+    float d = 0.0f;
+    for (int c = 0; c < 3; ++c)
+        d += (pose.position[c] - last.position[c]) * (pose.position[c] - last.position[c]);
+    const double transit = std::clamp(double(std::sqrt(d) / HandSpeedMps), MinTransitS, MaxTransitS);
+    h.pathPoses[h.pathCount] = pose;
+    h.pathTimes[h.pathCount] = start + transit;
+    ++h.pathCount;
+    h.present = true;
+    h.manual = true;
+    advanceHands(state, nowS);
+}
+
+void advanceHands(AgentState& state, double nowS)
+{
+    for (HandState& h : state.hands)
+    {
+        if (!h.manual || h.pathCount < 2)
+            continue;
+        samplePath(h.pathPoses, h.pathTimes, std::size_t(h.pathCount), nowS, h.pose);
     }
 }
 

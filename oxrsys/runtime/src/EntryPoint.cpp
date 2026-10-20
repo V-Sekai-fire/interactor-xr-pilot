@@ -2596,6 +2596,11 @@ static XRAPI_ATTR XrResult XRAPI_CALL OxrSyncActions(
         }
     }
 
+    if (focused)
+    {
+        // Only a focused sync reads the inputs, so only it consumes a latched press.
+        sess->GetInputManager().EndSync();
+    }
     return focused ? XR_SUCCESS : XR_SESSION_NOT_FOCUSED;
 }
 
