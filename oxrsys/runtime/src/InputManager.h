@@ -97,7 +97,10 @@ public:
     // Whether the device behind a binding of this profile is tracking now: automation first, then the
     // streaming client's hands or controllers, then the local default.
     bool IsDeviceActiveForProfile(Hand hand, const std::string& profilePath) const;
+    // A pressed boolean is latched until the next xrSyncActions has read it, so a press and
+    // release that both land inside one stalled frame still reach the app as one press.
     void SetAutomationBoolean(Hand hand, const std::string& componentPath, bool state);
+    void EndSync();
     void SetAutomationFloat(Hand hand, const std::string& componentPath, float state);
     void SetAutomationVector2f(Hand hand, const std::string& componentPath, XrVector2f state);
     void SetAutomationPose(Hand hand, const std::string& componentPath, const XrPosef& pose);
@@ -115,6 +118,7 @@ private:
         bool isActive = false;
         std::string interactionProfile;
         std::unordered_map<std::string, bool> boolStates;
+        std::unordered_map<std::string, bool> boolPendingUntilSync;
         std::unordered_map<std::string, float> floatStates;
         std::unordered_map<std::string, XrVector2f> vector2fStates;
         std::unordered_map<std::string, XrPosef> poseStates;
@@ -153,6 +157,9 @@ private:
     XrVector2f leftThumbstick_ = {0.0f, 0.0f};
     XrVector2f rightThumbstick_ = {0.0f, 0.0f};
     uint32_t buttonState_ = 0;
+    // Streamed button bits seen down since the last focused sync; read with buttonState_.
+    uint32_t buttonsPendingUntilSync_ = 0;
+    uint32_t ButtonsForSync() const { return buttonState_ | buttonsPendingUntilSync_; }
     std::array<bool, 2> streamingControllerActive_ = {false, false};
     std::string streamingClientName_;
     std::string streamingControllerProfile_;

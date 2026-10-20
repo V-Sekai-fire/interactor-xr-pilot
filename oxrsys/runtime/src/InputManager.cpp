@@ -285,6 +285,7 @@ void InputManager::UpdateFromStreaming()
 
     // Apply button/trigger states
     buttonState_ = packet.buttonState;
+    buttonsPendingUntilSync_ |= trackingReceiver_->TakeButtonsPressed();
     leftTrigger_ = packet.leftTrigger;
     rightTrigger_ = packet.rightTrigger;
     leftGripValue_ = packet.leftGrip;
@@ -293,7 +294,7 @@ void InputManager::UpdateFromStreaming()
     rightThumbstick_ = {packet.rightThumbstick[0], packet.rightThumbstick[1]};
     leftGrab_ = packet.leftGrip > 0.5f;
     rightGrab_ = packet.rightGrip > 0.5f;
-    menuClick_ = (packet.buttonState & oxr::protocol::BUTTON_MENU) != 0;
+    menuClick_ = (ButtonsForSync() & oxr::protocol::BUTTON_MENU) != 0;
     streamingIpd_ = packet.ipd;
     streamingFov_[0] = packet.eyeFov[0];
     streamingFov_[1] = packet.eyeFov[1];
@@ -568,7 +569,22 @@ void InputManager::SetAutomationInteractionProfile(Hand hand, const std::string&
 
 void InputManager::SetAutomationBoolean(Hand hand, const std::string& componentPath, bool state)
 {
-    GetAutomationState(hand).boolStates[componentPath] = state;
+    auto& automation = GetAutomationState(hand);
+    automation.boolStates[componentPath] = state;
+    if (state)
+    {
+        automation.boolPendingUntilSync[componentPath] = true;
+    }
+}
+
+void InputManager::EndSync()
+{
+    for (Hand hand : {Hand::Left, Hand::Right})
+    {
+        GetAutomationState(hand).boolPendingUntilSync.clear();
+    }
+    buttonsPendingUntilSync_ = 0;
+    menuClick_ = (ButtonsForSync() & oxr::protocol::BUTTON_MENU) != 0;
 }
 
 void InputManager::SetAutomationFloat(Hand hand, const std::string& componentPath, float state)
@@ -706,7 +722,7 @@ bool InputManager::GetButtonClick(Hand hand, const std::string& componentPath) c
     auto boolIt = automation.boolStates.find(componentPath);
     if (boolIt != automation.boolStates.end())
     {
-        return boolIt->second;
+        return boolIt->second || automation.boolPendingUntilSync.count(componentPath) != 0;
     }
 
     if (componentPath == "menu/click")
@@ -734,7 +750,7 @@ bool InputManager::GetButtonClick(Hand hand, const std::string& componentPath) c
         uint32_t mask = (hand == Hand::Left)
                             ? oxr::protocol::BUTTON_LEFT_THUMBSTICK
                             : oxr::protocol::BUTTON_RIGHT_THUMBSTICK;
-        return (buttonState_ & mask) != 0;
+        return (ButtonsForSync() & mask) != 0;
     }
     if (componentPath == "thumbstick/touch" || componentPath == "thumbrest/touch")
     {
@@ -743,19 +759,19 @@ bool InputManager::GetButtonClick(Hand hand, const std::string& componentPath) c
     }
     if (componentPath == "a/click" || componentPath == "a/touch")
     {
-        return hand == Hand::Right && (buttonState_ & oxr::protocol::BUTTON_A) != 0;
+        return hand == Hand::Right && (ButtonsForSync() & oxr::protocol::BUTTON_A) != 0;
     }
     if (componentPath == "b/click" || componentPath == "b/touch")
     {
-        return hand == Hand::Right && (buttonState_ & oxr::protocol::BUTTON_B) != 0;
+        return hand == Hand::Right && (ButtonsForSync() & oxr::protocol::BUTTON_B) != 0;
     }
     if (componentPath == "x/click" || componentPath == "x/touch")
     {
-        return hand == Hand::Left && (buttonState_ & oxr::protocol::BUTTON_X) != 0;
+        return hand == Hand::Left && (ButtonsForSync() & oxr::protocol::BUTTON_X) != 0;
     }
     if (componentPath == "y/click" || componentPath == "y/touch")
     {
-        return hand == Hand::Left && (buttonState_ & oxr::protocol::BUTTON_Y) != 0;
+        return hand == Hand::Left && (ButtonsForSync() & oxr::protocol::BUTTON_Y) != 0;
     }
     if (componentPath == "pinch_ext/ready_ext" || componentPath == "grasp_ext/ready_ext" ||
         componentPath == "aim_activate_ext/ready_ext")
@@ -778,7 +794,7 @@ bool InputManager::GetBooleanComponentForProfile(Hand hand, const std::string& c
     auto boolIt = automation.boolStates.find(componentPath);
     if (boolIt != automation.boolStates.end())
     {
-        return boolIt->second;
+        return boolIt->second || automation.boolPendingUntilSync.count(componentPath) != 0;
     }
 
     const bool handInteractionProfile = IsHandInteractionProfile(profilePath);
@@ -803,11 +819,11 @@ bool InputManager::GetBooleanComponentForProfile(Hand hand, const std::string& c
     {
         if (componentPath == "a/click" || componentPath == "a/touch")
         {
-            return (buttonState_ & oxr::protocol::BUTTON_X) != 0;
+            return (ButtonsForSync() & oxr::protocol::BUTTON_X) != 0;
         }
         if (componentPath == "b/click" || componentPath == "b/touch")
         {
-            return (buttonState_ & oxr::protocol::BUTTON_Y) != 0;
+            return (ButtonsForSync() & oxr::protocol::BUTTON_Y) != 0;
         }
     }
 
