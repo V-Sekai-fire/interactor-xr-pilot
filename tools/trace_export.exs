@@ -5,11 +5,13 @@
 # wraps each codestream, byte for byte, in a JPEG XL container (ISO/IEC 18181-2) with an XMP box:
 #
 #   from CITATION.cff   dc:title, dc:creator, dc:rights and cc:license (SPDX), dc:relation, dc:identifier
-#   from the store      dc:source (store, session, span, role), dc:description (the tool and its
-#                       arguments), xmp:CreateDate (the span's begin for view_before, its end for
-#                       view_after)
+#   from the store      dc:source (store, session and span UUIDs, role), dc:description (the tool
+#                       and its arguments), xmp:CreateDate (the span's begin for view_before, its
+#                       end for view_after), xmpMM:DocumentID and InstanceID (urn:uuid: of the view)
 #
-# The pixels are not re-encoded. Works on both schema-4 stores (cua-tracer and XR Pilot).
+# Each file is named by its view's UUIDv7.
+#
+# The pixels are not re-encoded. Works on both schema-5 stores (cua-tracer and XR Pilot).
 #
 #   elixir tools/trace_export.exs <traces.sqlite> <out dir> [CITATION.cff]
 #
@@ -70,9 +72,9 @@ defmodule TraceExport do
   # Every JPEG XL view of a decider example, with what its XMP needs.
   def views(store) do
     sql = """
-    SELECT s.session_id, se.started_at, i.span_id, r.name AS role, s.started,
+    SELECT se.uuid AS session_uuid, se.started_at, s.uuid AS span_uuid, r.name AS role, s.started,
            (SELECT ended FROM span_end WHERE span_id = s.span_id) AS ended,
-           t.name || COALESCE(' ' || d.detail, '') AS state, hex(a.bytes) AS hex
+           t.name || COALESCE(' ' || d.detail, '') AS state, a.uuid AS asset_uuid, hex(a.bytes) AS hex
     FROM decider_input i
     JOIN input_role r USING (input_role_id)
     JOIN asset a ON a.asset_id = i.asset_id
@@ -81,7 +83,7 @@ defmodule TraceExport do
     JOIN session se ON se.session_id = s.session_id
     JOIN tool t ON t.tool_id = s.tool_id
     LEFT JOIN span_detail d ON d.span_id = s.span_id
-    ORDER BY i.span_id, r.name
+    ORDER BY s.uuid, r.name
     """
 
     case System.find_executable("sqlite3") do
@@ -104,7 +106,7 @@ defmodule TraceExport do
     with <<0xFF, 0x0A, _::binary>> <- codestream,
          {:ok, created} <- civil_plus(row["started_at"], at) do
       xmp = xmp(citation, row, Path.basename(store), created)
-      name = "#{row["session_id"]}-#{row["span_id"]}-#{row["role"]}.jxl"
+      name = "#{row["asset_uuid"]}.jxl"
       path = Path.join(out, name)
 
       with {:ok, xml} <- box("xml ", xmp),
@@ -114,7 +116,7 @@ defmodule TraceExport do
       end
     else
       {:error, _} = error -> error
-      _ -> {:error, {:not_a_jxl_codestream, row["span_id"], row["role"]}}
+      _ -> {:error, {:not_a_jxl_codestream, row["span_uuid"], row["role"]}}
     end
   end
 
@@ -151,7 +153,7 @@ defmodule TraceExport do
   defp int(digits), do: String.to_integer(digits)
 
   def xmp(c, row, store, created) do
-    source = "#{store} session #{row["session_id"]} span #{row["span_id"]} #{row["role"]}"
+    source = "#{store} session #{row["session_uuid"]} span #{row["span_uuid"]} #{row["role"]}"
     creators = Enum.map_join(Map.get(c, :creators, []), "", &"<rdf:li>#{esc(&1)}</rdf:li>")
 
     fields =
@@ -165,6 +167,8 @@ defmodule TraceExport do
         "<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(row["state"])}</rdf:li></rdf:Alt></dc:description>",
         c[:relation] && "<dc:relation><rdf:Bag><rdf:li>#{esc(c.relation)}</rdf:li></rdf:Bag></dc:relation>",
         c[:identifier] && "<dc:identifier>doi:#{esc(c.identifier)}</dc:identifier>",
+        "<xmpMM:DocumentID>urn:uuid:#{row["asset_uuid"]}</xmpMM:DocumentID>",
+        "<xmpMM:InstanceID>urn:uuid:#{row["asset_uuid"]}</xmpMM:InstanceID>",
         created && "<xmp:CreateDate>#{created}</xmp:CreateDate>"
       ]
       |> Enum.filter(&is_binary/1)
@@ -174,7 +178,8 @@ defmodule TraceExport do
     <?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\
     <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
     <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" \
-    xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:cc="http://creativecommons.org/ns#">\
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/" \
+    xmlns:cc="http://creativecommons.org/ns#">\
     #{fields}\
     </rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="r"?>\
     """

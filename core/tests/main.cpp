@@ -21,6 +21,7 @@
 #include "xrpilot/TraceStore.h"
 #include "xrpilot/UiTrace.h"
 
+#include <set>
 #include <sqlite3.h>
 
 #include <oxrsys/protocol/FecCodec.h>
@@ -1151,6 +1152,37 @@ const std::map<std::string, std::function<void()>> cases = {
          check(store.framesNotKept() == 1 && count("SELECT count(*) FROM asset") == 8,
                "control: a frame without whole pixels is counted, not kept");
          check(nullColumns(db).empty(), "no column holds a NULL");
+         // Every session, span and asset is named by a distinct UUIDv7 timed to its row.
+         std::vector<std::pair<std::string, int64_t>> named;
+         sqlite3_stmt* st = nullptr;
+         sqlite3_prepare_v2(db,
+                            "SELECT uuid, 1700000000000 FROM session UNION ALL "
+                            "SELECT uuid, 1700000000000 + CAST(round(1000 * CAST(substr(started, 3, length(started) - 3) AS REAL)) AS INTEGER) "
+                            "FROM span UNION ALL SELECT uuid, -1 FROM asset",
+                            -1, &st, nullptr);
+         while (sqlite3_step(st) == SQLITE_ROW)
+             named.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(st, 0)), sqlite3_column_int64(st, 1));
+         sqlite3_finalize(st);
+         const auto v7 = [](const std::string& u) {
+             return u.size() == 36 && u[8] == '-' && u[13] == '-' && u[14] == '7' && u[18] == '-' && u[23] == '-' &&
+                    std::string("89ab").find(u[19]) != std::string::npos;
+         };
+         const auto ms = [](const std::string& u) { return int64_t(std::stoll(u.substr(0, 8) + u.substr(9, 4), nullptr, 16)); };
+         std::set<std::string> distinct;
+         bool allV7 = true, timed = true;
+         for (const auto& [u, at] : named)
+         {
+             distinct.insert(u);
+             allV7 = allV7 && v7(u);
+             if (at >= 0)
+                 timed = timed && ms(u) == at;
+         }
+         const int64_t rows = count("SELECT (SELECT count(*) FROM session) + (SELECT count(*) FROM span) + "
+                                    "(SELECT count(*) FROM asset)");
+         check(rows > 8 && int64_t(named.size()) == rows && distinct.size() == named.size() && allV7,
+               "every session, span and asset has a distinct UUIDv7");
+         check(timed, "each session's and span's UUIDv7 time is its moment");
+         check(!v7("0189a5b0-0000-4000-8000-000000000000"), "control: a v4 UUID is not taken for a v7");
      }},
     {"traces.rectgtn-time",
      [] {
