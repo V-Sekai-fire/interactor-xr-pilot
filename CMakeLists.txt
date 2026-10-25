@@ -192,11 +192,25 @@ foreach(name IN ITEMS witness.unit-concrete-witnesses witness.euler-orthonormal 
 endforeach()
 
 # xr-pilot-frame: the client for a standalone Linux headset such as the Steam Frame, built on the headset.
+# The app and the frame client decode the stream with PyroWave's Vulkan library. On Apple the
+# runtime's oxrsys_pyrowave is the Metal port, so they get their own Vulkan build, which runs on
+# MoltenVK.
+if(APPLE)
+    set(XRPILOT_PYROWAVE_VK xrpilot_pyrowave_vk)
+else()
+    set(XRPILOT_PYROWAVE_VK oxrsys_pyrowave)
+endif()
+macro(xrpilot_pyrowave_vk)
+    if(NOT TARGET ${XRPILOT_PYROWAVE_VK})
+        set(OXRSYS_PYROWAVE_TARGET ${XRPILOT_PYROWAVE_VK})
+        include(${XRPILOT_OXRSYS_DIR}/cmake/PyroWave.cmake)
+        unset(OXRSYS_PYROWAVE_TARGET)
+    endif()
+endmacro()
+
 option(XRPILOT_BUILD_FRAME "Build xr-pilot-frame, the OpenXR client for a standalone Linux headset" OFF)
 if(XRPILOT_BUILD_FRAME)
-    if(NOT TARGET oxrsys_pyrowave)
-        include(${XRPILOT_OXRSYS_DIR}/cmake/PyroWave.cmake)
-    endif()
+    xrpilot_pyrowave_vk()
     include(FetchContent)
     if(NOT TARGET openxr_loader)
         FetchContent_Declare(OpenXR GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
@@ -207,7 +221,7 @@ if(XRPILOT_BUILD_FRAME)
     if(NOT TARGET xrpilot_gpu)
         add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
         target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
-        target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
+        target_link_libraries(xrpilot_gpu PUBLIC ${XRPILOT_PYROWAVE_VK})
         target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
     endif()
     add_executable(xr-pilot-frame frame/main.cpp)
@@ -219,10 +233,8 @@ if(NOT XRPILOT_BUILD_APP)
     return()
 endif()
 
-# The app shares the runtime's PyroWave (MIT) and Granite subset.
-if(NOT TARGET oxrsys_pyrowave)
-    include(${XRPILOT_OXRSYS_DIR}/cmake/PyroWave.cmake)
-endif()
+# The app shares the runtime's PyroWave (MIT) and Granite subset (its own Vulkan build on Apple).
+xrpilot_pyrowave_vk()
 include(FetchContent)
 FetchContent_GetProperties(granite)
 
@@ -236,7 +248,7 @@ add_subdirectory(third_party/panelspun)
 if(NOT TARGET xrpilot_gpu)
     add_library(xrpilot_gpu STATIC core/src/GpuDecoder.cpp)
     target_include_directories(xrpilot_gpu PUBLIC core/include PRIVATE ${XRPILOT_OXRSYS_DIR}/kernels/simulator/spirv)
-    target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
+    target_link_libraries(xrpilot_gpu PUBLIC ${XRPILOT_PYROWAVE_VK})
 endif()
 
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
