@@ -59,12 +59,32 @@ bool VulkanPresenter::init(SDL_Window* window, bool validation, bool allFeatures
         exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
+    // MoltenVK is a portability driver: the loader hides it unless the instance asks for it.
+    VkInstanceCreateFlags instanceFlags = 0;
+    {
+        PFN_vkEnumerateInstanceExtensionProperties enumerateExts =
+            reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+                ctx_.getInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties"));
+        std::uint32_t extCount = 0;
+        if (enumerateExts && enumerateExts(nullptr, &extCount, nullptr) == VK_SUCCESS) {
+            std::vector<VkExtensionProperties> have(extCount);
+            enumerateExts(nullptr, &extCount, have.data());
+            for (const VkExtensionProperties& p : have) {
+                if (std::strcmp(p.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
+                    exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+                    instanceFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+                }
+            }
+        }
+    }
+
     VkApplicationInfo& app = appInfo_;
     app.pApplicationName = "panelspun";
     app.pEngineName = "panelspun";
     app.apiVersion = allFeatures ? VK_API_VERSION_1_3 : VK_API_VERSION_1_1;
     VkInstanceCreateInfo& ici = instanceInfo_;
     ici.pApplicationInfo = &app;
+    ici.flags = instanceFlags;
     ici.enabledExtensionCount = static_cast<std::uint32_t>(exts.size());
     ici.ppEnabledExtensionNames = exts.data();
     ici.enabledLayerCount = static_cast<std::uint32_t>(layers.size());
@@ -133,6 +153,9 @@ bool VulkanPresenter::init(SDL_Window* window, bool validation, bool allFeatures
     vkEnumerateDeviceExtensionProperties(ctx_.physicalDevice, nullptr, &available, props.data());
     extensionNames_ = deviceExtensions;
     extensionNames_.insert(extensionNames_.begin(), VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    // A portability device (MoltenVK) must have VK_KHR_portability_subset enabled when it lists it.
+    for (const VkExtensionProperties& p : props)
+        if (std::strcmp(p.extensionName, "VK_KHR_portability_subset") == 0) extensionNames_.push_back(p.extensionName);
     for (const std::string& name : extensionNames_) {
         bool found = false;
         for (const VkExtensionProperties& p : props) found = found || name == p.extensionName;
