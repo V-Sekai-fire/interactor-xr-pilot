@@ -23,6 +23,7 @@
 
 #include <set>
 #include <sqlite3.h>
+#include <webp/decode.h>
 
 #include <oxrsys/protocol/FecCodec.h>
 
@@ -1100,6 +1101,59 @@ const std::map<std::string, std::function<void()>> cases = {
          slow.begin("b", "look", "{}", 10 + SpanDuckMs + 1);
          check(slow.recent().size() == 2, "control: the same tool SpanDuckMs after the last ended gets its own span");
      }},
+    {"traces.webp-round-trip",
+     [] {
+         // A frame that is not flat: a gradient with a noisy channel, so a lossy or reordered write shows.
+         TraceFrame f;
+         f.width = 37;
+         f.height = 23;
+         f.rgba.resize(size_t(f.width) * size_t(f.height) * 4);
+         uint32_t seed = 12345;
+         for (size_t i = 0; i < size_t(f.width) * size_t(f.height); ++i)
+         {
+             seed = seed * 1664525u + 1013904223u;
+             f.rgba[i * 4 + 0] = uint8_t(i * 7);
+             f.rgba[i * 4 + 1] = uint8_t(seed >> 24);
+             f.rgba[i * 4 + 2] = uint8_t(255 - i);
+             f.rgba[i * 4 + 3] = 255;
+         }
+         f.pose.assign(TracePoseFloats, 0.0f);
+         f.sequence = 1;
+         TraceStore store;
+         std::string error;
+         check(store.open(":memory:", 1700000000000, 5000, &error), "a store opens in memory");
+         store.begin("1", "look", "", 5000);
+         store.frame(f);
+         store.flush();
+         sqlite3_stmt* st = nullptr;
+         check(sqlite3_prepare_v2(store.db(),
+                                  "SELECT bytes FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'webp'", -1, &st,
+                                  nullptr) == SQLITE_OK,
+               "the stored WebP is queried");
+         check(sqlite3_step(st) == SQLITE_ROW, "one frame is stored as WebP");
+         const uint8_t* blob = static_cast<const uint8_t*>(sqlite3_column_blob(st, 0));
+         const std::vector<uint8_t> bytes(blob, blob + sqlite3_column_bytes(st, 0));
+         sqlite3_finalize(st);
+         int w = 0;
+         int h = 0;
+         uint8_t* rgb = WebPDecodeRGB(bytes.data(), bytes.size(), &w, &h);
+         check(rgb != nullptr && w == f.width && h == f.height, "libwebp decodes it at the frame's size");
+         bool same = rgb != nullptr;
+         for (size_t i = 0; same && i < size_t(f.width) * size_t(f.height); ++i)
+            same = std::memcmp(&rgb[i * 3], &f.rgba[i * 4], 3) == 0;
+         check(same, "the decoded pixels are bit-exact");
+         // Planted control: one pixel changed by one level must be caught by the same comparison.
+         bool planted = rgb != nullptr;
+         for (size_t i = 0; planted && i < size_t(f.width) * size_t(f.height); ++i)
+         {
+             uint8_t px[3] = {f.rgba[i * 4], f.rgba[i * 4 + 1], f.rgba[i * 4 + 2]};
+             if (i == 100)
+                 px[1] ^= 1;
+             planted = std::memcmp(&rgb[i * 3], px, 3) == 0;
+         }
+         check(!planted, "control: one changed pixel is not bit-exact");
+         WebPFree(rgb);
+     }},
     {"traces.etnf-decider-rows",
      [] {
          TraceStore store;
@@ -1153,15 +1207,22 @@ const std::map<std::string, std::function<void()>> cases = {
          check(count("SELECT count(*) FROM decider_example e JOIN span s USING (span_id) JOIN tool t USING (tool_id) "
                      "WHERE t.name = 'reach'") == 1,
                "the example carries the call as its state");
-         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'jxl'") == 2,
-               "frames are kept as JPEG XL");
-         // A JPEG XL bare codestream starts with FF 0A (ISO/IEC 18181-1).
-         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) JOIN asset_extent USING (asset_id) "
-                     "WHERE name = 'jxl' AND hex(substr(bytes, 1, 2)) = 'FF0A' AND width = 32 AND height = 16") == 2,
-               "each frame is a JPEG XL codestream at the frame's own size");
-         check(count("SELECT count(DISTINCT bytes) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'jxl'") == 2,
-               "control: the dark and the light frame encode differently");
-         check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
+         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'webp'") == 2,
+              "frames are kept as lossless WebP");
+        check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'jxl'") == 0,
+              "control: new frames are not written as JPEG XL");
+        // A WebP file is a RIFF container: 'RIFF', a size, 'WEBP', then a 'VP8L' (lossless) chunk (RFC 9649).
+        check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) JOIN asset_extent USING (asset_id) "
+                    "WHERE name = 'webp' AND hex(substr(bytes, 1, 4)) = '52494646' AND hex(substr(bytes, 9, 8)) = '5745425056503820' "
+                    "AND width = 32 AND height = 16") == 0,
+              "control: a frame is lossless VP8L, not lossy VP8 ");
+        check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) JOIN asset_extent USING (asset_id) "
+                    "WHERE name = 'webp' AND hex(substr(bytes, 1, 4)) = '52494646' AND hex(substr(bytes, 9, 8)) = '574542505650384C' "
+                    "AND width = 32 AND height = 16") == 2,
+              "each frame is a lossless WebP at the frame's own size");
+        check(count("SELECT count(DISTINCT bytes) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'webp'") == 2,
+              "control: the dark and the light frame encode differently");
+        check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
          // A span that begins and ends on one frame keeps waiting until a newer frame arrives.
          store.begin("5", "wait", "", 5050);
          store.end("5", true, 5051);

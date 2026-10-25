@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 #
-# Exports a trace store's views as delivery files. The store keeps each view as a bare JPEG XL
-# codestream with no metadata (the database carries it); a delivered file must carry its own. This
-# wraps each codestream, byte for byte, in a JPEG XL container (ISO/IEC 18181-2) with an XMP box:
+# Exports a trace store's views as delivery files. The store keeps each view with no metadata (the
+# database carries it); a delivered file must carry its own. New stores hold lossless WebP; stores
+# written earlier hold a bare JPEG XL codestream, and both are read. A WebP view is wrapped, byte
+# for byte, in an extended RIFF container (VP8X, its VP8L chunk, an XMP chunk); a JPEG XL
+# codestream in a JPEG XL container (ISO/IEC 18181-2) with an XMP box:
 #
 #   from CITATION.cff   dc:title, dc:creator, dc:rights and cc:license (SPDX), dc:relation, dc:identifier
 #   from the store      dc:source (store, session and span UUIDs, role), dc:description (the tool
@@ -69,16 +71,16 @@ defmodule TraceExport do
   defp author(%{"name" => name}), do: name
   defp author(a), do: String.trim("#{a["given-names"]} #{a["family-names"]}")
 
-  # Every JPEG XL view of a decider example, with what its XMP needs.
+  # Every view, WebP or JPEG XL, of a decider example, with what its XMP needs.
   def views(store) do
     sql = """
     SELECT se.uuid AS session_uuid, se.started_at, s.uuid AS span_uuid, r.name AS role, s.started,
            (SELECT ended FROM span_end WHERE span_id = s.span_id) AS ended,
-           t.name || COALESCE(' ' || d.detail, '') AS state, a.uuid AS asset_uuid, hex(a.bytes) AS hex
+           t.name || COALESCE(' ' || d.detail, '') AS state, a.uuid AS asset_uuid, k.name AS kind, hex(a.bytes) AS hex
     FROM decider_input i
     JOIN input_role r USING (input_role_id)
     JOIN asset a ON a.asset_id = i.asset_id
-    JOIN asset_kind k ON k.asset_kind_id = a.asset_kind_id AND k.name = 'jxl'
+    JOIN asset_kind k ON k.asset_kind_id = a.asset_kind_id AND k.name IN ('webp', 'jxl')
     JOIN span s ON s.span_id = i.span_id
     JOIN session se ON se.session_id = s.session_id
     JOIN tool t ON t.tool_id = s.tool_id
@@ -100,25 +102,41 @@ defmodule TraceExport do
   end
 
   def export(row, citation, store, out) do
-    codestream = Base.decode16!(row["hex"])
+    bytes = Base.decode16!(row["hex"])
     at = if row["role"] == "view_after", do: row["ended"], else: row["started"]
 
-    with <<0xFF, 0x0A, _::binary>> <- codestream,
-         {:ok, created} <- civil_plus(row["started_at"], at) do
-      xmp = xmp(citation, row, Path.basename(store), created)
-      name = "#{row["asset_uuid"]}.jxl"
-      path = Path.join(out, name)
-
-      with {:ok, xml} <- box("xml ", xmp),
-           {:ok, jxlc} <- box("jxlc", codestream),
-           :ok <- File.write(path, [@signature, @ftyp, xml, jxlc]) do
-        {:ok, path}
-      end
-    else
-      {:error, _} = error -> error
-      _ -> {:error, {:not_a_jxl_codestream, row["span_uuid"], row["role"]}}
+    with {:ok, created} <- civil_plus(row["started_at"], at),
+         {:ok, data} <- wrap(row, bytes, xmp(citation, row, Path.basename(store), created)),
+         path = Path.join(out, "#{row["asset_uuid"]}.#{row["kind"]}"),
+         :ok <- File.write(path, data) do
+      {:ok, path}
     end
   end
+
+  # The stored view with the XMP packet, in its format's container.
+  def wrap(%{"kind" => "jxl"}, <<0xFF, 0x0A, _::binary>> = codestream, xmp) do
+    with {:ok, xml} <- box("xml ", xmp), {:ok, jxlc} <- box("jxlc", codestream) do
+      {:ok, [@signature, @ftyp, xml, jxlc]}
+    end
+  end
+
+  # Lossless WebP (RFC 9649): RIFF, WEBP, one VP8L chunk. VP8X adds the XMP flag and the canvas.
+  def wrap(
+        %{"kind" => "webp"},
+        <<"RIFF", _::little-32, "WEBP", "VP8L", len::little-32, 0x2F, dims::little-32, _::binary>> = riff,
+        xmp
+      ) do
+    width = Bitwise.band(dims, 0x3FFF) + 1
+    height = Bitwise.band(Bitwise.bsr(dims, 14), 0x3FFF) + 1
+    vp8l = binary_part(riff, 12, len + 8 + rem(len, 2))
+    vp8x = <<"VP8X", 10::little-32, 0x04, 0::24, width - 1::little-24, height - 1::little-24>>
+    pad = if rem(byte_size(xmp), 2) == 1, do: <<0>>, else: <<>>
+    chunk = [<<"XMP ", byte_size(xmp)::little-32>>, xmp, pad]
+    body = ["WEBP", vp8x, vp8l, chunk]
+    {:ok, [<<"RIFF", IO.iodata_length(body)::little-32>>, body]}
+  end
+
+  def wrap(row, _, _), do: {:error, {:not_a_view, row["kind"], row["span_uuid"], row["role"]}}
 
   defp box(type, payload) when byte_size(payload) + 8 <= 0xFFFFFFFF,
     do: {:ok, [<<byte_size(payload) + 8::32>>, type, payload]}
@@ -158,7 +176,7 @@ defmodule TraceExport do
 
     fields =
       [
-        "<dc:format>image/jxl</dc:format>",
+        "<dc:format>image/#{row["kind"]}</dc:format>",
         c[:title] && "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(c.title)}</rdf:li></rdf:Alt></dc:title>",
         creators != "" && "<dc:creator><rdf:Seq>#{creators}</rdf:Seq></dc:creator>",
         c[:license] && "<dc:rights><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(c.license)}</rdf:li></rdf:Alt></dc:rights>",

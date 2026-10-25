@@ -2,7 +2,7 @@
 
 #include "xrpilot/TraceStore.h"
 
-#include "lib/jxl/enc_fast_lossless.h"
+#include <webp/encode.h>
 
 #include <sqlite3.h>
 
@@ -202,22 +202,36 @@ std::string uuid7(int64_t unixMs)
     return out;
 }
 
-// The frame as lossless JPEG XL (ISO/IEC 18181): a bare codestream of its RGB, tagged sRGB, from libjxl's
-// fast lossless encoder at effort 1, the speed a 16-frame-a-second trace keeps up with on one thread.
-// Empty when it does not encode.
-std::vector<uint8_t> jxlLossless(const TraceFrame& f)
+// The frame as lossless WebP (RFC 9649, VP8L): its 8-bit sRGB RGB, exactly, from libwebp at method 0, the
+// speed a 16-frame-a-second trace keeps up with on one thread. Empty when it does not encode.
+std::vector<uint8_t> webpLossless(const TraceFrame& f)
 {
     const size_t pixels = size_t(f.width) * size_t(f.height);
+    if (f.width <= 0 || f.height <= 0 || f.rgba.size() != pixels * 4)
+        return {};
     std::vector<uint8_t> rgb(pixels * 3);
     for (size_t i = 0; i < pixels; ++i)
         std::memcpy(&rgb[i * 3], &f.rgba[i * 4], 3);
-    unsigned char* out = nullptr;
-    const size_t size = JxlFastLosslessEncode(rgb.data(), size_t(f.width), size_t(f.width) * 3, size_t(f.height), 3, 8,
-                                              0, 1, &out, nullptr, nullptr);
+    WebPConfig config;
+    WebPPicture pic;
+    if (!WebPConfigInit(&config) || !WebPPictureInit(&pic))
+        return {};
+    config.lossless = 1;
+    config.exact = 1;
+    config.method = 0;
+    config.quality = 0;
+    pic.use_argb = 1;
+    pic.width = f.width;
+    pic.height = f.height;
+    WebPMemoryWriter writer;
+    WebPMemoryWriterInit(&writer);
+    pic.writer = WebPMemoryWrite;
+    pic.custom_ptr = &writer;
     std::vector<uint8_t> bytes;
-    if (out != nullptr && size > 0)
-        bytes.assign(out, out + size);
-    std::free(out);
+    if (WebPPictureImportRGB(&pic, rgb.data(), f.width * 3) && WebPEncode(&config, &pic))
+        bytes.assign(writer.mem, writer.mem + writer.size);
+    WebPMemoryWriterClear(&writer);
+    WebPPictureFree(&pic);
     return bytes;
 }
 
@@ -561,7 +575,7 @@ void TraceStore::write(const Job& job)
     const TraceFrame& f = job.frame;
     const std::vector<uint8_t> small = thumb(f);
     const bool posed = f.pose.size() == TracePoseFloats;
-    const std::vector<uint8_t> encoded = jxlLossless(f);
+    const std::vector<uint8_t> encoded = webpLossless(f);
     if (encoded.empty())
     {
         ++notKept_;
@@ -570,7 +584,7 @@ void TraceStore::write(const Job& job)
     exec("BEGIN");
     Statement(db_, "INSERT INTO asset (uuid, asset_kind_id, bytes) VALUES (?, ?, ?)")
         .bind(1, uuid7(job.wallMs))
-        .bind(2, intern("asset_kind", "jxl"))
+        .bind(2, intern("asset_kind", "webp"))
         .blob(3, encoded)
         .run();
     const int64_t view = sqlite3_last_insert_rowid(db_);
