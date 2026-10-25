@@ -1073,9 +1073,6 @@ const std::map<std::string, std::function<void()>> cases = {
          dark.width = 32;
          dark.height = 16;
          dark.rgba.assign(32 * 16 * 4, 0);
-         dark.encoded.assign(64, uint8_t(1));
-         dark.encodedWidth = 64;
-         dark.encodedHeight = 16;
          dark.pose.assign(TracePoseFloats, 0.0f);
          dark.sequence = 1;
          TraceFrame light = dark;
@@ -1120,8 +1117,14 @@ const std::map<std::string, std::function<void()>> cases = {
          check(count("SELECT count(*) FROM decider_example e JOIN span s USING (span_id) JOIN tool t USING (tool_id) "
                      "WHERE t.name = 'reach'") == 1,
                "the example carries the call as its state");
-         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'pyrowave'") == 2,
-               "frames are kept as streamed");
+         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'jxl'") == 2,
+               "frames are kept as JPEG XL");
+         // A JPEG XL bare codestream starts with FF 0A (ISO/IEC 18181-1).
+         check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) JOIN asset_extent USING (asset_id) "
+                     "WHERE name = 'jxl' AND hex(substr(bytes, 1, 2)) = 'FF0A' AND width = 32 AND height = 16") == 2,
+               "each frame is a JPEG XL codestream at the frame's own size");
+         check(count("SELECT count(DISTINCT bytes) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'jxl'") == 2,
+               "control: the dark and the light frame encode differently");
          check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
          // A span that begins and ends on one frame keeps waiting until a newer frame arrives.
          store.begin("5", "wait", "", 5050);
@@ -1141,12 +1144,12 @@ const std::map<std::string, std::function<void()>> cases = {
                      "AND b.asset_id = a.asset_id") == 0,
                "no span's before and after are the same frame");
          TraceFrame bare = dark;
-         bare.encoded.clear();
+         bare.rgba.resize(bare.rgba.size() - 4);
          store.begin("4", "look", "", 5040);
          store.frame(bare);
          store.flush();
-         check(store.framesWithoutStream() == 1 && count("SELECT count(*) FROM asset") == 8,
-               "control: a frame without stream bytes is counted, not kept");
+         check(store.framesNotKept() == 1 && count("SELECT count(*) FROM asset") == 8,
+               "control: a frame without whole pixels is counted, not kept");
          check(nullColumns(db).empty(), "no column holds a NULL");
      }},
     {"traces.rectgtn-time",

@@ -201,7 +201,6 @@ public:
             {
                 client_.reportLatency(*next, start, nowNs());
                 consecutiveErrors_ = 0;
-                lastStreamed_ = std::move(next->nalUnit);
                 if (++shared_.decoded == 90 && !shared_.snapshotPath.empty())
                     writeSnapshot(shared_.snapshotPath);
             }
@@ -285,11 +284,9 @@ private:
         if (!shared_.traces.wantsFrame())
             return;
         TraceFrame frame;
-        if (!decoder_.snapshotLeftEye(frame.rgba, frame.width, frame.height))
+        if (!decoder_.snapshotFrame(frame.rgba, frame.width, frame.height))
             return;
         frame.sequence = shared_.decoded.load();
-        if (GpuDecoder::frameSize(lastStreamed_.data(), lastStreamed_.size(), frame.encodedWidth, frame.encodedHeight))
-            frame.encoded = lastStreamed_;
         const AgentState agent = client_.agent();
         for (const Pose* pose : {&agent.head, &agent.hands[0].pose, &agent.hands[1].pose})
         {
@@ -322,7 +319,6 @@ private:
     Shared& shared_;
     Window& window_;
     GpuDecoder decoder_;
-    std::vector<uint8_t> lastStreamed_; // the frame on screen, as the runtime streamed it
     bool ready_ = false;
     bool failed_ = false;
     std::set<int> keys_;

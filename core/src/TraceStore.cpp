@@ -2,6 +2,8 @@
 
 #include "xrpilot/TraceStore.h"
 
+#include "lib/jxl/enc_fast_lossless.h"
+
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -158,6 +160,25 @@ public:
 private:
     sqlite3_stmt* stmt_ = nullptr;
 };
+
+// The frame as lossless JPEG XL (ISO/IEC 18181): a bare codestream of its RGB, tagged sRGB, from libjxl's
+// fast lossless encoder at effort 1, the speed a 16-frame-a-second trace keeps up with on one thread.
+// Empty when it does not encode.
+std::vector<uint8_t> jxlLossless(const TraceFrame& f)
+{
+    const size_t pixels = size_t(f.width) * size_t(f.height);
+    std::vector<uint8_t> rgb(pixels * 3);
+    for (size_t i = 0; i < pixels; ++i)
+        std::memcpy(&rgb[i * 3], &f.rgba[i * 4], 3);
+    unsigned char* out = nullptr;
+    const size_t size = JxlFastLosslessEncode(rgb.data(), size_t(f.width), size_t(f.width) * 3, size_t(f.height), 3, 8,
+                                              0, 1, &out, nullptr, nullptr);
+    std::vector<uint8_t> bytes;
+    if (out != nullptr && size > 0)
+        bytes.assign(out, out + size);
+    std::free(out);
+    return bytes;
+}
 
 // One gray value per 8x8 block: what a span's metric compares.
 std::vector<uint8_t> thumb(const TraceFrame& f)
@@ -420,9 +441,9 @@ void TraceStore::frame(TraceFrame frame)
         std::lock_guard<std::mutex> lock(mutex_);
         if (wanting_.empty() || db_ == nullptr || frame.width <= 0 || frame.height <= 0)
             return;
-        if (frame.encoded.empty())
+        if (frame.rgba.size() != size_t(frame.width) * size_t(frame.height) * 4)
         {
-            ++withoutStream_;
+            ++notKept_;
             return;
         }
         Job job;
@@ -490,16 +511,22 @@ void TraceStore::write(const Job& job)
     const TraceFrame& f = job.frame;
     const std::vector<uint8_t> small = thumb(f);
     const bool posed = f.pose.size() == TracePoseFloats;
+    const std::vector<uint8_t> encoded = jxlLossless(f);
+    if (encoded.empty())
+    {
+        ++notKept_;
+        return;
+    }
     exec("BEGIN");
     Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
-        .bind(1, intern("asset_kind", "pyrowave"))
-        .blob(2, f.encoded)
+        .bind(1, intern("asset_kind", "jxl"))
+        .blob(2, encoded)
         .run();
     const int64_t view = sqlite3_last_insert_rowid(db_);
     Statement(db_, "INSERT INTO asset_extent VALUES (?, ?, ?)")
         .bind(1, view)
-        .bind(2, int64_t(f.encodedWidth))
-        .bind(3, int64_t(f.encodedHeight))
+        .bind(2, int64_t(f.width))
+        .bind(3, int64_t(f.height))
         .run();
     int64_t pose = 0;
     if (posed)
