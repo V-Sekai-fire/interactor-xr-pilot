@@ -11,7 +11,10 @@
 #
 # The pixels are not re-encoded. Works on both schema-4 stores (cua-tracer and XR Pilot).
 #
-#   elixir tools/trace_export.exs <traces.sqlite> <CITATION.cff> <out dir>
+#   elixir tools/trace_export.exs <traces.sqlite> <out dir> [CITATION.cff]
+#
+# Every CFF field is optional: what the file has goes into the XMP, what it lacks is left out, and
+# without a CITATION.cff the XMP carries the store's fields only.
 #
 # Needs the sqlite3 command (3.33 or newer, for -json).
 
@@ -21,7 +24,9 @@ defmodule TraceExport do
   @signature <<0, 0, 0, 12, "JXL ", 0x0D, 0x0A, 0x87, 0x0A>>
   @ftyp <<0, 0, 0, 20, "ftyp", "jxl ", 0::32, "jxl ">>
 
-  def main([store, cff, out]) do
+  def main([store, out]), do: main([store, out, nil])
+
+  def main([store, out, cff]) do
     with {:ok, citation} <- citation(cff),
          {:ok, rows} <- views(store),
          :ok <- File.mkdir_p(out) do
@@ -36,24 +41,26 @@ defmodule TraceExport do
 
   def main(_), do: {:error, :usage}
 
-  # The CFF fields a delivered image carries. A file without a title, authors or licence is refused:
-  # a delivery file must say whose it is and how it may be used.
+  # The CFF fields a delivered image carries, each only when the file has it.
+  def citation(nil), do: {:ok, %{}}
+
   def citation(path) do
-    with {:ok, doc} <- YamlElixir.read_from_file(path),
-         title when is_binary(title) <- doc["title"] || {:error, {:cff_missing, "title"}},
-         [_ | _] = authors <- doc["authors"] || {:error, {:cff_missing, "authors"}},
-         license when is_binary(license) <- doc["license"] || {:error, {:cff_missing, "license"}} do
-      {:ok,
-       %{
-         title: title,
-         creators: Enum.map(authors, &author/1),
-         license: license,
-         relation: doc["repository-code"] || doc["url"],
-         identifier: doc["doi"]
-       }}
-    else
-      {:error, _} = error -> error
-      other -> {:error, {:cff_unreadable, other}}
+    case YamlElixir.read_from_file(path) do
+      {:ok, doc} when is_map(doc) ->
+        {:ok,
+         %{
+           title: doc["title"],
+           creators: Enum.map(List.wrap(doc["authors"]), &author/1),
+           license: doc["license"],
+           relation: doc["repository-code"] || doc["url"],
+           identifier: doc["doi"]
+         }}
+
+      {:ok, other} ->
+        {:error, {:cff_not_a_mapping, other}}
+
+      {:error, reason} ->
+        {:error, {:cff_unreadable, path, reason}}
     end
   end
 
@@ -144,32 +151,31 @@ defmodule TraceExport do
   defp int(digits), do: String.to_integer(digits)
 
   def xmp(c, row, store, created) do
-    creators = Enum.map_join(c.creators, "", &"<rdf:li>#{esc(&1)}</rdf:li>")
+    source = "#{store} session #{row["session_id"]} span #{row["span_id"]} #{row["role"]}"
+    creators = Enum.map_join(Map.get(c, :creators, []), "", &"<rdf:li>#{esc(&1)}</rdf:li>")
 
-    optional =
+    fields =
       [
-        c.relation && "<dc:relation><rdf:Bag><rdf:li>#{esc(c.relation)}</rdf:li></rdf:Bag></dc:relation>",
-        c.identifier && "<dc:identifier>doi:#{esc(c.identifier)}</dc:identifier>",
+        "<dc:format>image/jxl</dc:format>",
+        c[:title] && "<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(c.title)}</rdf:li></rdf:Alt></dc:title>",
+        creators != "" && "<dc:creator><rdf:Seq>#{creators}</rdf:Seq></dc:creator>",
+        c[:license] && "<dc:rights><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(c.license)}</rdf:li></rdf:Alt></dc:rights>",
+        c[:license] && "<cc:license rdf:resource=\"https://spdx.org/licenses/#{esc(c.license)}.html\"/>",
+        "<dc:source>#{esc(source)}</dc:source>",
+        "<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">#{esc(row["state"])}</rdf:li></rdf:Alt></dc:description>",
+        c[:relation] && "<dc:relation><rdf:Bag><rdf:li>#{esc(c.relation)}</rdf:li></rdf:Bag></dc:relation>",
+        c[:identifier] && "<dc:identifier>doi:#{esc(c.identifier)}</dc:identifier>",
         created && "<xmp:CreateDate>#{created}</xmp:CreateDate>"
       ]
-      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&is_binary/1)
       |> Enum.join()
-
-    source = "#{store} session #{row["session_id"]} span #{row["span_id"]} #{row["role"]}"
 
     """
     <?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\
     <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\
     <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" \
     xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:cc="http://creativecommons.org/ns#">\
-    <dc:format>image/jxl</dc:format>\
-    <dc:title><rdf:Alt><rdf:li xml:lang="x-default">#{esc(c.title)}</rdf:li></rdf:Alt></dc:title>\
-    <dc:creator><rdf:Seq>#{creators}</rdf:Seq></dc:creator>\
-    <dc:rights><rdf:Alt><rdf:li xml:lang="x-default">#{esc(c.license)}</rdf:li></rdf:Alt></dc:rights>\
-    <cc:license rdf:resource="https://spdx.org/licenses/#{esc(c.license)}.html"/>\
-    <dc:source>#{esc(source)}</dc:source>\
-    <dc:description><rdf:Alt><rdf:li xml:lang="x-default">#{esc(row["state"])}</rdf:li></rdf:Alt></dc:description>\
-    #{optional}\
+    #{fields}\
     </rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end="r"?>\
     """
   end
@@ -189,7 +195,7 @@ case TraceExport.main(System.argv()) do
     :ok
 
   {:error, :usage} ->
-    IO.puts(:stderr, "usage: elixir tools/trace_export.exs <traces.sqlite> <CITATION.cff> <out dir>")
+    IO.puts(:stderr, "usage: elixir tools/trace_export.exs <traces.sqlite> <out dir> [CITATION.cff]")
     System.halt(2)
 
   {:error, reason} ->
