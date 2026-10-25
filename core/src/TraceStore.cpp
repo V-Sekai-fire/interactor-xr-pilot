@@ -2,6 +2,8 @@
 
 #include "xrpilot/TraceStore.h"
 
+#include "lib/jxl/enc_fast_lossless.h"
+
 #include <sqlite3.h>
 
 #include <algorithm>
@@ -18,11 +20,10 @@ namespace
 {
 
 // The interned vocabularies, one relation each.
-const char* const Vocabularies[] = {"tool",           "task_type",      "dimension", "input_column",
-                                    "asset_kind",     "candidate_axis", "candidate_kind", "metric"};
+const char* const Vocabularies[] = {"tool", "task_type", "input_role", "asset_kind", "metric"};
 
 // Bumped when a relation changes; an older store is moved aside, not altered.
-constexpr int SchemaVersion = 3;
+constexpr int SchemaVersion = 4;
 
 const char* const Schema = R"sql(
 CREATE TABLE IF NOT EXISTS session (
@@ -60,48 +61,63 @@ CREATE TABLE IF NOT EXISTS asset_extent (
     asset_id INTEGER PRIMARY KEY REFERENCES asset,
     width INTEGER NOT NULL,
     height INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS maskscore_root (
+-- A span with an input frame is a decider example (chibifire/edscore-decider's shape): the frame and
+-- pose before the span and after it, typed Choice questions, a gold answer only where one was
+-- measured, and real-valued measures kept as measures. XR Pilot measures travel and change, so it
+-- writes measures and asks no question; cua-tracer asks the effect question. Same schema in both.
+CREATE TABLE IF NOT EXISTS question (
+    question_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS question_option (
+    question_id INTEGER NOT NULL REFERENCES question,
+    option_index INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    PRIMARY KEY (question_id, option_index),
+    UNIQUE (question_id, label));
+CREATE TABLE IF NOT EXISTS decider_example (
     span_id INTEGER PRIMARY KEY REFERENCES span,
-    task_type_id INTEGER NOT NULL REFERENCES task_type,
-    dimension_id INTEGER NOT NULL REFERENCES dimension);
--- One input per modality.
-CREATE TABLE IF NOT EXISTS maskscore_input (
-    span_id INTEGER NOT NULL REFERENCES maskscore_root,
-    input_column_id INTEGER NOT NULL REFERENCES input_column,
-    input_asset_id INTEGER NOT NULL REFERENCES asset,
-    PRIMARY KEY (span_id, input_column_id));
-CREATE TABLE IF NOT EXISTS maskscore_candidate (
-    span_id INTEGER NOT NULL REFERENCES maskscore_root,
-    candidate_axis_id INTEGER NOT NULL REFERENCES candidate_axis,
-    rank INTEGER NOT NULL,
-    candidate_asset_id INTEGER NOT NULL REFERENCES asset,
-    candidate_kind_id INTEGER NOT NULL REFERENCES candidate_kind,
-    PRIMARY KEY (span_id, candidate_axis_id, rank));
-CREATE TABLE IF NOT EXISTS maskscore_score (
+    task_type_id INTEGER NOT NULL REFERENCES task_type);
+CREATE TABLE IF NOT EXISTS decider_input (
+    span_id INTEGER NOT NULL REFERENCES decider_example,
+    input_role_id INTEGER NOT NULL REFERENCES input_role,
+    asset_id INTEGER NOT NULL REFERENCES asset,
+    PRIMARY KEY (span_id, input_role_id));
+CREATE TABLE IF NOT EXISTS decider_question (
+    span_id INTEGER NOT NULL REFERENCES decider_example,
+    question_id INTEGER NOT NULL REFERENCES question,
+    PRIMARY KEY (span_id, question_id));
+CREATE TABLE IF NOT EXISTS decider_gold (
     span_id INTEGER NOT NULL,
-    candidate_axis_id INTEGER NOT NULL,
-    rank INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    option_index INTEGER NOT NULL,
+    PRIMARY KEY (span_id, question_id),
+    FOREIGN KEY (span_id, question_id) REFERENCES decider_question,
+    FOREIGN KEY (question_id, option_index) REFERENCES question_option);
+CREATE TABLE IF NOT EXISTS decider_measure (
+    span_id INTEGER NOT NULL REFERENCES decider_example,
     metric_id INTEGER NOT NULL REFERENCES metric,
-    metric_value REAL NOT NULL,
-    PRIMARY KEY (span_id, candidate_axis_id, rank, metric_id),
-    FOREIGN KEY (span_id, candidate_axis_id, rank) REFERENCES maskscore_candidate);
--- EditScore's triple is MaskScore's view axis: the view before, the view after and the instruction, the
--- span's tool and its arguments. A pyrowave image is a frame as streamed (both eyes, left first).
-CREATE VIEW IF NOT EXISTS editscore_pair AS
-SELECT r.span_id, s.session_id, sk.name AS source_kind, src.bytes AS source, ek.name AS edited_kind,
-       ed.bytes AS edited, t.name || COALESCE(' ' || d.detail, '') AS instruction
-FROM maskscore_root r
+    value REAL NOT NULL,
+    PRIMARY KEY (span_id, metric_id));
+-- One row per example and question: the state, the question, its options in order, and the gold
+-- answer's label where one was measured (gold is NULL here only because the view outer-joins).
+CREATE VIEW IF NOT EXISTS decider_row AS
+SELECT e.span_id, s.session_id, tt.name AS task_type,
+       t.name || COALESCE(' ' || d.detail, '') AS state,
+       q.name AS question, q.text AS question_text,
+       (SELECT json_group_array(label) FROM
+           (SELECT label FROM question_option o WHERE o.question_id = q.question_id ORDER BY option_index))
+           AS options,
+       go.label AS gold
+FROM decider_example e
 JOIN span s USING (span_id)
 JOIN tool t USING (tool_id)
+JOIN task_type tt USING (task_type_id)
 LEFT JOIN span_detail d USING (span_id)
-JOIN maskscore_input i ON i.span_id = r.span_id
-JOIN input_column ic ON ic.input_column_id = i.input_column_id AND ic.name = 'source_view'
-JOIN asset src ON src.asset_id = i.input_asset_id
-JOIN asset_kind sk ON sk.asset_kind_id = src.asset_kind_id
-JOIN maskscore_candidate c ON c.span_id = r.span_id AND c.rank = 1
-JOIN candidate_axis ca ON ca.candidate_axis_id = c.candidate_axis_id AND ca.name = 'view'
-JOIN asset ed ON ed.asset_id = c.candidate_asset_id
-JOIN asset_kind ek ON ek.asset_kind_id = ed.asset_kind_id;
+JOIN decider_question dq ON dq.span_id = e.span_id
+JOIN question q ON q.question_id = dq.question_id
+LEFT JOIN decider_gold g ON g.span_id = dq.span_id AND g.question_id = dq.question_id
+LEFT JOIN question_option go ON go.question_id = g.question_id AND go.option_index = g.option_index;
 )sql";
 
 class Statement
@@ -144,6 +160,25 @@ public:
 private:
     sqlite3_stmt* stmt_ = nullptr;
 };
+
+// The frame as lossless JPEG XL (ISO/IEC 18181): a bare codestream of its RGB, tagged sRGB, from libjxl's
+// fast lossless encoder at effort 1, the speed a 16-frame-a-second trace keeps up with on one thread.
+// Empty when it does not encode.
+std::vector<uint8_t> jxlLossless(const TraceFrame& f)
+{
+    const size_t pixels = size_t(f.width) * size_t(f.height);
+    std::vector<uint8_t> rgb(pixels * 3);
+    for (size_t i = 0; i < pixels; ++i)
+        std::memcpy(&rgb[i * 3], &f.rgba[i * 4], 3);
+    unsigned char* out = nullptr;
+    const size_t size = JxlFastLosslessEncode(rgb.data(), size_t(f.width), size_t(f.width) * 3, size_t(f.height), 3, 8,
+                                              0, 1, &out, nullptr, nullptr);
+    std::vector<uint8_t> bytes;
+    if (out != nullptr && size > 0)
+        bytes.assign(out, out + size);
+    std::free(out);
+    return bytes;
+}
 
 // One gray value per 8x8 block: what a span's metric compares.
 std::vector<uint8_t> thumb(const TraceFrame& f)
@@ -406,9 +441,9 @@ void TraceStore::frame(TraceFrame frame)
         std::lock_guard<std::mutex> lock(mutex_);
         if (wanting_.empty() || db_ == nullptr || frame.width <= 0 || frame.height <= 0)
             return;
-        if (frame.encoded.empty())
+        if (frame.rgba.size() != size_t(frame.width) * size_t(frame.height) * 4)
         {
-            ++withoutStream_;
+            ++notKept_;
             return;
         }
         Job job;
@@ -476,16 +511,22 @@ void TraceStore::write(const Job& job)
     const TraceFrame& f = job.frame;
     const std::vector<uint8_t> small = thumb(f);
     const bool posed = f.pose.size() == TracePoseFloats;
+    const std::vector<uint8_t> encoded = jxlLossless(f);
+    if (encoded.empty())
+    {
+        ++notKept_;
+        return;
+    }
     exec("BEGIN");
     Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
-        .bind(1, intern("asset_kind", "pyrowave"))
-        .blob(2, f.encoded)
+        .bind(1, intern("asset_kind", "jxl"))
+        .blob(2, encoded)
         .run();
     const int64_t view = sqlite3_last_insert_rowid(db_);
     Statement(db_, "INSERT INTO asset_extent VALUES (?, ?, ?)")
         .bind(1, view)
-        .bind(2, int64_t(f.encodedWidth))
-        .bind(3, int64_t(f.encodedHeight))
+        .bind(2, int64_t(f.width))
+        .bind(3, int64_t(f.height))
         .run();
     int64_t pose = 0;
     if (posed)
@@ -498,26 +539,27 @@ void TraceStore::write(const Job& job)
             .run();
         pose = sqlite3_last_insert_rowid(db_);
     }
-    const int64_t viewAxis = intern("candidate_axis", "view");
-    const int64_t poseAxis = intern("candidate_axis", "pose");
+    const int64_t viewBefore = intern("input_role", "view_before");
+    const int64_t poseBefore = intern("input_role", "pose_before");
+    const int64_t viewAfter = intern("input_role", "view_after");
+    const int64_t poseAfter = intern("input_role", "pose_after");
     for (const Pending& p : job.spans)
     {
         if (p.input)
         {
-            Statement(db_, "INSERT OR IGNORE INTO maskscore_root VALUES (?, ?, ?)")
+            Statement(db_, "INSERT OR IGNORE INTO decider_example VALUES (?, ?)")
                 .bind(1, p.spanId)
                 .bind(2, intern("task_type", "agent_step"))
-                .bind(3, intern("dimension", "instruction_following"))
                 .run();
-            Statement(db_, "INSERT OR IGNORE INTO maskscore_input VALUES (?, ?, ?)")
+            Statement(db_, "INSERT OR IGNORE INTO decider_input VALUES (?, ?, ?)")
                 .bind(1, p.spanId)
-                .bind(2, intern("input_column", "source_view"))
+                .bind(2, viewBefore)
                 .bind(3, view)
                 .run();
             if (posed)
-                Statement(db_, "INSERT OR IGNORE INTO maskscore_input VALUES (?, ?, ?)")
+                Statement(db_, "INSERT OR IGNORE INTO decider_input VALUES (?, ?, ?)")
                     .bind(1, p.spanId)
-                    .bind(2, intern("input_column", "source_pose"))
+                    .bind(2, poseBefore)
                     .bind(3, pose)
                     .run();
             std::lock_guard<std::mutex> lock(mutex_);
@@ -526,13 +568,12 @@ void TraceStore::write(const Job& job)
                 inputPose_[p.spanId] = f.pose;
             continue;
         }
-        // A span whose inputs were never taken has no root, and so no candidate.
-        const char* const insertCandidate = "INSERT OR IGNORE INTO maskscore_candidate SELECT ?, ?, 1, ?, ? "
-                                            "WHERE EXISTS (SELECT 1 FROM maskscore_root WHERE span_id = ?)";
-        const int64_t after = intern("candidate_kind", "after_span");
-        Statement(db_, insertCandidate).bind(1, p.spanId).bind(2, viewAxis).bind(3, view).bind(4, after).bind(5, p.spanId).run();
+        // A span whose inputs were never taken is no example, and so has no after.
+        const char* const insertAfter = "INSERT OR IGNORE INTO decider_input SELECT ?, ?, ? "
+                                        "WHERE EXISTS (SELECT 1 FROM decider_example WHERE span_id = ?)";
+        Statement(db_, insertAfter).bind(1, p.spanId).bind(2, viewAfter).bind(3, view).bind(4, p.spanId).run();
         if (posed)
-            Statement(db_, insertCandidate).bind(1, p.spanId).bind(2, poseAxis).bind(3, pose).bind(4, after).bind(5, p.spanId).run();
+            Statement(db_, insertAfter).bind(1, p.spanId).bind(2, poseAfter).bind(3, pose).bind(4, p.spanId).run();
         std::vector<uint8_t> before;
         std::vector<float> posedBefore;
         {
@@ -550,20 +591,20 @@ void TraceStore::write(const Job& job)
                 inputPose_.erase(foundPose);
             }
         }
-        const char* const insertScore = "INSERT OR REPLACE INTO maskscore_score SELECT ?, ?, 1, ?, ? WHERE EXISTS "
-                                        "(SELECT 1 FROM maskscore_candidate WHERE span_id = ? AND candidate_axis_id = ? AND rank = 1)";
+        // A measure needs the span's after of that modality.
+        const char* const insertMeasure = "INSERT OR REPLACE INTO decider_measure SELECT ?, ?, ? WHERE EXISTS "
+                                          "(SELECT 1 FROM decider_input WHERE span_id = ? AND input_role_id = ?)";
         if (!before.empty() && before.size() == small.size())
         {
             double sum = 0.0;
             for (size_t i = 0; i < small.size(); ++i)
                 sum += std::abs(int(small[i]) - int(before[i]));
-            Statement(db_, insertScore)
+            Statement(db_, insertMeasure)
                 .bind(1, p.spanId)
-                .bind(2, viewAxis)
-                .bind(3, intern("metric", "gray_l1_8x8"))
-                .bind(4, sum / double(small.size()) / 255.0)
-                .bind(5, p.spanId)
-                .bind(6, viewAxis)
+                .bind(2, intern("metric", "gray_l1_8x8"))
+                .bind(3, sum / double(small.size()) / 255.0)
+                .bind(4, p.spanId)
+                .bind(5, viewAfter)
                 .run();
         }
         if (posed && posedBefore.size() == TracePoseFloats)
@@ -576,13 +617,12 @@ void TraceStore::write(const Job& job)
                 const float* b = &f.pose[size_t(part) * 12];
                 const double d = std::sqrt(double((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) +
                                                   (b[2] - a[2]) * (b[2] - a[2])));
-                Statement(db_, insertScore)
+                Statement(db_, insertMeasure)
                     .bind(1, p.spanId)
-                    .bind(2, poseAxis)
-                    .bind(3, intern("metric", names[part]))
-                    .bind(4, d)
-                    .bind(5, p.spanId)
-                    .bind(6, poseAxis)
+                    .bind(2, intern("metric", names[part]))
+                    .bind(3, d)
+                    .bind(4, p.spanId)
+                    .bind(5, poseAfter)
                     .run();
             }
         }

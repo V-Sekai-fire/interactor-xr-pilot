@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// Every span of the trace kept in SQLite in Essential Tuple Normal Form, as a MaskScore row. MaskScore is
-// EditScore across modalities: a span's inputs are the view and the pose before it, its candidates the
-// view and the pose after it, one per modality axis, and its call is the instruction. EditScore's image
-// pair is the view axis of that row. Facts that may be missing (an end, a parent, a detail, a score, an
-// image's extent) are satellite relations, never nullable columns.
+// Every span of the trace kept in SQLite in Essential Tuple Normal Form. A span with an input frame is a
+// decider example, the shape of chibifire/edscore-decider: its inputs are the view and the pose before it
+// and after it (roles view_before, pose_before, view_after, pose_after), its call is the state, and its
+// head and hand travel and view change are measures. Choice questions keep a gold answer only where one
+// was measured; XR Pilot measures no categorical answer, so it asks none. Facts that may be missing (an
+// end, a parent, a detail, a gold answer, a measure, an image's extent) are satellite relations, never
+// nullable columns.
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -22,16 +25,14 @@ struct sqlite3;
 namespace xrpilot
 {
 
-// What the agent saw and where it was at one moment. The view's left eye as RGBA is only read for the
-// span's metric; the view is kept as the runtime streamed it, never re-encoded.
+// What the agent saw and where it was at one moment: the whole decoded view and the head and hand poses.
 struct TraceFrame
 {
+    // The whole decoded frame, both eyes side by side (left first), 8-bit sRGB, rows top to bottom.
+    // It is kept as lossless JPEG XL: these pixels exactly, tagged sRGB.
     std::vector<uint8_t> rgba;
     int width = 0;
     int height = 0;
-    std::vector<uint8_t> encoded; // a PyroWave frame, decodable on its own
-    int encodedWidth = 0;
-    int encodedHeight = 0;
     // The head, then the left and the right hand: position (3) and row-major rotation (9) each, metres.
     std::vector<float> pose;
     // Which frame of the stream this is; a span's end only takes a frame newer than its input.
@@ -70,8 +71,9 @@ public:
     void frame(TraceFrame frame);
     // Waits until every frame handed in is written.
     void flush();
-    // Frames handed in without stream bytes, and so not kept; their spans stay without a MaskScore row.
-    int64_t framesWithoutStream() const { return withoutStream_; }
+    // Frames handed in without whole pixels, or that did not encode, and so not kept; their spans stay
+    // without a decider example.
+    int64_t framesNotKept() const { return notKept_; }
 
     int64_t session() const { return session_; }
     sqlite3* db() { return db_; }
@@ -108,7 +110,7 @@ private:
     std::vector<Pending> wanting_;
     std::deque<Job> jobs_;
     bool busy_ = false;
-    int64_t withoutStream_ = 0;
+    std::atomic<int64_t> notKept_{0};
     bool stopping_ = false;
     std::condition_variable wake_;
     std::condition_variable idle_;

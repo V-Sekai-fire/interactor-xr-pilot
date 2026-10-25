@@ -2,7 +2,7 @@
 //
 // PyroWave decode on a device the caller owns, ported from oxrsys PyroWaveDecoder: PyroWave decodes
 // into three plane images and the Lean-authored yuv420_to_rgbx kernel packs them, all on the GPU.
-// Frames reach the CPU only through snapshotLeftEye.
+// Frames reach the CPU only through snapshotLeftEye and snapshotFrame.
 
 #pragma once
 
@@ -59,6 +59,8 @@ public:
 
     // The left eye of the last decoded frame, read back from the GPU as tightly packed RGBA8.
     bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height);
+    // The whole last decoded frame, both eyes side by side (left first), as tightly packed RGBA8.
+    bool snapshotFrame(std::vector<uint8_t>& rgba, int& width, int& height);
 
     // The left eye fitted into a canvas by eye_fit_bgra, with taps for fit columns then rows; BGRA, bottom row first.
     bool fitLeftEye(const std::vector<int32_t>& first, const std::vector<float>& weights, int taps, int fitWidth,

@@ -32,6 +32,22 @@ option(XRPILOT_BUILD_OXRSYS "Build the OXRSys runtime and SteamVR driver in oxrs
 set(XRPILOT_OXRSYS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/oxrsys)
 set(XRPILOT_PROTOCOL_INCLUDE ${XRPILOT_OXRSYS_DIR}/common/protocol/include)
 
+# Trace frames are kept as lossless JPEG XL (ISO/IEC 18181). Only libjxl's fast lossless encoder is
+# compiled, standalone: one file, no libjxl dependencies (BSD-3-Clause).
+include(FetchContent)
+FetchContent_Declare(
+    libjxl
+    URL https://github.com/libjxl/libjxl/archive/a7a9c787341cf703dede03c2009fa460cae5e5df.tar.gz # v0.12.0
+    URL_HASH SHA256=818398895831069902e3677d285054a7d1255b11b221e94c6aaa1cb83b0a3f29
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR none
+)
+FetchContent_MakeAvailable(libjxl)
+add_library(xrpilot_jxl STATIC ${libjxl_SOURCE_DIR}/lib/jxl/enc_fast_lossless.cc)
+target_include_directories(xrpilot_jxl PUBLIC ${libjxl_SOURCE_DIR} ${libjxl_SOURCE_DIR}/lib/include)
+target_compile_definitions(xrpilot_jxl PUBLIC FJXL_STANDALONE=1)
+target_compile_features(xrpilot_jxl PUBLIC cxx_std_17)
+
 add_library(xrpilot_core STATIC
     core/src/Agent.cpp
     core/src/Body.cpp
@@ -61,6 +77,7 @@ add_library(xrpilot_core STATIC
 target_include_directories(xrpilot_core PUBLIC core/include ${CMAKE_CURRENT_BINARY_DIR}/generated ${XRPILOT_PROTOCOL_INCLUDE} third_party/sqlite
     PRIVATE third_party/sinew-align)
 target_compile_definitions(xrpilot_core PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_FOREIGN_KEYS=1)
+target_link_libraries(xrpilot_core PRIVATE xrpilot_jxl)
 if(WIN32)
     # The MCP token: BCryptGenRandom, and a user-only DACL on its file.
     target_link_libraries(xrpilot_core PUBLIC bcrypt advapi32)
@@ -85,7 +102,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       agent.trigger-reaches-packet agent.release-clears-input agent.absent-hands-clear-flags
                       commands.malformed-rejected commands.unknown-rejected commands.state-reports-head
                       commands.json-string-escapes json.round-trip-keeps-order-and-numbers json.set-and-erase
-                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-maskscore-rows traces.rectgtn-time traces.null-check-control body.reach-within-the-arm body.reach-past-the-arm-is-clamped body.feet-planted-in-the-world body.feet-unplanted-slide rotation.euler-orders-match-axis-products
+                      json.malformed-rejected spans.lines-parse spans.begin-end-and-children spans.repeats-duck spans.nested-fold-and-expand traces.etnf-decider-rows traces.rectgtn-time traces.null-check-control body.reach-within-the-arm body.reach-past-the-arm-is-clamped body.feet-planted-in-the-world body.feet-unplanted-slide rotation.euler-orders-match-axis-products
                       rotation.quaternion-round-trip rotation.non-rotations-refused
                       commands.head-takes-a-rotation-matrix commands.state-reports-runtime-fov
                       agent.headset-samples-keep-their-time agent.unsampled-head-sends-every-tick
@@ -222,9 +239,6 @@ if(NOT TARGET xrpilot_gpu)
     target_link_libraries(xrpilot_gpu PUBLIC oxrsys_pyrowave)
 endif()
 
-# A kept trace frame through scene-linear RGB (for OpenEXR) and back into PyroWave.
-add_executable(trace_roundtrip tools/trace_roundtrip.cpp)
-target_link_libraries(trace_roundtrip PRIVATE xrpilot_gpu xrpilot_core)
 target_compile_definitions(xrpilot_gpu PUBLIC VK_NO_PROTOTYPES)
 
 # The subtreed CineForm SDK adds frames2cfhd and pyro2cfhd; an empty path leaves them out.

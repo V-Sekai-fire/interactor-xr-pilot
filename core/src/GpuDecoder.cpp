@@ -672,7 +672,8 @@ struct GpuDecoder::Gpu
         }
     }
 
-    bool snapshotLeftEye(std::vector<uint8_t>& rgba, int& outWidth, int& outHeight)
+    // Both eyes when whole, else the left eye: the same readback, cropped or not.
+    bool snapshot(bool whole, std::vector<uint8_t>& rgba, int& outWidth, int& outHeight)
     {
         if (!hasFrame)
         {
@@ -694,7 +695,7 @@ struct GpuDecoder::Gpu
         const bool ok = submitAndWait();
         if (ok)
         {
-            const int eye = width / 2;
+            const int eye = whole ? width : width / 2;
             rgba.resize(size_t(eye) * height * 4);
             const uint8_t* source = static_cast<const uint8_t*>(staging.mapped);
             for (int row = 0; row < height; ++row)
@@ -775,7 +776,12 @@ void GpuDecoder::recordEye(VkCommandBuffer commands, int eye, VkImage target, ui
 
 bool GpuDecoder::snapshotLeftEye(std::vector<uint8_t>& rgba, int& width, int& height)
 {
-    return gpu_ && gpu_->snapshotLeftEye(rgba, width, height);
+    return gpu_ && gpu_->snapshot(false, rgba, width, height);
+}
+
+bool GpuDecoder::snapshotFrame(std::vector<uint8_t>& rgba, int& width, int& height)
+{
+    return gpu_ && gpu_->snapshot(true, rgba, width, height);
 }
 
 bool GpuDecoder::fitLeftEye(const std::vector<int32_t>& first, const std::vector<float>& weights, int taps,
