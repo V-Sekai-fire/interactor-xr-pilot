@@ -847,6 +847,41 @@ const std::map<std::string, std::function<void()>> cases = {
              ui.record(a);
          store.close();
      }},
+    {"traces.decider-sample",
+     [] {
+         // Two actions with their frames before and after, kept in decider-sample.sqlite for CI to build
+         // a decider sample from (tools/decider) and check it against this store.
+         std::remove("decider-sample.sqlite");
+         TraceStore store;
+         std::string error;
+         check(store.open("decider-sample.sqlite", 1700000000000, 5000, &error), "the store opens");
+         TraceFrame frame;
+         frame.width = 48;
+         frame.height = 32;
+         frame.rgba.resize(size_t(48) * 32 * 4);
+         frame.pose.assign(TracePoseFloats, 0.0f);
+         for (int i = 0; i < 3; ++i)
+         {
+             for (size_t p = 0; p < frame.rgba.size(); ++p)
+                 frame.rgba[p] = uint8_t((p * 7 + i * 91) & 0xff);
+             frame.pose[2] = -0.25f * float(i);
+             frame.sequence = i + 1;
+             // Each frame is the view after the action that just ended and before the one that starts.
+             if (i > 0)
+                 store.end(std::to_string(i), true, 4990 + 20 * i);
+             if (i < 2)
+                 store.begin(std::to_string(i + 1), i == 0 ? "reach" : "grip", i == 0 ? "left 0 1 -0.5" : "", 5000 + 20 * i);
+             store.frame(frame);
+         }
+         store.close();
+         sqlite3* db = nullptr;
+         check(sqlite3_open_v2("decider-sample.sqlite", &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK, "it reopens");
+         check(countRows(db, "SELECT count(*) FROM decider_example") == 2, "both actions are examples");
+         check(countRows(db, "SELECT count(*) FROM decider_input i JOIN input_role r USING (input_role_id) "
+                             "WHERE r.name = 'view_after'") == 2,
+               "each has the view after it");
+         sqlite3_close(db);
+     }},
     {"ui.spans-export-as-lines",
      [] {
          TraceStore store;
