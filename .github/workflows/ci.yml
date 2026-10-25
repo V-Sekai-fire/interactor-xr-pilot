@@ -72,3 +72,12 @@ jobs:
         run: |
           build/xrpilot-ui-trace build/ui-sample.sqlite build/ui-sample.jsonl
           lean/.lake/build/bin/ui_check build/ui-sample.jsonl
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.18"
+      - name: A decider sample builds from a recorded store and matches it (RFD66606-2334)
+        working-directory: tools/decider
+        run: |
+          elixir build_sample.exs ../../build/decider-sample.sqlite "$RUNNER_TEMP/decider" V-Sekai-fire/interactor-xr-pilot "$GITHUB_SHA"
+          elixir check_sample.exs "$RUNNER_TEMP/decider" ../../build/decider-sample.sqlite

@@ -112,7 +112,7 @@ foreach(name IN ITEMS assembler.complete-frame assembler.fec-recovers-one-loss a
                       launch.flags-keep-their-meaning launch.mcp-flags client.local-runtime-wins
                       mcp.token-is-random-and-kept mcp.client-config-names-the-port-and-token
                       client.local-address-is-recognised client.second-pilot-is-refused
-                      ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run
+                      ui.marks-take-no-frame ui.spans-export-as-lines ui.sample-run traces.decider-sample
                       mouse.look-turns-evenly mouse.look-lands-whole
                       commands.loop-normalizes-lines bridge.wakes-the-tray-and-waits bridge.no-pilot-is-an-error
                       bridge.detach-waits-for-the-command
