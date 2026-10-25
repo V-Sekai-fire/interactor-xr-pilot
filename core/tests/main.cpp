@@ -1064,7 +1064,7 @@ const std::map<std::string, std::function<void()>> cases = {
          slow.begin("b", "look", "{}", 10 + SpanDuckMs + 1);
          check(slow.recent().size() == 2, "control: the same tool SpanDuckMs after the last ended gets its own span");
      }},
-    {"traces.etnf-maskscore-rows",
+    {"traces.etnf-decider-rows",
      [] {
          TraceStore store;
          std::string error;
@@ -1100,19 +1100,26 @@ const std::map<std::string, std::function<void()>> cases = {
          check(count("SELECT count(*) FROM span_parent WHERE parent_span_id = 1") == 2, "spans begun inside the plan name it as parent");
          check(count("SELECT count(*) FROM span_detail") == 1, "an empty detail is no row");
          check(count("SELECT count(*) FROM span_command WHERE span_id = 2") == 1, "the command is in the running span");
-         check(count("SELECT count(*) FROM maskscore_root") == 2, "the spans with an input frame are MaskScore roots");
-         check(count("SELECT count(*) FROM maskscore_input") == 4, "each root has a view and a pose input");
-         check(count("SELECT count(*) FROM maskscore_candidate") == 2, "the ended span has a view and a pose candidate");
+         check(count("SELECT count(*) FROM decider_example") == 2, "the spans with an input frame are decider examples");
+         check(count("SELECT count(*) FROM decider_input i JOIN input_role r USING (input_role_id) "
+                     "WHERE r.name IN ('view_before', 'pose_before')") == 4,
+               "each example has a view and a pose before it");
+         check(count("SELECT count(*) FROM decider_input i JOIN input_role r USING (input_role_id) "
+                     "WHERE r.name IN ('view_after', 'pose_after')") == 2,
+               "the ended span has a view and a pose after it");
          check(count("SELECT count(*) FROM asset") == 4, "one view and one pose per frame, shared by its spans");
          check(count("SELECT count(*) FROM asset_extent") == 2, "only the views have an extent");
-         check(count("SELECT count(*) FROM maskscore_score m JOIN metric USING (metric_id) "
-                     "WHERE name = 'head_travel_m' AND abs(metric_value - 0.5) < 1e-6") == 1,
-               "the head's half-metre step is measured on the pose axis");
-         check(count("SELECT count(*) FROM maskscore_score m JOIN metric USING (metric_id) "
-                     "WHERE name = 'gray_l1_8x8' AND metric_value > 0.99") == 1,
+         check(count("SELECT count(*) FROM decider_measure m JOIN metric USING (metric_id) "
+                     "WHERE name = 'head_travel_m' AND abs(value - 0.5) < 1e-6") == 1,
+               "the head's half-metre step is measured");
+         check(count("SELECT count(*) FROM decider_measure m JOIN metric USING (metric_id) "
+                     "WHERE name = 'gray_l1_8x8' AND value > 0.99") == 1,
                "dark to light measures the change");
-         check(count("SELECT count(*) FROM editscore_pair WHERE instruction = 'reach'") == 1,
-               "the EditScore pair carries the instruction");
+         check(count("SELECT count(*) FROM decider_question") == 0 && count("SELECT count(*) FROM decider_gold") == 0,
+               "XR Pilot measures no categorical answer, so it asks no question and keeps no gold");
+         check(count("SELECT count(*) FROM decider_example e JOIN span s USING (span_id) JOIN tool t USING (tool_id) "
+                     "WHERE t.name = 'reach'") == 1,
+               "the example carries the call as its state");
          check(count("SELECT count(*) FROM asset JOIN asset_kind USING (asset_kind_id) WHERE name = 'pyrowave'") == 2,
                "frames are kept as streamed");
          check(count("SELECT count(*) FROM tool") == 3, "tools are interned");
@@ -1128,10 +1135,10 @@ const std::map<std::string, std::function<void()>> cases = {
          store.frame(fourth);
          store.flush();
          check(!store.wantsFrame(), "the next frame becomes its edit");
-         check(count("SELECT count(*) FROM maskscore_input i JOIN maskscore_candidate c ON c.span_id = i.span_id "
-                     "AND c.candidate_axis_id = (SELECT candidate_axis_id FROM candidate_axis WHERE name = 'view') "
-                     "JOIN input_column ic ON ic.input_column_id = i.input_column_id AND ic.name = 'source_view' "
-                     "WHERE i.input_asset_id = c.candidate_asset_id") == 0,
+         check(count("SELECT count(*) FROM decider_input b JOIN decider_input a ON a.span_id = b.span_id "
+                     "AND a.input_role_id = (SELECT input_role_id FROM input_role WHERE name = 'view_after') "
+                     "WHERE b.input_role_id = (SELECT input_role_id FROM input_role WHERE name = 'view_before') "
+                     "AND b.asset_id = a.asset_id") == 0,
                "no span's before and after are the same frame");
          TraceFrame bare = dark;
          bare.encoded.clear();

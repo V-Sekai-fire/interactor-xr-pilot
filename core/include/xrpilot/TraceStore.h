@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 //
-// Every span of the trace kept in SQLite in Essential Tuple Normal Form, as a MaskScore row. MaskScore is
-// EditScore across modalities: a span's inputs are the view and the pose before it, its candidates the
-// view and the pose after it, one per modality axis, and its call is the instruction. EditScore's image
-// pair is the view axis of that row. Facts that may be missing (an end, a parent, a detail, a score, an
-// image's extent) are satellite relations, never nullable columns.
+// Every span of the trace kept in SQLite in Essential Tuple Normal Form. A span with an input frame is a
+// decider example, the shape of chibifire/edscore-decider: its inputs are the view and the pose before it
+// and after it (roles view_before, pose_before, view_after, pose_after), its call is the state, and its
+// head and hand travel and view change are measures. Choice questions keep a gold answer only where one
+// was measured; XR Pilot measures no categorical answer, so it asks none. Facts that may be missing (an
+// end, a parent, a detail, a gold answer, a measure, an image's extent) are satellite relations, never
+// nullable columns.
 
 #pragma once
 
@@ -70,7 +72,7 @@ public:
     void frame(TraceFrame frame);
     // Waits until every frame handed in is written.
     void flush();
-    // Frames handed in without stream bytes, and so not kept; their spans stay without a MaskScore row.
+    // Frames handed in without stream bytes, and so not kept; their spans stay without a decider example.
     int64_t framesWithoutStream() const { return withoutStream_; }
 
     int64_t session() const { return session_; }
