@@ -7,6 +7,9 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <chrono>
+#include <mutex>
+#include <random>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -23,14 +26,16 @@ namespace
 const char* const Vocabularies[] = {"tool", "task_type", "input_role", "asset_kind", "metric"};
 
 // Bumped when a relation changes; an older store is moved aside, not altered.
-constexpr int SchemaVersion = 4;
+constexpr int SchemaVersion = 5;
 
 const char* const Schema = R"sql(
 CREATE TABLE IF NOT EXISTS session (
     session_id INTEGER PRIMARY KEY,
+    uuid TEXT NOT NULL UNIQUE,  -- UUIDv7 (RFC 9562) at the session's start
     started_at TEXT NOT NULL);  -- civil time, ISO 8601 UTC: the origin every span time counts from
 CREATE TABLE IF NOT EXISTS span (
     span_id INTEGER PRIMARY KEY,
+    uuid TEXT NOT NULL UNIQUE,  -- UUIDv7 at the span's start
     session_id INTEGER NOT NULL REFERENCES session,
     span_key TEXT NOT NULL,
     tool_id INTEGER NOT NULL REFERENCES tool,
@@ -54,6 +59,7 @@ CREATE TABLE IF NOT EXISTS span_command (
     PRIMARY KEY (span_id, seq));
 CREATE TABLE IF NOT EXISTS asset (
     asset_id INTEGER PRIMARY KEY,
+    uuid TEXT NOT NULL UNIQUE,  -- UUIDv7 at the moment the frame reached the store
     asset_kind_id INTEGER NOT NULL REFERENCES asset_kind,
     bytes BLOB NOT NULL);
 -- Only images have an extent.
@@ -160,6 +166,41 @@ public:
 private:
     sqlite3_stmt* stmt_ = nullptr;
 };
+
+// A UUIDv7 (RFC 9562, section 5.7) whose time is unixMs: 48 bits of milliseconds, version 7, 74
+// random bits, variant 10. Every session, span and asset is named by one, so rows from many stores
+// merge without collisions.
+std::string uuid7(int64_t unixMs)
+{
+    static std::mutex lock;
+    static std::random_device device;
+    uint64_t random[2];
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        random[0] = (uint64_t(device()) << 32) | device();
+        random[1] = (uint64_t(device()) << 32) | device();
+    }
+    uint8_t b[16];
+    const uint64_t ms = uint64_t(std::max<int64_t>(unixMs, 0));
+    for (int i = 0; i < 6; ++i)
+        b[i] = uint8_t(ms >> (40 - 8 * i));
+    for (int i = 0; i < 2; ++i)
+        b[6 + i] = uint8_t(random[0] >> (8 * i));
+    for (int i = 0; i < 8; ++i)
+        b[8 + i] = uint8_t(random[1] >> (8 * i));
+    b[6] = uint8_t(0x70 | (b[6] & 0x0f));
+    b[8] = uint8_t(0x80 | (b[8] & 0x3f));
+    static const char* const hex = "0123456789abcdef";
+    std::string out;
+    for (int i = 0; i < 16; ++i)
+    {
+        if (i == 4 || i == 6 || i == 8 || i == 10)
+            out += '-';
+        out += hex[b[i] >> 4];
+        out += hex[b[i] & 0x0f];
+    }
+    return out;
+}
 
 // The frame as lossless JPEG XL (ISO/IEC 18181): a bare codestream of its RGB, tagged sRGB, from libjxl's
 // fast lossless encoder at effort 1, the speed a 16-frame-a-second trace keeps up with on one thread.
@@ -307,8 +348,8 @@ bool TraceStore::open(const std::string& path, int64_t wallClockMs, int64_t nowM
     ok = ok && exec(("PRAGMA user_version = " + std::to_string(SchemaVersion)).c_str(), error);
     if (ok)
     {
-        Statement insert(db_, "INSERT INTO session (started_at) VALUES (?)");
-        ok = insert.bind(1, civilTime(wallClockMs)).run();
+        Statement insert(db_, "INSERT INTO session (uuid, started_at) VALUES (?, ?)");
+        ok = insert.bind(1, uuid7(wallClockMs)).bind(2, civilTime(wallClockMs)).run();
         session_ = sqlite3_last_insert_rowid(db_);
     }
     if (!ok)
@@ -320,6 +361,7 @@ bool TraceStore::open(const std::string& path, int64_t wallClockMs, int64_t nowM
         return false;
     }
     epochMs_ = nowMs;
+    wallMs_ = wallClockMs;
     stopping_ = false;
     thread_ = std::thread([this] { writer(); });
     return true;
@@ -364,8 +406,13 @@ void TraceStore::begin(const std::string& key, const std::string& tool, const st
     if (db_ == nullptr)
         return;
     std::lock_guard<std::mutex> lock(mutex_);
-    Statement insert(db_, "INSERT INTO span (session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?)");
-    insert.bind(1, session_).bind(2, key).bind(3, intern("tool", tool)).bind(4, isoDuration(atMs - epochMs_)).run();
+    Statement insert(db_, "INSERT INTO span (uuid, session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?, ?)");
+    insert.bind(1, uuid7(wallMs_ + atMs - epochMs_))
+        .bind(2, session_)
+        .bind(3, key)
+        .bind(4, intern("tool", tool))
+        .bind(5, isoDuration(atMs - epochMs_))
+        .run();
     const int64_t id = sqlite3_last_insert_rowid(db_);
     if (!detail.empty())
         Statement(db_, "INSERT INTO span_detail VALUES (?, ?)").bind(1, id).bind(2, detail).run();
@@ -382,8 +429,8 @@ void TraceStore::mark(const std::string& key, const std::string& tool, const std
     if (db_ == nullptr)
         return;
     const std::string at = isoDuration(atMs - epochMs_);
-    Statement insert(db_, "INSERT INTO span (session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?)");
-    insert.bind(1, session_).bind(2, key).bind(3, intern("tool", tool)).bind(4, at).run();
+    Statement insert(db_, "INSERT INTO span (uuid, session_id, span_key, tool_id, started) VALUES (?, ?, ?, ?, ?)");
+    insert.bind(1, uuid7(wallMs_ + atMs - epochMs_)).bind(2, session_).bind(3, key).bind(4, intern("tool", tool)).bind(5, at).run();
     const int64_t id = sqlite3_last_insert_rowid(db_);
     if (!detail.empty())
         Statement(db_, "INSERT INTO span_detail VALUES (?, ?)").bind(1, id).bind(2, detail).run();
@@ -476,6 +523,9 @@ void TraceStore::frame(TraceFrame frame)
         if (job.spans.empty())
             return;
         job.frame = std::move(frame);
+        job.wallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
         jobs_.push_back(std::move(job));
     }
     wake_.notify_all();
@@ -518,9 +568,10 @@ void TraceStore::write(const Job& job)
         return;
     }
     exec("BEGIN");
-    Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
-        .bind(1, intern("asset_kind", "jxl"))
-        .blob(2, encoded)
+    Statement(db_, "INSERT INTO asset (uuid, asset_kind_id, bytes) VALUES (?, ?, ?)")
+        .bind(1, uuid7(job.wallMs))
+        .bind(2, intern("asset_kind", "jxl"))
+        .blob(3, encoded)
         .run();
     const int64_t view = sqlite3_last_insert_rowid(db_);
     Statement(db_, "INSERT INTO asset_extent VALUES (?, ?, ?)")
@@ -533,9 +584,10 @@ void TraceStore::write(const Job& job)
     {
         std::vector<uint8_t> bytes(f.pose.size() * sizeof(float));
         std::memcpy(bytes.data(), f.pose.data(), bytes.size());
-        Statement(db_, "INSERT INTO asset (asset_kind_id, bytes) VALUES (?, ?)")
-            .bind(1, intern("asset_kind", "pose_f32x36"))
-            .blob(2, bytes)
+        Statement(db_, "INSERT INTO asset (uuid, asset_kind_id, bytes) VALUES (?, ?, ?)")
+            .bind(1, uuid7(job.wallMs))
+            .bind(2, intern("asset_kind", "pose_f32x36"))
+            .blob(3, bytes)
             .run();
         pose = sqlite3_last_insert_rowid(db_);
     }

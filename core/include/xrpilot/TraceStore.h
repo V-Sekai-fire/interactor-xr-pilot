@@ -89,6 +89,7 @@ private:
     {
         TraceFrame frame;
         std::vector<Pending> spans;
+        int64_t wallMs = 0; // when the frame reached the store, Unix milliseconds: its asset's UUIDv7 time
     };
 
     bool exec(const char* sql, std::string* error = nullptr);
@@ -99,6 +100,7 @@ private:
     sqlite3* db_ = nullptr;
     int64_t session_ = 0;
     int64_t epochMs_ = 0;
+    int64_t wallMs_ = 0; // the session's start in Unix milliseconds: a span's UUIDv7 time counts from it
 
     std::mutex mutex_;
     std::map<std::string, int64_t> spanByKey_;
