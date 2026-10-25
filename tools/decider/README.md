@@ -13,5 +13,10 @@ every id.
 XR Pilot asks no Choice question (it measures travel and change, which are numbers), so its rows
 have views, poses and measures and no gold. cua-tracer's rows also carry the `effect` question.
 
+In `decider_denormalized.parquet` the views are `view_before` and `view_after`, Hugging Face Image
+features (`{bytes, path}`) holding the store's lossless WebP, so the dataset viewer draws them. A
+store written before the WebP change holds lossless JPEG XL; its views are copied as they are
+(path ending `.jxl`), and `check_sample.exs` reads both. `tools/trace_export.exs` exports both too.
+
 CI (`ci / linux-core`) builds a sample from `decider-sample.sqlite`, which the core test
 `traces.decider-sample` writes, and checks it.

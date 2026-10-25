@@ -29,7 +29,7 @@ namespace xrpilot
 struct TraceFrame
 {
     // The whole decoded frame, both eyes side by side (left first), 8-bit sRGB, rows top to bottom.
-    // It is kept as lossless JPEG XL: these pixels exactly, tagged sRGB.
+    // It is kept as lossless WebP: these pixels exactly, as 8-bit sRGB.
     std::vector<uint8_t> rgba;
     int width = 0;
     int height = 0;

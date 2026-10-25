@@ -344,6 +344,17 @@ defmodule BuildSample do
       (t["decider_measure"] || []) |> Enum.map(& &1["metric"]) |> Enum.uniq() |> Enum.sort()
 
     bytes = fn id, role -> (a = input[{id, role}]) && asset[a]["bytes"] end
+
+    # A view as a Hugging Face Image feature, {bytes, path}: the stored file, WebP for new stores or
+    # the JPEG XL an older store holds (kept as it is), named by its asset UUID and format.
+    image = fn id, role ->
+      with a when not is_nil(a) <- input[{id, role}],
+           bytes = elem(asset[a]["bytes"], 1) do
+        ext = if match?(<<0xFF, 0x0A, _::binary>>, bytes), do: "jxl", else: "webp"
+        %{"bytes" => bytes, "path" => "#{a}.#{ext}"}
+      end
+    end
+
     size = fn id, role, k -> (a = input[{id, role}]) && extent[a] && extent[a][k] end
 
     rows =
@@ -371,10 +382,10 @@ defmodule BuildSample do
             "question_text" => question && q[question]["text"],
             "options" => question && options[question],
             "gold" => g && Enum.at(options[question], g),
-            "view_before_jxl" => bytes.(id, "view_before"),
+            "view_before" => image.(id, "view_before"),
             "view_before_width" => size.(id, "view_before", "width"),
             "view_before_height" => size.(id, "view_before", "height"),
-            "view_after_jxl" => bytes.(id, "view_after"),
+            "view_after" => image.(id, "view_after"),
             "view_after_width" => size.(id, "view_after", "width"),
             "view_after_height" => size.(id, "view_after", "height"),
             "pose_before_f32" => bytes.(id, "pose_before"),
@@ -439,6 +450,9 @@ defmodule BuildSample do
     case Enum.find(values, &(not is_nil(&1))) do
       first when :erlang.is_tuple(first) ->
         Series.from_list(Enum.map(values, &(&1 && elem(&1, 1))), dtype: :binary)
+
+      %{"bytes" => _} ->
+        Series.from_list(values, dtype: {:struct, %{"bytes" => :binary, "path" => :string}})
 
       _ ->
         Series.from_list(values)
