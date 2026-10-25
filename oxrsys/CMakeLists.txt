@@ -97,7 +97,7 @@ if(APPLE)
     FetchContent_Declare(
         pyrowave
         GIT_REPOSITORY https://github.com/V-Sekai-fire/pyrowave.git
-        GIT_TAG 89f7e47d4abbf650c91fae766728af866c5e32a0
+        GIT_TAG 2a0db384be579e0f92639fc30259a6f8d3dc4eab
         SOURCE_SUBDIR none # the root build needs Granite; only metal/ is compiled, below
     )
     FetchContent_MakeAvailable(pyrowave)
