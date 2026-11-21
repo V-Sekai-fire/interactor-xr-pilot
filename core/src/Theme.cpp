@@ -12,42 +12,42 @@ namespace
 {
 
 const Palette Dark{
-    {22, 23, 26},    // background
-    {30, 31, 35},    // panel
-    {40, 42, 47},    // header
-    {16, 17, 19},    // handle
-    {234, 235, 238}, // text
-    {166, 169, 177}, // muted
-    {120, 170, 240}, // accent
-    {52, 55, 61},    // control
-    {66, 70, 77},    // controlHover
-    {108, 112, 121}, // rule
-    {0, 158, 115},   // good: bluish green
-    {230, 159, 0},   // warning: orange
-    {213, 94, 0},    // fault: vermillion
-    {86, 180, 233},  // info: sky blue
-    {240, 140, 90},  // faultText
+    {11, 16, 38},    // background: night
+    {18, 26, 58},    // panel: night 2
+    {27, 37, 80},    // header: night 3
+    {11, 16, 38},    // handle
+    {239, 230, 210}, // text: chalk
+    {155, 152, 152}, // muted: chalk at 62 % on night 2
+    {201, 161, 74},  // accent: brass
+    {27, 37, 80},    // control
+    {42, 54, 112},   // controlHover: sky low
+    {155, 152, 152}, // rule
+    {95, 194, 182},  // good
+    {240, 180, 90},  // warning
+    {224, 122, 122}, // fault
+    {165, 139, 224}, // info: note
+    {224, 122, 122}, // faultText
     {245, 51, 82},   // axisX: Godot's editor gizmo red, green and blue
     {135, 214, 3},   // axisY
     {41, 140, 245},  // axisZ
 };
 
 const Palette Light{
-    {243, 244, 246}, // background
-    {255, 255, 255}, // panel
-    {231, 233, 237}, // header
-    {214, 217, 222}, // handle
-    {24, 25, 28},    // text
-    {84, 88, 96},    // muted
-    {0, 95, 170},    // accent
-    {226, 229, 234}, // control
-    {210, 214, 221}, // controlHover
-    {128, 133, 142}, // rule
-    {0, 122, 86},    // good
-    {150, 100, 0},   // warning
-    {190, 70, 0},    // fault
-    {0, 105, 160},   // info
-    {175, 60, 0},    // faultText
+    {238, 238, 235}, // background: paper
+    {251, 251, 249}, // panel: card
+    {228, 228, 224}, // header: paper 2
+    {200, 200, 194}, // handle: line
+    {34, 34, 34},    // text: ink
+    {107, 107, 107}, // muted
+    {40, 120, 217},  // accent: lit
+    {228, 228, 224}, // control
+    {200, 200, 194}, // controlHover
+    {107, 107, 107}, // rule: the design's line is 1.6 : 1, under the 3 : 1 a mark needs
+    {11, 121, 112},  // good
+    {141, 94, 1},    // warning
+    {172, 76, 78},   // fault
+    {119, 93, 173},  // info: note
+    {172, 76, 78},   // faultText
     {190, 30, 55},   // axisX: the same hues, darkened for a light surface
     {60, 130, 0},    // axisY
     {20, 100, 200},  // axisZ
