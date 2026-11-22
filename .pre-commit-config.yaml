@@ -1,16 +1,17 @@
-# Commit hooks, run by prek (or pre-commit): `prek install` once, then each commit checks the files it
-# changes; `prek run --all-files` checks the whole tree.
-#
-# clang-tidy reads each file's flags from compile_commands.json, which building with CMake
-# copies to the repository root (the xrpilot_sync_compile_commands target).
+# Baseline hygiene: these hooks report and never rewrite files.
+# Lockfiles, fixtures, binary formats and vendored trees are excluded
+# because fixtures are compared byte for byte.
+exclude: '(^|/)(vendor|third_party|thirdparty|build)/|\.(lock|usd[a-z]?|parquet|svg|png|jpe?g|webp|lean|glb|gltf|ppm|bin)$|(^|/)package-lock\.json$'
 repos:
-  - repo: https://github.com/pocc/pre-commit-hooks
-    rev: v1.3.5
+  - repo: builtin
     hooks:
-      - id: clang-tidy
-        name: C, C++ and Objective-C bodies have curly braces (clang-tidy)
-        args: ["--checks=-*,readability-braces-around-statements", "--warnings-as-errors=*", "--quiet"]
-        additional_dependencies: ["clang-tidy==19.1.0"]
-        # The Apple and Android clients and the edge build outside the desktop CMake build, so they have
-        # no compile commands here.
-        exclude: ^third_party/|^oxrsys/clients/|^edge/|_spv\.h$
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: check-case-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-xml
