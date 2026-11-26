@@ -941,8 +941,8 @@ int runPilot(Shared& shared, bool autoConnect, bool agent, Tray& tray, bool read
     layout.setMinSize("stats", Size{200, 2 * (24 + 30)});
     WindowConfig config;
     config.title = std::string("OXRSys XR Pilot ") + Version;
-    config.width = 1600;
-    config.height = 900;
+    config.width = 1366;
+    config.height = 768;
     config.vulkanAllFeatures = true;
     config.tickHz = 90;
     config.lockLayout = true;
